@@ -1,4 +1,31 @@
+"use client";
+
+import { useState } from "react";
+
+const works = [
+  {
+    title: "こころ",
+    author: "夏目漱石",
+  },
+  {
+    title: "銀河鉄道の夜",
+    author: "宮沢賢治",
+  },
+  {
+    title: "注文の多い料理店",
+    author: "宮沢賢治",
+  },
+];
+
 export default function CreatePage() {
+  const [selectedWorks, setSelectedWorks] = useState<string[]>([]);
+
+  const addWork = (title: string) => {
+    if (!selectedWorks.includes(title)) {
+      setSelectedWorks([...selectedWorks, title]);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-stone-50 px-6 py-16 text-stone-800">
       <div className="mx-auto max-w-3xl">
@@ -15,15 +42,78 @@ export default function CreatePage() {
           ここから、あなたの一冊をつくっていきます。
         </p>
 
-        <div className="mt-12 rounded-2xl bg-white p-8 shadow-sm">
+        {/* 作品を選ぶ */}
+        <section className="mt-12">
           <h2 className="text-2xl font-bold">
-            まずは作品を選びましょう
+            作品を選びましょう
           </h2>
 
-          <p className="mt-4 text-stone-600">
-            読みたい作品を選んで、自分だけの本に編んでいきます。
+          <p className="mt-3 text-stone-600">
+            読みたい作品を選んで、あなたの本に加えてください。
           </p>
-        </div>
+
+          <div className="mt-8 space-y-4">
+            {works.map((work) => {
+              const isSelected = selectedWorks.includes(work.title);
+
+              return (
+                <div
+                  key={work.title}
+                  className="flex items-center justify-between rounded-2xl bg-white p-6 shadow-sm"
+                >
+                  <div>
+                    <h3 className="text-xl font-bold">
+                      {work.title}
+                    </h3>
+
+                    <p className="mt-2 text-stone-500">
+                      {work.author}
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={() => addWork(work.title)}
+                    disabled={isSelected}
+                    className={`rounded-xl px-5 py-3 font-medium transition ${
+                      isSelected
+                        ? "bg-stone-200 text-stone-500"
+                        : "bg-stone-800 text-white hover:bg-stone-700"
+                    }`}
+                  >
+                    {isSelected ? "追加済み" : "＋ 本に加える"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* 選んだ作品 */}
+        <section className="mt-16 rounded-2xl bg-white p-8 shadow-sm">
+          <h2 className="text-2xl font-bold">
+            あなたの本
+          </h2>
+
+          {selectedWorks.length === 0 ? (
+            <p className="mt-4 text-stone-500">
+              まだ作品が選ばれていません。
+            </p>
+          ) : (
+            <ol className="mt-6 space-y-3">
+              {selectedWorks.map((title, index) => (
+                <li
+                  key={title}
+                  className="rounded-xl bg-stone-50 px-5 py-4"
+                >
+                  <span className="mr-3 text-stone-400">
+                    {index + 1}.
+                  </span>
+                  {title}
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
 
       </div>
     </main>
