@@ -25,7 +25,25 @@ export default function CreatePage() {
       setSelectedWorks([...selectedWorks, title]);
     }
   };
+const moveWork = (index: number, direction: "up" | "down") => {
+  const newWorks = [...selectedWorks];
 
+  if (direction === "up" && index > 0) {
+    [newWorks[index - 1], newWorks[index]] = [
+      newWorks[index],
+      newWorks[index - 1],
+    ];
+  }
+
+  if (direction === "down" && index < newWorks.length - 1) {
+    [newWorks[index], newWorks[index + 1]] = [
+      newWorks[index + 1],
+      newWorks[index],
+    ];
+  }
+
+  setSelectedWorks(newWorks);
+};
   return (
     <main className="min-h-screen bg-stone-50 px-6 py-16 text-stone-800">
       <div className="mx-auto max-w-3xl">
@@ -100,17 +118,37 @@ export default function CreatePage() {
             </p>
           ) : (
             <ol className="mt-6 space-y-3">
-              {selectedWorks.map((title, index) => (
-                <li
-                  key={title}
-                  className="rounded-xl bg-stone-50 px-5 py-4"
-                >
-                  <span className="mr-3 text-stone-400">
-                    {index + 1}.
-                  </span>
-                  {title}
-                </li>
-              ))}
+            {selectedWorks.map((title, index) => (
+  <li
+    key={title}
+    className="flex items-center justify-between rounded-xl bg-stone-50 px-5 py-4"
+  >
+    <div>
+      <span className="mr-3 text-stone-400">
+        {index + 1}.
+      </span>
+      {title}
+    </div>
+
+    <div className="flex gap-2">
+      <button
+        onClick={() => moveWork(index, "up")}
+        disabled={index === 0}
+        className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
+      >
+        ↑
+      </button>
+
+      <button
+        onClick={() => moveWork(index, "down")}
+        disabled={index === selectedWorks.length - 1}
+        className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
+      >
+        ↓
+      </button>
+    </div>
+  </li>
+))}
             </ol>
           )}
         </section>
