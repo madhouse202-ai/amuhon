@@ -19,6 +19,7 @@ const works = [
 
 export default function CreatePage() {
   const [selectedWorks, setSelectedWorks] = useState<string[]>([]);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
   const addWork = (title: string) => {
     if (!selectedWorks.includes(title)) {
@@ -44,6 +45,23 @@ const moveWork = (index: number, direction: "up" | "down") => {
 
   setSelectedWorks(newWorks);
 };
+
+const handleDrop = (targetIndex: number) => {
+  if (draggedIndex === null || draggedIndex === targetIndex) {
+    return;
+  }
+
+  const newWorks = [...selectedWorks];
+  const [draggedWork] = newWorks.splice(draggedIndex, 1);
+
+  newWorks.splice(targetIndex, 0, draggedWork);
+
+  setSelectedWorks(newWorks);
+  setDraggedIndex(null);
+};
+
+
+
   return (
     <main className="min-h-screen bg-stone-50 px-6 py-16 text-stone-800">
       <div className="mx-auto max-w-3xl">
@@ -120,9 +138,13 @@ const moveWork = (index: number, direction: "up" | "down") => {
             <ol className="mt-6 space-y-3">
             {selectedWorks.map((title, index) => (
   <li
-    key={title}
-    className="flex items-center justify-between rounded-xl bg-stone-50 px-5 py-4"
-  >
+  key={title}
+  draggable={true}
+  onDragStart={() => setDraggedIndex(index)}
+  onDragOver={(e) => e.preventDefault()}
+  onDrop={() => handleDrop(index)}
+  className="flex items-center justify-between rounded-xl bg-stone-50 px-5 py-4"
+>
     <div>
       <span className="mr-3 text-stone-400">
         {index + 1}.
