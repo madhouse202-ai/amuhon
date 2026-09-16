@@ -26,6 +26,11 @@ export default function CreatePage() {
       setSelectedWorks([...selectedWorks, title]);
     }
   };
+  const removeWork = (title: string) => {
+  setSelectedWorks(
+    selectedWorks.filter((work) => work !== title)
+  );
+};
 const moveWork = (index: number, direction: "up" | "down") => {
   const newWorks = [...selectedWorks];
 
@@ -161,12 +166,19 @@ const handleDrop = (targetIndex: number) => {
         ↑
       </button>
 
-      <button
+            <button
         onClick={() => moveWork(index, "down")}
         disabled={index === selectedWorks.length - 1}
         className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
       >
         ↓
+      </button>
+
+      <button
+        onClick={() => removeWork(title)}
+        className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm"
+      >
+        削除
       </button>
     </div>
   </li>
