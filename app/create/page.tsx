@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 const works = [
   {
@@ -18,6 +19,7 @@ const works = [
 ];
 
 export default function CreatePage() {
+    const router = useRouter();
   const [selectedWorks, setSelectedWorks] = useState<string[]>([]);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
@@ -186,6 +188,19 @@ const handleDrop = (targetIndex: number) => {
             </ol>
           )}
         </section>
+
+  
+
+        <button
+         onClick={() => {
+  const params = new URLSearchParams();
+  params.set("works", selectedWorks.join(","));
+  router.push(`/preview?${params.toString()}`);
+}}
+          className="mt-8 w-full rounded-xl bg-stone-800 px-6 py-4 text-lg font-medium text-white"
+        >
+          本を編む
+        </button>
 
       </div>
     </main>
