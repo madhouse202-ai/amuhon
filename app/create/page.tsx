@@ -35,6 +35,8 @@ export default function CreatePage() {
         `/api/works?q=${encodeURIComponent(trimmedQuery)}`
       );
 
+      console.log("API response:", response.status);
+
       if (!response.ok) {
         throw new Error("作品検索に失敗しました");
       }
