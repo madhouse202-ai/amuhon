@@ -2,12 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { saveBookData } from "@/lib/book";
+import type { BookWork } from "@/lib/book";
 
-type Work = {
-  id: string;
-  title: string;
-  author: string;
-};
+type Work = BookWork;
 
 export default function CreatePage() {
   const router = useRouter();
@@ -60,13 +58,18 @@ export default function CreatePage() {
     );
 
     if (!alreadySelected) {
-      setSelectedWorks([...selectedWorks, work]);
+      setSelectedWorks([
+        ...selectedWorks,
+        work,
+      ]);
     }
   };
 
   const removeWork = (id: string) => {
     setSelectedWorks(
-      selectedWorks.filter((work) => work.id !== id)
+      selectedWorks.filter(
+        (work) => work.id !== id
+      )
     );
   };
 
@@ -111,7 +114,11 @@ export default function CreatePage() {
       1
     );
 
-    newWorks.splice(targetIndex, 0, draggedWork);
+    newWorks.splice(
+      targetIndex,
+      0,
+      draggedWork
+    );
 
     setSelectedWorks(newWorks);
     setDraggedIndex(null);
@@ -120,6 +127,33 @@ export default function CreatePage() {
   const isSelected = (id: string) => {
     return selectedWorks.some(
       (work) => work.id === id
+    );
+  };
+
+  const createBook = () => {
+    if (selectedWorks.length === 0) {
+      return;
+    }
+
+    saveBookData({
+      works: selectedWorks,
+      title: "わたしの本",
+      editor: "編者",
+      coverStyle: "classic",
+      coverColor: "red",
+    });
+
+    const params = new URLSearchParams();
+
+    params.set(
+      "works",
+      selectedWorks
+        .map((work) => work.title)
+        .join(",")
+    );
+
+    router.push(
+      `/preview?${params.toString()}`
     );
   };
 
@@ -170,20 +204,27 @@ export default function CreatePage() {
               disabled={isSearching}
               className="rounded-xl bg-stone-800 px-6 py-4 font-medium text-white transition hover:bg-stone-700 disabled:opacity-50"
             >
-              {isSearching ? "検索中…" : "検索"}
+              {isSearching
+                ? "検索中…"
+                : "検索"}
             </button>
           </div>
 
           {/* 検索結果 */}
           <div className="mt-8 space-y-4">
-            {searched && works.length === 0 && !isSearching && (
-              <p className="rounded-xl bg-white p-6 text-center text-stone-500">
-                作品が見つかりませんでした。
-              </p>
-            )}
+
+            {searched &&
+              works.length === 0 &&
+              !isSearching && (
+                <p className="rounded-xl bg-white p-6 text-center text-stone-500">
+                  作品が見つかりませんでした。
+                </p>
+              )}
 
             {works.map((work) => {
-              const selected = isSelected(work.id);
+              const selected = isSelected(
+                work.id
+              );
 
               return (
                 <div
@@ -205,7 +246,9 @@ export default function CreatePage() {
                   </div>
 
                   <button
-                    onClick={() => addWork(work)}
+                    onClick={() =>
+                      addWork(work)
+                    }
                     disabled={selected}
                     className={`rounded-xl px-5 py-3 font-medium transition ${
                       selected
@@ -235,91 +278,96 @@ export default function CreatePage() {
             </p>
           ) : (
             <ol className="mt-6 space-y-3">
-              {selectedWorks.map((work, index) => (
-                <li
-                  key={work.id}
-                  draggable={true}
-                  onDragStart={() =>
-                    setDraggedIndex(index)
-                  }
-                  onDragOver={(e) =>
-                    e.preventDefault()
-                  }
-                  onDrop={() =>
-                    handleDrop(index)
-                  }
-                  className="flex items-center justify-between rounded-xl bg-stone-50 px-5 py-4"
-                >
-                  <div>
-                    <span className="mr-3 text-stone-400">
-                      {index + 1}.
-                    </span>
 
-                    <span className="font-medium">
-                      {work.title}
-                    </span>
+              {selectedWorks.map(
+                (work, index) => (
+                  <li
+                    key={work.id}
+                    draggable={true}
+                    onDragStart={() =>
+                      setDraggedIndex(index)
+                    }
+                    onDragOver={(e) =>
+                      e.preventDefault()
+                    }
+                    onDrop={() =>
+                      handleDrop(index)
+                    }
+                    className="flex items-center justify-between rounded-xl bg-stone-50 px-5 py-4"
+                  >
+                    <div>
+                      <span className="mr-3 text-stone-400">
+                        {index + 1}.
+                      </span>
 
-                    <span className="ml-3 text-sm text-stone-500">
-                      {work.author}
-                    </span>
-                  </div>
+                      <span className="font-medium">
+                        {work.title}
+                      </span>
 
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() =>
-                        moveWork(index, "up")
-                      }
-                      disabled={index === 0}
-                      className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
-                    >
-                      ↑
-                    </button>
+                      <span className="ml-3 text-sm text-stone-500">
+                        {work.author}
+                      </span>
+                    </div>
 
-                    <button
-                      onClick={() =>
-                        moveWork(index, "down")
-                      }
-                      disabled={
-                        index ===
-                        selectedWorks.length - 1
-                      }
-                      className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
-                    >
-                      ↓
-                    </button>
+                    <div className="flex gap-2">
 
-                    <button
-                      onClick={() =>
-                        removeWork(work.id)
-                      }
-                      className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm"
-                    >
-                      削除
-                    </button>
-                  </div>
-                </li>
-              ))}
+                      <button
+                        onClick={() =>
+                          moveWork(
+                            index,
+                            "up"
+                          )
+                        }
+                        disabled={
+                          index === 0
+                        }
+                        className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
+                      >
+                        ↑
+                      </button>
+
+                      <button
+                        onClick={() =>
+                          moveWork(
+                            index,
+                            "down"
+                          )
+                        }
+                        disabled={
+                          index ===
+                          selectedWorks.length - 1
+                        }
+                        className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
+                      >
+                        ↓
+                      </button>
+
+                      <button
+                        onClick={() =>
+                          removeWork(
+                            work.id
+                          )
+                        }
+                        className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm"
+                      >
+                        削除
+                      </button>
+
+                    </div>
+                  </li>
+                )
+              )}
+
             </ol>
           )}
         </section>
 
         {/* 本を編む */}
         <button
-          onClick={() => {
-            const params = new URLSearchParams();
-
-            params.set(
-              "works",
-              selectedWorks
-                .map((work) => work.title)
-                .join(",")
-            );
-
-            router.push(
-              `/preview?${params.toString()}`
-            );
-          }}
-          disabled={selectedWorks.length === 0}
+          onClick={createBook}
+          disabled={
+            selectedWorks.length === 0
+          }
           className="mt-8 w-full rounded-xl bg-stone-800 px-6 py-4 text-lg font-medium text-white transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40"
         >
           本を編む
