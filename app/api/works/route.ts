@@ -47,7 +47,9 @@ async function loadCatalog(): Promise<Work[]> {
     return catalogCache;
   }
 
-  console.log("青空文庫の作品カタログを取得しています...");
+  console.log(
+    "青空文庫の作品カタログを取得しています..."
+  );
 
   const response = await fetch(CATALOG_URL, {
     cache: "no-store",
@@ -64,8 +66,8 @@ async function loadCatalog(): Promise<Work[]> {
   const zip = await JSZip.loadAsync(buffer);
 
   // ZIPの中からCSVを探す
-  const csvFileName = Object.keys(zip.files).find((name) =>
-    name.endsWith(".csv")
+  const csvFileName = Object.keys(zip.files).find(
+    (name) => name.endsWith(".csv")
   );
 
   if (!csvFileName) {
@@ -74,7 +76,8 @@ async function loadCatalog(): Promise<Work[]> {
     );
   }
 
-  const csvText = await zip.files[csvFileName].async("string");
+  const csvText =
+    await zip.files[csvFileName].async("string");
 
   const lines = csvText.split(/\r?\n/);
 
@@ -102,12 +105,17 @@ async function loadCatalog(): Promise<Work[]> {
     const id = columns[0]?.trim() ?? "";
     const title = columns[1]?.trim() ?? "";
 
-    const lastName = columns[15]?.trim() ?? "";
-    const firstName = columns[16]?.trim() ?? "";
+    const lastName =
+      columns[15]?.trim() ?? "";
 
-    const author = `${lastName} ${firstName}`.trim();
+    const firstName =
+      columns[16]?.trim() ?? "";
 
-    const cardUrl = columns[13]?.trim() ?? "";
+    const author =
+      `${lastName} ${firstName}`.trim();
+
+    const cardUrl =
+      columns[13]?.trim() ?? "";
 
     if (!id || !title) {
       continue;
@@ -131,9 +139,11 @@ async function loadCatalog(): Promise<Work[]> {
 }
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
+  const { searchParams } =
+    new URL(request.url);
 
-  const query = searchParams.get("q")?.trim() ?? "";
+  const query =
+    searchParams.get("q")?.trim() ?? "";
 
   // 検索文字がない場合
   if (!query) {
@@ -143,14 +153,35 @@ export async function GET(request: Request) {
   }
 
   try {
-    const catalog = await loadCatalog();
+    const catalog =
+      await loadCatalog();
 
-    const normalizedQuery = query.toLowerCase();
+    /*
+     * 検索時はスペースを無視する。
+     *
+     * 例：
+     * 「夏目漱石」
+     * 「夏目 漱石」
+     * 「夏目　漱石」
+     *
+     * すべて同じ検索結果になる。
+     */
+    const normalizedQuery =
+      query
+        .toLowerCase()
+        .replace(/\s+/g, "");
 
     const results = catalog
       .filter((work) => {
-        const title = work.title.toLowerCase();
-        const author = work.author.toLowerCase();
+        const title =
+          work.title
+            .toLowerCase()
+            .replace(/\s+/g, "");
+
+        const author =
+          work.author
+            .toLowerCase()
+            .replace(/\s+/g, "");
 
         return (
           title.includes(normalizedQuery) ||
