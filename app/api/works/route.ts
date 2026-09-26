@@ -6,6 +6,8 @@ type Work = {
   title: string;
   author: string;
   cardUrl: string;
+  textUrl: string;
+  xhtmlUrl: string;
 };
 
 const CATALOG_URL =
@@ -41,8 +43,15 @@ function parseCsvLine(line: string): string[] {
   return values;
 }
 
+function normalizeColumnName(value: string) {
+  return value
+    .trim()
+    .replace(/^"|"$/g, "")
+    .replace(/\s+/g, "")
+    .replace(/　/g, "");
+}
+
 async function loadCatalog(): Promise<Work[]> {
-  // すでに取得済みなら再利用
   if (catalogCache) {
     return catalogCache;
   }
@@ -65,7 +74,6 @@ async function loadCatalog(): Promise<Work[]> {
 
   const zip = await JSZip.loadAsync(buffer);
 
-  // ZIPの中からCSVを探す
   const csvFileName = Object.keys(zip.files).find(
     (name) => name.endsWith(".csv")
   );
@@ -81,10 +89,158 @@ async function loadCatalog(): Promise<Work[]> {
 
   const lines = csvText.split(/\r?\n/);
 
+  if (lines.length === 0) {
+    throw new Error(
+      "青空文庫のCSVが空です。"
+    );
+  }
+
+  /*
+   * --------------------------------------------------
+   * CSVのヘッダーから各列の位置を探す
+   * --------------------------------------------------
+   */
+
+  const header = parseCsvLine(lines[0]).map(
+    normalizeColumnName
+  );
+
+  console.log(
+    "青空文庫CSVヘッダー:",
+    header
+  );
+
+  const findColumnIndex = (
+    candidates: string[]
+  ) => {
+    for (const candidate of candidates) {
+      const normalizedCandidate =
+        normalizeColumnName(candidate);
+
+      const index = header.findIndex(
+        (column) =>
+          column === normalizedCandidate
+      );
+
+      if (index !== -1) {
+        return index;
+      }
+    }
+
+    return -1;
+  };
+
+  /*
+   * 作品ID
+   */
+  const idIndex = findColumnIndex([
+    "作品ID",
+    "作品ＩＤ",
+    "作品id",
+  ]);
+
+  /*
+   * 作品名
+   */
+  const titleIndex = findColumnIndex([
+    "作品名",
+  ]);
+
+  /*
+   * 図書カードURL
+   */
+  const cardUrlIndex = findColumnIndex([
+    "図書カードURL",
+    "図書カード",
+    "カードURL",
+  ]);
+
+  /*
+   * 姓
+   */
+  const lastNameIndex = findColumnIndex([
+    "姓",
+  ]);
+
+  /*
+   * 名
+   */
+  const firstNameIndex = findColumnIndex([
+    "名",
+  ]);
+
+  /*
+   * テキストファイルURL
+   */
+  const textUrlIndex = findColumnIndex([
+    "テキストファイルURL",
+    "テキストURL",
+    "テキストファイル",
+  ]);
+
+  /*
+   * XHTML / HTMLファイルURL
+   */
+  const xhtmlUrlIndex = findColumnIndex([
+    "XHTMLファイルURL",
+    "XHTML/HTMLファイルURL",
+    "XHTML/HTMLファイル",
+    "HTMLファイルURL",
+    "XHTMLURL",
+  ]);
+
+  console.log(
+    "CSV列番号:",
+    {
+      idIndex,
+      titleIndex,
+      cardUrlIndex,
+      lastNameIndex,
+      firstNameIndex,
+      textUrlIndex,
+      xhtmlUrlIndex,
+    }
+  );
+
+  /*
+   * 必須列が見つからなければエラー
+   */
+
+  if (
+    idIndex === -1 ||
+    titleIndex === -1
+  ) {
+    throw new Error(
+      "青空文庫CSVの作品IDまたは作品名の列を特定できませんでした。"
+    );
+  }
+
+  /*
+   * URL列は、今回の目的では重要なので
+   * 見つからない場合は明示的にエラーにする。
+   */
+
+  if (
+    cardUrlIndex === -1 ||
+    textUrlIndex === -1 ||
+    xhtmlUrlIndex === -1
+  ) {
+    throw new Error(
+      "青空文庫CSVのURL列を特定できませんでした。ヘッダーを確認してください。"
+    );
+  }
+
   const works: Work[] = [];
 
-  // 1行目はヘッダーなので2行目から読む
-  for (let i = 1; i < lines.length; i++) {
+  /*
+   * 2行目以降を作品データとして読む
+   */
+
+  for (
+    let i = 1;
+    i < lines.length;
+    i++
+  ) {
     const line = lines[i];
 
     if (!line.trim()) {
@@ -93,29 +249,33 @@ async function loadCatalog(): Promise<Work[]> {
 
     const columns = parseCsvLine(line);
 
-    /*
-     * 青空文庫の拡充版CSV
-     *
-     * 作品ID       → 0
-     * 作品名       → 1
-     * 著者名       → 姓・名の列
-     * 図書カードURL → 13
-     */
+    const id =
+      columns[idIndex]?.trim() ?? "";
 
-    const id = columns[0]?.trim() ?? "";
-    const title = columns[1]?.trim() ?? "";
+    const title =
+      columns[titleIndex]?.trim() ?? "";
 
     const lastName =
-      columns[15]?.trim() ?? "";
+      lastNameIndex !== -1
+        ? columns[lastNameIndex]?.trim() ?? ""
+        : "";
 
     const firstName =
-      columns[16]?.trim() ?? "";
+      firstNameIndex !== -1
+        ? columns[firstNameIndex]?.trim() ?? ""
+        : "";
 
     const author =
       `${lastName} ${firstName}`.trim();
 
     const cardUrl =
-      columns[13]?.trim() ?? "";
+      columns[cardUrlIndex]?.trim() ?? "";
+
+    const textUrl =
+      columns[textUrlIndex]?.trim() ?? "";
+
+    const xhtmlUrl =
+      columns[xhtmlUrlIndex]?.trim() ?? "";
 
     if (!id || !title) {
       continue;
@@ -126,6 +286,8 @@ async function loadCatalog(): Promise<Work[]> {
       title,
       author,
       cardUrl,
+      textUrl,
+      xhtmlUrl,
     });
   }
 
@@ -145,7 +307,10 @@ export async function GET(request: Request) {
   const query =
     searchParams.get("q")?.trim() ?? "";
 
-  // 検索文字がない場合
+  /*
+   * 検索文字がない場合
+   */
+
   if (!query) {
     return NextResponse.json({
       works: [],
@@ -166,6 +331,7 @@ export async function GET(request: Request) {
      *
      * すべて同じ検索結果になる。
      */
+
     const normalizedQuery =
       query
         .toLowerCase()
@@ -202,7 +368,9 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         error:
-          "青空文庫の作品カタログを取得できませんでした。",
+          error instanceof Error
+            ? error.message
+            : "青空文庫の作品カタログを取得できませんでした。",
       },
       {
         status: 500,

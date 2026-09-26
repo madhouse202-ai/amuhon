@@ -6,29 +6,22 @@ export type BookWork = {
   id: string;
   title: string;
   author: string;
+  cardUrl: string;
 };
 
 export type BookData = {
   works: BookWork[];
-
   title: string;
-
   editor: string;
-
   coverStyle: CoverStyle;
-
   coverColor: CoverColor;
 };
 
 export const defaultBookData: BookData = {
   works: [],
-
   title: "わたしの本",
-
   editor: "編者",
-
   coverStyle: "classic",
-
   coverColor: "red",
 };
 
