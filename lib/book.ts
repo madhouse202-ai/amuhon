@@ -7,6 +7,8 @@ export type BookWork = {
   title: string;
   author: string;
   cardUrl: string;
+  textUrl: string;
+  xhtmlUrl: string;
 };
 
 export type BookData = {
