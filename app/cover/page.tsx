@@ -1,15 +1,29 @@
 "use client";
 
-import { useState } from "react";
-
-type CoverStyle = "classic" | "free";
-type CoverColor = "red" | "blue" | "green";
+import { useEffect, useState } from "react";
+import {
+  CoverStyle,
+  CoverColor,
+  loadBookData,
+  saveBookData,
+} from "@/lib/book";
 
 export default function CoverPage() {
   const [title, setTitle] = useState("わたしの本");
   const [editor, setEditor] = useState("編者");
-  const [coverStyle, setCoverStyle] = useState<CoverStyle>("classic");
-  const [coverColor, setCoverColor] = useState<CoverColor>("red");
+  const [coverStyle, setCoverStyle] =
+    useState<CoverStyle>("classic");
+  const [coverColor, setCoverColor] =
+    useState<CoverColor>("red");
+
+  useEffect(() => {
+    const book = loadBookData();
+
+    setTitle(book.title);
+    setEditor(book.editor);
+    setCoverStyle(book.coverStyle);
+    setCoverColor(book.coverColor);
+  }, []);
 
   const colorClasses = {
     red: {
@@ -31,6 +45,20 @@ export default function CoverPage() {
 
   const selectedColor = colorClasses[coverColor];
 
+  function handleSave() {
+    const currentBook = loadBookData();
+
+    saveBookData({
+      ...currentBook,
+      title: title.trim() || "わたしの本",
+      editor: editor.trim() || "編者",
+      coverStyle,
+      coverColor,
+    });
+
+    alert("この表紙で決定しました！");
+  }
+
   return (
     <main className="min-h-screen bg-stone-50 text-stone-800">
 
@@ -47,9 +75,11 @@ export default function CoverPage() {
             <span>→</span>
             <span>② 並べる</span>
             <span>→</span>
+
             <span className="font-bold text-stone-800">
               ③ 表紙を作る
             </span>
+
             <span>→</span>
             <span>④ プレビュー</span>
             <span>→</span>
@@ -83,6 +113,7 @@ export default function CoverPage() {
 
             {/* タイトル */}
             <div className="mt-8">
+
               <label className="text-sm font-bold">
                 タイトル
               </label>
@@ -90,7 +121,9 @@ export default function CoverPage() {
               <input
                 type="text"
                 value={title}
-                onChange={(e) => setTitle(e.target.value)}
+                onChange={(e) =>
+                  setTitle(e.target.value)
+                }
                 maxLength={50}
                 className="mt-2 w-full rounded-xl border border-stone-300 px-4 py-3 outline-none transition focus:border-stone-600"
               />
@@ -98,10 +131,12 @@ export default function CoverPage() {
               <p className="mt-1 text-right text-xs text-stone-400">
                 {title.length} / 50
               </p>
+
             </div>
 
             {/* 編者 */}
             <div className="mt-5">
+
               <label className="text-sm font-bold">
                 編者名
               </label>
@@ -109,7 +144,9 @@ export default function CoverPage() {
               <input
                 type="text"
                 value={editor}
-                onChange={(e) => setEditor(e.target.value)}
+                onChange={(e) =>
+                  setEditor(e.target.value)
+                }
                 maxLength={30}
                 className="mt-2 w-full rounded-xl border border-stone-300 px-4 py-3 outline-none transition focus:border-stone-600"
               />
@@ -117,6 +154,7 @@ export default function CoverPage() {
               <p className="mt-1 text-right text-xs text-stone-400">
                 {editor.length} / 30
               </p>
+
             </div>
 
             <div className="my-8 border-t border-stone-200" />
@@ -130,14 +168,19 @@ export default function CoverPage() {
 
               {/* 基本 */}
               <button
-                onClick={() => setCoverStyle("classic")}
+                type="button"
+                onClick={() =>
+                  setCoverStyle("classic")
+                }
                 className={`rounded-xl border-2 p-5 text-left transition ${
                   coverStyle === "classic"
                     ? "border-stone-700 bg-stone-50"
                     : "border-stone-200 hover:border-stone-400"
                 }`}
               >
+
                 <div className="flex items-center gap-3">
+
                   <div
                     className={`h-5 w-5 rounded-full border-2 ${
                       coverStyle === "classic"
@@ -153,6 +196,7 @@ export default function CoverPage() {
                   <span className="font-bold">
                     基本の表紙デザイン
                   </span>
+
                 </div>
 
                 <p className="mt-3 text-sm leading-6 text-stone-500">
@@ -160,18 +204,24 @@ export default function CoverPage() {
                   <br />
                   定番のデザインです。
                 </p>
+
               </button>
 
               {/* 自由 */}
               <button
-                onClick={() => setCoverStyle("free")}
+                type="button"
+                onClick={() =>
+                  setCoverStyle("free")
+                }
                 className={`rounded-xl border-2 p-5 text-left transition ${
                   coverStyle === "free"
                     ? "border-stone-700 bg-stone-50"
                     : "border-stone-200 hover:border-stone-400"
                 }`}
               >
+
                 <div className="flex items-center gap-3">
+
                   <div
                     className={`h-5 w-5 rounded-full border-2 ${
                       coverStyle === "free"
@@ -187,6 +237,7 @@ export default function CoverPage() {
                   <span className="font-bold">
                     自由にデザインする
                   </span>
+
                 </div>
 
                 <p className="mt-3 text-sm leading-6 text-stone-500">
@@ -194,6 +245,7 @@ export default function CoverPage() {
                   <br />
                   レイアウトを設定できます。
                 </p>
+
               </button>
 
             </div>
@@ -209,7 +261,10 @@ export default function CoverPage() {
                 <div className="mt-4 flex gap-4">
 
                   <button
-                    onClick={() => setCoverColor("red")}
+                    type="button"
+                    onClick={() =>
+                      setCoverColor("red")
+                    }
                     aria-label="赤"
                     className={`h-10 w-10 rounded-full bg-red-800 ${
                       coverColor === "red"
@@ -219,7 +274,10 @@ export default function CoverPage() {
                   />
 
                   <button
-                    onClick={() => setCoverColor("blue")}
+                    type="button"
+                    onClick={() =>
+                      setCoverColor("blue")
+                    }
                     aria-label="青"
                     className={`h-10 w-10 rounded-full bg-blue-800 ${
                       coverColor === "blue"
@@ -229,7 +287,10 @@ export default function CoverPage() {
                   />
 
                   <button
-                    onClick={() => setCoverColor("green")}
+                    type="button"
+                    onClick={() =>
+                      setCoverColor("green")
+                    }
                     aria-label="緑"
                     className={`h-10 w-10 rounded-full bg-green-800 ${
                       coverColor === "green"
@@ -262,9 +323,8 @@ export default function CoverPage() {
 
             {/* 決定 */}
             <button
-              onClick={() => {
-                alert("この表紙で決定しました！");
-              }}
+              type="button"
+              onClick={handleSave}
               className="mt-10 w-full rounded-xl bg-stone-800 px-6 py-4 font-bold text-white transition hover:bg-stone-700"
             >
               この表紙で決定する　→
