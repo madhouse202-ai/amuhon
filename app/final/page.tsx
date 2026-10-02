@@ -145,6 +145,44 @@ function CoverPage({
   );
 }
 
+function BackCoverPage() {
+  return (
+    <section
+      className="print-page"
+      style={{
+        width: PAGE_WIDTH,
+        height: PAGE_HEIGHT,
+        boxSizing: "border-box",
+        background: "#fff",
+        margin: "0 auto 40px",
+        padding: "11mm 9mm",
+        pageBreakAfter: "auto",
+        breakAfter: "auto",
+        overflow: "hidden",
+      }}
+    />
+  );
+}
+
+function BlankPage() {
+  return (
+    <section
+      className="print-page"
+      style={{
+        width: PAGE_WIDTH,
+        height: PAGE_HEIGHT,
+        boxSizing: "border-box",
+        background: "#fff",
+        margin: "0 auto 40px",
+        padding: "11mm 9mm",
+        pageBreakAfter: "always",
+        breakAfter: "page",
+        overflow: "hidden",
+      }}
+    />
+  );
+}
+
 function VerticalPage({
   children,
   pageNumber,
@@ -371,21 +409,17 @@ function PrintStyles() {
           display: none !important;
         }
 
+        .print-page {
+          margin: 0 !important;
+          box-shadow: none !important;
+        }
+
         .print-root {
           width: 105mm !important;
           min-height: auto !important;
           margin: 0 !important;
           padding: 0 !important;
           background: #fff !important;
-        }
-
-        .print-page {
-          width: 105mm !important;
-          height: 148mm !important;
-          margin: 0 !important;
-          box-shadow: none !important;
-          break-inside: avoid !important;
-          page-break-inside: avoid !important;
         }
       }
     `}</style>
@@ -468,7 +502,6 @@ export default function FinalPage() {
         }}
       >
         <h1>完成した本</h1>
-
         <p>
           本文を組版しています……
         </p>
@@ -486,13 +519,73 @@ export default function FinalPage() {
         }}
       >
         <h1>完成した本</h1>
-
         <p>
           本のデータが見つかりません。
         </p>
       </main>
     );
   }
+
+  /*
+   * 印刷対象本文のページ数を計算する
+   *
+   * 1. 本全体の扉
+   * 2. 目次
+   * 3. 各作品の扉
+   * 4. 各作品の本文
+   * 5. 奥付
+   *
+   * 表紙と裏表紙は本文ページ数に含めない。
+   */
+  let printBodyPageCount = 0;
+
+  // 本全体の扉
+  printBodyPageCount += 1;
+
+  // 目次
+  if (book.works.length > 0) {
+    printBodyPageCount += 1;
+  }
+
+  // 各作品
+  for (const work of worksText) {
+    // 作品扉
+    printBodyPageCount += 1;
+
+    // 本文
+    if (work.error) {
+      printBodyPageCount += 1;
+    } else {
+      printBodyPageCount +=
+        splitTextIntoPages(work.text).length;
+    }
+  }
+
+  // 奥付
+  printBodyPageCount += 1;
+
+  /*
+   * 無線綴じ本文は偶数ページにする。
+   * 奇数の場合は奥付の後ろに白紙を1ページ追加する。
+   */
+  const needsBlankBodyPage =
+    printBodyPageCount % 2 !== 0;
+
+  const finalPrintBodyPageCount =
+    printBodyPageCount +
+    (needsBlankBodyPage ? 1 : 0);
+
+  /*
+   * PDF全体は
+   *
+   * 表紙 1P
+   * ＋本文
+   * ＋裏表紙 1P
+   *
+   * となる。
+   */
+  const totalPdfPageCount =
+    finalPrintBodyPageCount + 2;
 
   let bodyPageNumber = 1;
 
@@ -544,6 +637,72 @@ export default function FinalPage() {
               COLUMNS_PER_PAGE}
             文字
           </p>
+
+          <div
+            style={{
+              marginTop: "24px",
+              padding: "16px 20px",
+              background: "#fff",
+              border: "1px solid #ddd",
+              borderRadius: "8px",
+              fontFamily: "serif",
+            }}
+          >
+            <div
+              style={{
+                fontSize: "13px",
+                color: "#666",
+                marginBottom: "6px",
+              }}
+            >
+              印刷対象本文
+            </div>
+
+            <div
+              style={{
+                fontSize: "28px",
+                lineHeight: 1.2,
+              }}
+            >
+              {finalPrintBodyPageCount}ページ
+            </div>
+
+            <div
+              style={{
+                marginTop: "8px",
+                fontSize: "12px",
+                color: "#777",
+              }}
+            >
+              表紙・裏表紙を除く
+            </div>
+
+            {needsBlankBodyPage && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  fontSize: "12px",
+                  color: "#777",
+                }}
+              >
+                最終ページ調整のため
+                白紙1ページを追加します
+              </div>
+            )}
+          </div>
+
+          <div
+            style={{
+              marginTop: "12px",
+              fontSize: "13px",
+              color: "#555",
+            }}
+          >
+            PDF全体：{totalPdfPageCount}ページ
+            <br />
+            表紙1P ＋ 本文
+            {finalPrintBodyPageCount}P ＋ 裏表紙1P
+          </div>
 
           <button
             type="button"
@@ -651,9 +810,7 @@ export default function FinalPage() {
           })}
 
           {/* 奥付 */}
-          <VerticalPage
-            pageBreakAfter={false}
-          >
+          <VerticalPage>
             <div
               style={{
                 width: "100%",
@@ -677,6 +834,14 @@ export default function FinalPage() {
               編者　{book.editor}
             </div>
           </VerticalPage>
+
+          {/* 本文ページ数調整用の白紙 */}
+          {needsBlankBodyPage && (
+            <BlankPage />
+          )}
+
+          {/* 裏表紙 */}
+          <BackCoverPage />
         </div>
       </main>
     </>
