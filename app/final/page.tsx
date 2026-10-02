@@ -371,9 +371,21 @@ function PrintStyles() {
           display: none !important;
         }
 
+        .print-root {
+          width: 105mm !important;
+          min-height: auto !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          background: #fff !important;
+        }
+
         .print-page {
+          width: 105mm !important;
+          height: 148mm !important;
           margin: 0 !important;
           box-shadow: none !important;
+          break-inside: avoid !important;
+          page-break-inside: avoid !important;
         }
       }
     `}</style>
@@ -456,6 +468,7 @@ export default function FinalPage() {
         }}
       >
         <h1>完成した本</h1>
+
         <p>
           本文を組版しています……
         </p>
@@ -473,6 +486,7 @@ export default function FinalPage() {
         }}
       >
         <h1>完成した本</h1>
+
         <p>
           本のデータが見つかりません。
         </p>
@@ -487,6 +501,7 @@ export default function FinalPage() {
       <PrintStyles />
 
       <main
+        className="print-root"
         style={{
           background: "#f1f1f1",
           minHeight: "100vh",

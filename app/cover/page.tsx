@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   CoverStyle,
   CoverColor,
@@ -9,8 +10,10 @@ import {
 } from "@/lib/book";
 
 export default function CoverPage() {
-  const [title, setTitle] = useState("わたしの本");
-  const [editor, setEditor] = useState("編者");
+  const router = useRouter();
+
+  const [title, setTitle] = useState("");
+  const [editor, setEditor] = useState("");
   const [coverStyle, setCoverStyle] =
     useState<CoverStyle>("classic");
   const [coverColor, setCoverColor] =
@@ -25,26 +28,6 @@ export default function CoverPage() {
     setCoverColor(book.coverColor);
   }, []);
 
-  const colorClasses = {
-    red: {
-      text: "text-red-800",
-      border: "border-red-800",
-      bg: "bg-red-800",
-    },
-    blue: {
-      text: "text-blue-800",
-      border: "border-blue-800",
-      bg: "bg-blue-800",
-    },
-    green: {
-      text: "text-green-800",
-      border: "border-green-800",
-      bg: "bg-green-800",
-    },
-  };
-
-  const selectedColor = colorClasses[coverColor];
-
   function handleSave() {
     const currentBook = loadBookData();
 
@@ -57,383 +40,310 @@ export default function CoverPage() {
     });
 
     alert("この表紙で決定しました！");
+
+    router.push("/final");
   }
 
   return (
-    <main className="min-h-screen bg-stone-50 text-stone-800">
+    <main
+      style={{
+        maxWidth: "900px",
+        margin: "0 auto",
+        padding: "50px 20px 100px",
+      }}
+    >
+      <h1
+        style={{
+          fontSize: "32px",
+          fontWeight: "bold",
+          marginBottom: "40px",
+        }}
+      >
+        表紙を作る
+      </h1>
 
-      {/* ヘッダー */}
-      <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
-
-          <h1 className="text-2xl font-bold tracking-wide">
-            📖 編む本
-          </h1>
-
-          <div className="flex items-center gap-3 text-sm text-stone-400">
-            <span>① 作品を選ぶ</span>
-            <span>→</span>
-            <span>② 並べる</span>
-            <span>→</span>
-
-            <span className="font-bold text-stone-800">
-              ③ 表紙を作る
-            </span>
-
-            <span>→</span>
-            <span>④ プレビュー</span>
-            <span>→</span>
-            <span>⑤ 注文する</span>
-          </div>
-
-        </div>
-      </header>
-
-      {/* メイン */}
-      <div className="mx-auto max-w-6xl px-6 py-12">
-
-        <h2 className="text-4xl font-bold tracking-wide">
-          表紙を作りましょう
+      {/* 本のタイトル */}
+      <section style={{ marginBottom: "35px" }}>
+        <h2
+          style={{
+            fontSize: "20px",
+            fontWeight: "bold",
+            marginBottom: "12px",
+          }}
+        >
+          本のタイトル
         </h2>
 
-        <p className="mt-4 leading-8 text-stone-500">
-          本のタイトルと編者名を入力し、表紙のデザインを選んでください。
-          <br />
-          あなたの「編んだ本」が、ここで形になります。
-        </p>
-
-        <div className="mt-10 grid gap-8 lg:grid-cols-2">
-
-          {/* 左：設定 */}
-          <section className="rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
-
-            <h3 className="text-xl font-bold">
-              1. タイトルと編者名を入力
-            </h3>
-
-            {/* タイトル */}
-            <div className="mt-8">
-
-              <label className="text-sm font-bold">
-                タイトル
-              </label>
-
-              <input
-                type="text"
-                value={title}
-                onChange={(e) =>
-                  setTitle(e.target.value)
-                }
-                maxLength={50}
-                className="mt-2 w-full rounded-xl border border-stone-300 px-4 py-3 outline-none transition focus:border-stone-600"
-              />
-
-              <p className="mt-1 text-right text-xs text-stone-400">
-                {title.length} / 50
-              </p>
-
-            </div>
-
-            {/* 編者 */}
-            <div className="mt-5">
-
-              <label className="text-sm font-bold">
-                編者名
-              </label>
-
-              <input
-                type="text"
-                value={editor}
-                onChange={(e) =>
-                  setEditor(e.target.value)
-                }
-                maxLength={30}
-                className="mt-2 w-full rounded-xl border border-stone-300 px-4 py-3 outline-none transition focus:border-stone-600"
-              />
-
-              <p className="mt-1 text-right text-xs text-stone-400">
-                {editor.length} / 30
-              </p>
-
-            </div>
-
-            <div className="my-8 border-t border-stone-200" />
-
-            {/* デザイン選択 */}
-            <h3 className="text-xl font-bold">
-              2. 表紙のデザインを選ぶ
-            </h3>
-
-            <div className="mt-6 grid grid-cols-2 gap-4">
-
-              {/* 基本 */}
-              <button
-                type="button"
-                onClick={() =>
-                  setCoverStyle("classic")
-                }
-                className={`rounded-xl border-2 p-5 text-left transition ${
-                  coverStyle === "classic"
-                    ? "border-stone-700 bg-stone-50"
-                    : "border-stone-200 hover:border-stone-400"
-                }`}
-              >
-
-                <div className="flex items-center gap-3">
-
-                  <div
-                    className={`h-5 w-5 rounded-full border-2 ${
-                      coverStyle === "classic"
-                        ? "border-stone-700"
-                        : "border-stone-300"
-                    }`}
-                  >
-                    {coverStyle === "classic" && (
-                      <div className="m-1 h-2 w-2 rounded-full bg-stone-700" />
-                    )}
-                  </div>
-
-                  <span className="font-bold">
-                    基本の表紙デザイン
-                  </span>
-
-                </div>
-
-                <p className="mt-3 text-sm leading-6 text-stone-500">
-                  クラシックで上品な、
-                  <br />
-                  定番のデザインです。
-                </p>
-
-              </button>
-
-              {/* 自由 */}
-              <button
-                type="button"
-                onClick={() =>
-                  setCoverStyle("free")
-                }
-                className={`rounded-xl border-2 p-5 text-left transition ${
-                  coverStyle === "free"
-                    ? "border-stone-700 bg-stone-50"
-                    : "border-stone-200 hover:border-stone-400"
-                }`}
-              >
-
-                <div className="flex items-center gap-3">
-
-                  <div
-                    className={`h-5 w-5 rounded-full border-2 ${
-                      coverStyle === "free"
-                        ? "border-stone-700"
-                        : "border-stone-300"
-                    }`}
-                  >
-                    {coverStyle === "free" && (
-                      <div className="m-1 h-2 w-2 rounded-full bg-stone-700" />
-                    )}
-                  </div>
-
-                  <span className="font-bold">
-                    自由にデザインする
-                  </span>
-
-                </div>
-
-                <p className="mt-3 text-sm leading-6 text-stone-500">
-                  自分で色や文字、
-                  <br />
-                  レイアウトを設定できます。
-                </p>
-
-              </button>
-
-            </div>
-
-            {/* 基本デザインの色 */}
-            {coverStyle === "classic" && (
-              <div className="mt-8">
-
-                <h4 className="font-bold">
-                  表紙の色
-                </h4>
-
-                <div className="mt-4 flex gap-4">
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCoverColor("red")
-                    }
-                    aria-label="赤"
-                    className={`h-10 w-10 rounded-full bg-red-800 ${
-                      coverColor === "red"
-                        ? "ring-2 ring-stone-800 ring-offset-2"
-                        : ""
-                    }`}
-                  />
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCoverColor("blue")
-                    }
-                    aria-label="青"
-                    className={`h-10 w-10 rounded-full bg-blue-800 ${
-                      coverColor === "blue"
-                        ? "ring-2 ring-stone-800 ring-offset-2"
-                        : ""
-                    }`}
-                  />
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setCoverColor("green")
-                    }
-                    aria-label="緑"
-                    className={`h-10 w-10 rounded-full bg-green-800 ${
-                      coverColor === "green"
-                        ? "ring-2 ring-stone-800 ring-offset-2"
-                        : ""
-                    }`}
-                  />
-
-                </div>
-
-              </div>
-            )}
-
-            {/* 自由デザイン */}
-            {coverStyle === "free" && (
-              <div className="mt-8 rounded-xl bg-stone-50 p-5">
-
-                <p className="font-bold">
-                  自由デザイン
-                </p>
-
-                <p className="mt-2 text-sm leading-6 text-stone-500">
-                  自由デザイン機能は、これから追加していきます。
-                  <br />
-                  現在はプレビュー画面でレイアウトを確認できます。
-                </p>
-
-              </div>
-            )}
-
-            {/* 決定 */}
-            <button
-              type="button"
-              onClick={handleSave}
-              className="mt-10 w-full rounded-xl bg-stone-800 px-6 py-4 font-bold text-white transition hover:bg-stone-700"
-            >
-              この表紙で決定する　→
-            </button>
-
-          </section>
-
-          {/* 右：プレビュー */}
-          <section className="rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
-
-            <h3 className="text-xl font-bold">
-              プレビュー
-            </h3>
-
-            <div className="mt-8 flex min-h-[650px] items-center justify-center">
-
-              {/* 基本デザイン */}
-              {coverStyle === "classic" && (
-                <div
-                  className={`relative flex h-[520px] w-[360px] flex-col items-center justify-center bg-[#f3dfb5] px-12 text-center shadow-2xl ${selectedColor.text}`}
-                >
-
-                  {/* 外枠 */}
-                  <div
-                    className={`absolute inset-5 border-4 ${selectedColor.border}`}
-                  />
-
-                  {/* 内枠 */}
-                  <div
-                    className={`absolute inset-8 border ${selectedColor.border}`}
-                  />
-
-                  {/* 装飾 */}
-                  <div className="absolute left-9 top-9 text-3xl">
-                    ❧
-                  </div>
-
-                  <div className="absolute right-9 top-9 text-3xl">
-                    ❧
-                  </div>
-
-                  <div className="absolute bottom-9 left-9 rotate-180 text-3xl">
-                    ❧
-                  </div>
-
-                  <div className="absolute bottom-9 right-9 rotate-180 text-3xl">
-                    ❧
-                  </div>
-
-                  {/* タイトル */}
-                  <h4 className="relative z-10 text-4xl font-bold leading-relaxed">
-                    {title || "タイトル"}
-                  </h4>
-
-                  <div
-                    className={`relative z-10 my-8 h-px w-20 ${selectedColor.bg}`}
-                  />
-
-                  {/* 編者 */}
-                  <p className="relative z-10 text-sm">
-                    編者
-                  </p>
-
-                  <p className="relative z-10 mt-2 text-xl font-bold">
-                    {editor || "編者名"}
-                  </p>
-
-                  <p className="absolute bottom-12 text-xs">
-                    編む本
-                  </p>
-
-                </div>
-              )}
-
-              {/* 自由デザイン */}
-              {coverStyle === "free" && (
-                <div className="relative flex h-[520px] w-[360px] flex-col items-center justify-center overflow-hidden bg-gradient-to-br from-sky-100 via-stone-50 to-stone-200 px-10 text-center shadow-2xl">
-
-                  <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.8),transparent_35%),radial-gradient(circle_at_70%_80%,rgba(120,150,160,0.15),transparent_40%)]" />
-
-                  <h4 className="relative text-4xl font-bold leading-relaxed text-stone-800">
-                    {title || "タイトル"}
-                  </h4>
-
-                  <div className="relative my-8 h-px w-16 bg-stone-700" />
-
-                  <p className="relative text-sm text-stone-600">
-                    編者
-                  </p>
-
-                  <p className="relative mt-2 text-xl font-bold text-stone-800">
-                    {editor || "編者名"}
-                  </p>
-
-                </div>
-              )}
-
-            </div>
-
-            <p className="text-center text-xs leading-5 text-stone-400">
-              ※ これはプレビューです。実際の印刷では、
-              <br />
-              色味や質感が異なる場合があります。
-            </p>
-
-          </section>
-
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="わたしの本"
+          style={{
+            width: "100%",
+            maxWidth: "500px",
+            padding: "12px",
+            fontSize: "16px",
+            border: "1px solid #ccc",
+            borderRadius: "6px",
+            boxSizing: "border-box",
+          }}
+        />
+      </section>
+
+      {/* 編者 */}
+      <section style={{ marginBottom: "35px" }}>
+        <h2
+          style={{
+            fontSize: "20px",
+            fontWeight: "bold",
+            marginBottom: "12px",
+          }}
+        >
+          編者
+        </h2>
+
+        <input
+          type="text"
+          value={editor}
+          onChange={(e) => setEditor(e.target.value)}
+          placeholder="編者"
+          style={{
+            width: "100%",
+            maxWidth: "500px",
+            padding: "12px",
+            fontSize: "16px",
+            border: "1px solid #ccc",
+            borderRadius: "6px",
+            boxSizing: "border-box",
+          }}
+        />
+      </section>
+
+      {/* 表紙スタイル */}
+      <section style={{ marginBottom: "35px" }}>
+        <h2
+          style={{
+            fontSize: "20px",
+            fontWeight: "bold",
+            marginBottom: "12px",
+          }}
+        >
+          表紙スタイル
+        </h2>
+
+        <div
+          style={{
+            display: "flex",
+            gap: "12px",
+            flexWrap: "wrap",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setCoverStyle("classic")}
+            style={{
+              padding: "12px 20px",
+              borderRadius: "6px",
+              border:
+                coverStyle === "classic"
+                  ? "2px solid #111"
+                  : "1px solid #ccc",
+              background:
+                coverStyle === "classic"
+                  ? "#f0f0f0"
+                  : "#fff",
+              cursor: "pointer",
+            }}
+          >
+            基本デザイン
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setCoverStyle("free")}
+            style={{
+              padding: "12px 20px",
+              borderRadius: "6px",
+              border:
+                coverStyle === "free"
+                  ? "2px solid #111"
+                  : "1px solid #ccc",
+              background:
+                coverStyle === "free"
+                  ? "#f0f0f0"
+                  : "#fff",
+              cursor: "pointer",
+            }}
+          >
+            自由デザイン
+          </button>
         </div>
+      </section>
 
+      {/* 表紙カラー */}
+      <section style={{ marginBottom: "45px" }}>
+        <h2
+          style={{
+            fontSize: "20px",
+            fontWeight: "bold",
+            marginBottom: "12px",
+          }}
+        >
+          表紙カラー
+        </h2>
+
+        <div
+          style={{
+            display: "flex",
+            gap: "12px",
+            flexWrap: "wrap",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setCoverColor("red")}
+            style={{
+              padding: "12px 20px",
+              borderRadius: "6px",
+              border:
+                coverColor === "red"
+                  ? "2px solid #111"
+                  : "1px solid #ccc",
+              background: "#d9534f",
+              color: "#fff",
+              cursor: "pointer",
+            }}
+          >
+            赤
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setCoverColor("blue")}
+            style={{
+              padding: "12px 20px",
+              borderRadius: "6px",
+              border:
+                coverColor === "blue"
+                  ? "2px solid #111"
+                  : "1px solid #ccc",
+              background: "#4285c5",
+              color: "#fff",
+              cursor: "pointer",
+            }}
+          >
+            青
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setCoverColor("green")}
+            style={{
+              padding: "12px 20px",
+              borderRadius: "6px",
+              border:
+                coverColor === "green"
+                  ? "2px solid #111"
+                  : "1px solid #ccc",
+              background: "#4f8a5b",
+              color: "#fff",
+              cursor: "pointer",
+            }}
+          >
+            緑
+          </button>
+        </div>
+      </section>
+
+      {/* プレビュー */}
+      <section
+        style={{
+          marginBottom: "45px",
+          padding: "30px",
+          background: "#f5f5f5",
+          borderRadius: "8px",
+        }}
+      >
+        <h2
+          style={{
+            fontSize: "20px",
+            fontWeight: "bold",
+            marginBottom: "20px",
+          }}
+        >
+          表紙プレビュー
+        </h2>
+
+        <div
+          style={{
+            width: "280px",
+            height: "395px",
+            margin: "0 auto",
+            background:
+              coverColor === "red"
+                ? "#9e2f2f"
+                : coverColor === "blue"
+                ? "#315f8f"
+                : "#47704e",
+            color: "#fff",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "30px",
+            boxSizing: "border-box",
+            textAlign: "center",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: "28px",
+              fontWeight: "bold",
+              writingMode: "vertical-rl",
+              textOrientation: "mixed",
+              lineHeight: 1.5,
+              minHeight: "220px",
+            }}
+          >
+            {title || "わたしの本"}
+          </div>
+
+          <div
+            style={{
+              marginTop: "30px",
+              fontSize: "16px",
+            }}
+          >
+            {editor || "編者"}
+          </div>
+        </div>
+      </section>
+
+      {/* 決定ボタン */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+        }}
+      >
+        <button
+          type="button"
+          onClick={handleSave}
+          style={{
+            padding: "15px 40px",
+            fontSize: "18px",
+            fontWeight: "bold",
+            color: "#fff",
+            background: "#111",
+            border: "none",
+            borderRadius: "8px",
+            cursor: "pointer",
+          }}
+        >
+          この表紙で決定
+        </button>
       </div>
     </main>
   );
