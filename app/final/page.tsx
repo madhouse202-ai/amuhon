@@ -1,10 +1,19 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
+
 import {
   loadBookData,
   type BookData,
 } from "@/lib/book";
+
+/* =========================================================
+   基本設定
+========================================================= */
 
 const CHARS_PER_COLUMN = 40;
 const COLUMNS_PER_PAGE = 16;
@@ -15,410 +24,210 @@ const PAGE_HEIGHT = "148mm";
 const BODY_FONT_SIZE = "8.5pt";
 
 const CONTENT_WIDTH = "87mm";
+
+/*
+ * 本文の縦方向を少し広げる。
+ *
+ * これまで：
+ *   126mm
+ *
+ * 今回：
+ *   132mm
+ *
+ * 40文字を収めるための高さを確保しつつ、
+ * 本文全体をページ上端から少し下げる。
+ */
 const CONTENT_HEIGHT = "126mm";
+const BODY_COLUMN_HEIGHT = "132mm";
+
 const COLUMN_WIDTH = "5.4mm";
 
+/*
+ * 本文をページ上端から下げる量。
+ *
+ * padding-top ではなく、
+ * 本文領域そのものを広げて位置を調整する。
+ */
+const BODY_TOP_OFFSET = "7mm";
+
 /* =========================================================
-   データ型
+   型
 ========================================================= */
-
-type RubyPart = {
-  type: "ruby";
-  text: string;
-  ruby: string;
-};
-
-type TextPart = {
-  type: "text";
-  text: string;
-};
-
-type ContentPart = RubyPart | TextPart;
 
 type WorkText = {
   id: string;
   title: string;
   author: string;
   text: string;
-  content: ContentPart[];
   error?: string;
 };
 
-type LayoutTextUnit = {
+type LayoutUnit = {
   type: "text";
   text: string;
 };
 
-type LayoutRubyUnit = {
-  type: "ruby";
-  text: string;
-  ruby: string;
-};
-
-type LayoutNewlineUnit = {
-  type: "newline";
-};
-
-type LayoutUnit =
-  | LayoutTextUnit
-  | LayoutRubyUnit
-  | LayoutNewlineUnit;
-
 /* =========================================================
-   縦書き禁則処理
+   禁則処理
 ========================================================= */
 
-/*
- * 行頭に来てほしくない文字
- */
-const KINSOKU_LINE_START = new Set([
-  "、",
-  "。",
-  "，",
-  "．",
-  "、",
-  "。",
-  "」",
-  "』",
-  "）",
-  "］",
-  "〕",
-  "〉",
-  "》",
-  "】",
-  "』",
-  "〙",
-  "〗",
-  "】",
-  "’",
-  "”",
-  "〕",
-  "〉",
-  "》",
-  "！",
-  "？",
-  "｣",
-]);
-
-/*
- * 行末に来てほしくない文字
- */
-const KINSOKU_LINE_END = new Set([
-  "「",
-  "『",
-  "（",
-  "［",
-  "〔",
-  "〈",
-  "《",
-  "【",
-  "〘",
-  "〚",
-  "“",
-  "‘",
-]);
-
-function getUnitText(
-  unit: LayoutUnit
-): string {
-  if (unit.type === "newline") {
-    return "";
-  }
-
-  return unit.text;
-}
-
-function getUnitLength(
-  unit: LayoutUnit
-): number {
-  if (unit.type === "newline") {
-    return 0;
-  }
-
-  return Math.max(1, unit.text.length);
-}
-
-function isLineStartKinsoku(
-  unit: LayoutUnit
-): boolean {
-  if (unit.type === "newline") {
-    return false;
-  }
-
-  const text = getUnitText(unit);
-
-  return (
-    text.length > 0 &&
-    KINSOKU_LINE_START.has(text[0])
+function isLineStartKinsoku(char: string) {
+  return "、。，．：；？！‼⁇⁈⁉・ヽヾ々ー）］】〕〉》」』〙〗〟’”｣｝〉》".includes(
+    char,
   );
 }
 
-function isLineEndKinsoku(
-  unit: LayoutUnit
-): boolean {
-  if (unit.type === "newline") {
-    return false;
-  }
-
-  const text = getUnitText(unit);
-
-  return (
-    text.length > 0 &&
-    KINSOKU_LINE_END.has(
-      text[text.length - 1]
-    )
+function isLineEndKinsoku(char: string) {
+  return "「『（［【〔〈《〘〖〝‘“".includes(
+    char,
   );
 }
 
 /* =========================================================
-   APIの本文データ → 組版用Unit
+   テキスト → LayoutUnit
 ========================================================= */
 
-function contentToLayoutUnits(
-  content: ContentPart[]
-): LayoutUnit[] {
-  const units: LayoutUnit[] = [];
-
-  for (const part of content) {
-    if (part.type === "ruby") {
-      /*
-       * ルビのベース文字とルビを1つのUnitとして扱う。
-       * 表示時には native <ruby> を使う。
-       */
-      units.push({
-        type: "ruby",
-        text: part.text,
-        ruby: part.ruby,
-      });
-
-      continue;
-    }
-
-    const text = part.text;
-
-    for (const char of text) {
-      if (char === "\n") {
-        units.push({
-          type: "newline",
-        });
-      } else {
-        units.push({
-          type: "text",
-          text: char,
-        });
-      }
-    }
-  }
-
-  return units;
-}
-
-/*
- * content が取れなかった場合のフォールバック
- */
 function textToLayoutUnits(
-  text: string
+  text: string,
 ): LayoutUnit[] {
-  const units: LayoutUnit[] = [];
-
-  const normalized = text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n");
-
-  for (const char of normalized) {
-    if (char === "\n") {
-      units.push({
-        type: "newline",
-      });
-    } else {
-      units.push({
-        type: "text",
-        text: char,
-      });
-    }
+  if (!text) {
+    return [];
   }
 
-  return units;
+  return Array.from(text).map(
+    (char): LayoutUnit => ({
+      type: "text",
+      text: char,
+    }),
+  );
 }
 
 /* =========================================================
-   1段落 → 縦1列
+   1段落を縦列へ分割
 ========================================================= */
 
 function splitParagraphIntoColumns(
-  paragraph: LayoutUnit[]
+  units: LayoutUnit[],
 ): LayoutUnit[][] {
   const columns: LayoutUnit[][] = [];
 
-  let currentColumn: LayoutUnit[] = [];
-  let currentLength = 0;
+  let current: LayoutUnit[] = [];
 
-  for (let i = 0; i < paragraph.length; i += 1) {
-    const unit = paragraph[i];
+  const flush = () => {
+    if (current.length > 0) {
+      columns.push(current);
+      current = [];
+    }
+  };
 
-    if (unit.type === "newline") {
+  for (const unit of units) {
+    const char = unit.text;
+
+    if (!char) {
       continue;
     }
 
-    const unitLength = getUnitLength(unit);
+    if (char === "\n") {
+      flush();
+      continue;
+    }
 
-    /*
-     * 通常の文字数上限
-     */
     if (
-      currentLength + unitLength >
-      CHARS_PER_COLUMN
+      current.length >= CHARS_PER_COLUMN
     ) {
-      /*
-       * 現在の列の最後が
-       * 行末禁則文字なら、できるだけ次の列へ送る。
-       */
       if (
-        currentColumn.length > 0 &&
-        isLineEndKinsoku(
-          currentColumn[
-            currentColumn.length - 1
-          ]
-        )
+        isLineStartKinsoku(char) &&
+        current.length > 1
       ) {
-        const last =
-          currentColumn.pop();
+        const last = current.pop();
+
+        flush();
 
         if (last) {
-          currentLength -=
-            getUnitLength(last);
+          current.push(last);
         }
+
+        current.push(unit);
+
+        continue;
       }
 
-      if (currentColumn.length > 0) {
-        columns.push(currentColumn);
-      }
-
-      currentColumn = [];
-      currentLength = 0;
-
-      /*
-       * 今から入れる文字が行頭禁則なら、
-       * 可能なら前の列の最後に残す。
-       */
-      if (
-        isLineStartKinsoku(unit) &&
-        columns.length > 0
-      ) {
-        const previousColumn =
-          columns[columns.length - 1];
-
-        if (
-          previousColumn.length <
-          CHARS_PER_COLUMN
-        ) {
-          previousColumn.push(unit);
-          continue;
-        }
-      }
+      flush();
     }
 
-    /*
-     * 行頭禁則処理
-     *
-     * すでに現在列がいっぱいに近い場合、
-     * 句読点などを次の列の先頭に置かない。
-     */
     if (
-      currentColumn.length > 0 &&
-      currentLength >= CHARS_PER_COLUMN
+      current.length ===
+        CHARS_PER_COLUMN - 1 &&
+      isLineEndKinsoku(char)
     ) {
-      columns.push(currentColumn);
-      currentColumn = [];
-      currentLength = 0;
+      flush();
     }
 
-    currentColumn.push(unit);
-    currentLength += unitLength;
+    current.push(unit);
   }
 
-  if (currentColumn.length > 0) {
-    columns.push(currentColumn);
-  }
+  flush();
 
   return columns;
 }
 
 /* =========================================================
-   全本文 → 縦列
+   本文 → 縦列
 ========================================================= */
 
-function splitContentIntoColumns(
-  units: LayoutUnit[]
+function splitTextIntoColumns(
+  text: string,
 ): LayoutUnit[][] {
   const columns: LayoutUnit[][] = [];
 
-  let paragraph: LayoutUnit[] = [];
+  const paragraphs = text.split(
+    /\r?\n/,
+  );
 
-  function flushParagraph() {
-    if (paragraph.length === 0) {
-      columns.push([]);
-      return;
+  for (const paragraph of paragraphs) {
+    if (!paragraph.trim()) {
+      continue;
     }
+
+    const units =
+      textToLayoutUnits(paragraph);
 
     const paragraphColumns =
-      splitParagraphIntoColumns(
-        paragraph
-      );
+      splitParagraphIntoColumns(units);
 
-    columns.push(
-      ...paragraphColumns
-    );
-
-    paragraph = [];
-  }
-
-  for (const unit of units) {
-    if (unit.type === "newline") {
-      flushParagraph();
-    } else {
-      paragraph.push(unit);
-    }
-  }
-
-  if (paragraph.length > 0) {
-    flushParagraph();
-  }
-
-  if (columns.length === 0) {
-    columns.push([]);
+    columns.push(...paragraphColumns);
   }
 
   return columns;
 }
 
 /* =========================================================
-   列 → ページ
+   本文 → ページ
 ========================================================= */
 
-function splitContentIntoPages(
-  units: LayoutUnit[]
+function splitTextIntoPages(
+  text: string,
 ): LayoutUnit[][][] {
   const columns =
-    splitContentIntoColumns(units);
+    splitTextIntoColumns(text);
 
   const pages: LayoutUnit[][][] = [];
 
   for (
-    let i = 0;
-    i < columns.length;
-    i += COLUMNS_PER_PAGE
+    let index = 0;
+    index < columns.length;
+    index += COLUMNS_PER_PAGE
   ) {
     pages.push(
       columns.slice(
-        i,
-        i + COLUMNS_PER_PAGE
-      )
+        index,
+        index + COLUMNS_PER_PAGE,
+      ),
     );
   }
 
   if (pages.length === 0) {
-    pages.push([[]]);
+    pages.push([]);
   }
 
   return pages;
@@ -429,78 +238,52 @@ function splitContentIntoPages(
 ========================================================= */
 
 function CoverPage({
-  title,
-  editor,
-  coverColor,
+  data,
 }: {
-  title: string;
-  editor: string;
-  coverColor: string;
+  data: BookData;
 }) {
-  const colorMap: Record<
-    string,
-    string
-  > = {
-    red: "#8f2f2f",
-    blue: "#315b7d",
-    green: "#42634b",
-  };
-
-  const backgroundColor =
-    colorMap[coverColor] ??
-    "#8f2f2f";
-
   return (
-    <section
+    <div
       className="print-page"
       style={{
         width: PAGE_WIDTH,
         height: PAGE_HEIGHT,
-        background: backgroundColor,
-        color: "#fff",
+        background: "#f8f3df",
         boxSizing: "border-box",
-        margin: "0 auto 40px",
-        padding: "16mm 12mm",
+        position: "relative",
+        overflow: "hidden",
         display: "flex",
-        flexDirection: "column",
-        justifyContent:
-          "space-between",
         alignItems: "center",
-        pageBreakAfter: "always",
-        breakAfter: "page",
+        justifyContent: "center",
+        fontFamily: "serif",
       }}
     >
       <div
         style={{
-          writingMode:
-            "vertical-rl",
-          textOrientation: "mixed",
-          fontFamily: "serif",
-          fontSize: "22pt",
-          lineHeight: 1,
-          letterSpacing: "0",
-          minHeight: "75mm",
-          display: "flex",
-          alignItems: "center",
+          textAlign: "center",
+          padding: "12mm",
         }}
       >
-        {title}
-      </div>
+        <div
+          style={{
+            fontSize: "20pt",
+            letterSpacing: "0.08em",
+            marginBottom: "12mm",
+          }}
+        >
+          {data.title}
+        </div>
 
-      <div
-        style={{
-          writingMode:
-            "vertical-rl",
-          textOrientation: "mixed",
-          fontFamily: "serif",
-          fontSize: "10pt",
-          lineHeight: 1,
-          letterSpacing: "0",
-        }}
-      >
-        編者　{editor}
+        <div
+          style={{
+            fontSize: "9pt",
+            color: "#555",
+          }}
+        >
+          {data.editor}
+        </div>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -511,107 +294,97 @@ function CoverPage({
 function VerticalPage({
   children,
   pageNumber,
-  pageBreakAfter = true,
 }: {
-  children: ReactNode;
+  children?: ReactNode;
   pageNumber?: number;
-  pageBreakAfter?: boolean;
 }) {
   return (
-    <article
+    <div
       className="print-page"
       style={{
         width: PAGE_WIDTH,
         height: PAGE_HEIGHT,
+        background: "#f8f3df",
         boxSizing: "border-box",
-        background: "#fff",
-        margin: "0 auto 40px",
-        padding: "11mm 9mm",
         position: "relative",
-        boxShadow:
-          "0 2px 10px rgba(0,0,0,0.10)",
-        pageBreakAfter:
-          pageBreakAfter
-            ? "always"
-            : "auto",
-        breakAfter:
-          pageBreakAfter
-            ? "page"
-            : "auto",
         overflow: "hidden",
+        fontFamily: "serif",
       }}
     >
       {children}
 
-      {pageNumber !== undefined && (
+      {pageNumber !== undefined ? (
         <div
           style={{
             position: "absolute",
-            bottom: "5mm",
+            bottom: "3.5mm",
             left: 0,
             right: 0,
             textAlign: "center",
-            fontFamily: "serif",
             fontSize: "8pt",
             color: "#555",
           }}
         >
           {pageNumber}
         </div>
-      )}
-    </article>
+      ) : null}
+    </div>
   );
 }
 
 /* =========================================================
-   扉
+   タイトルページ
 ========================================================= */
 
 function TitlePage({
   title,
   author,
+  pageNumber,
 }: {
   title: string;
   author?: string;
+  pageNumber?: number;
 }) {
   return (
-    <VerticalPage>
+    <VerticalPage
+      pageNumber={pageNumber}
+    >
       <div
         style={{
-          width: "100%",
-          height: "100%",
-          boxSizing: "border-box",
-          writingMode:
-            "vertical-rl",
+          width: CONTENT_WIDTH,
+          height: CONTENT_HEIGHT,
+          margin: "0 auto",
+          display: "flex",
+          flexDirection: "row-reverse",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: "8mm",
+          writingMode: "vertical-rl",
           textOrientation: "mixed",
           fontFamily: "serif",
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          gap: "18mm",
         }}
       >
         <div
           style={{
-            fontSize: "16pt",
-            lineHeight: 1,
-            letterSpacing: "0",
+            fontSize: "13pt",
+            lineHeight: 1.8,
+            letterSpacing: "0.04em",
           }}
         >
           {title}
         </div>
 
-        {author && (
+        {author ? (
           <div
             style={{
-              fontSize: "9pt",
-              lineHeight: 1,
-              letterSpacing: "0",
+              fontSize: "8pt",
+              color: "#555",
+              lineHeight: 1.8,
             }}
           >
             {author}
           </div>
-        )}
+        ) : null}
       </div>
     </VerticalPage>
   );
@@ -623,44 +396,78 @@ function TitlePage({
 
 function TableOfContents({
   works,
+  pageNumbers,
 }: {
-  works: BookData["works"];
+  works: WorkText[];
+  pageNumbers: number[];
 }) {
   return (
     <VerticalPage>
       <div
         style={{
-          width: "100%",
-          height: "100%",
+          width: CONTENT_WIDTH,
+          height: CONTENT_HEIGHT,
+          margin: "0 auto",
+          padding: "8mm 6mm",
           boxSizing: "border-box",
-          padding:
-            "8mm 8mm 8mm 10mm",
-          writingMode:
-            "vertical-rl",
-          textOrientation: "mixed",
-          fontFamily: "serif",
           display: "flex",
-          gap: "8mm",
+          flexDirection: "row-reverse",
           alignItems: "flex-start",
           justifyContent: "center",
-          overflow: "hidden",
+          gap: "8mm",
+          writingMode: "vertical-rl",
+          textOrientation: "mixed",
+          fontFamily: "serif",
+          fontSize: "8.5pt",
+          lineHeight: 1.8,
         }}
       >
-        {works.map(
-          (work) => (
-            <div
-              key={work.id}
-              style={{
-                fontSize: "9pt",
-                lineHeight: 1,
-                whiteSpace: "nowrap",
-                letterSpacing: "0",
-              }}
-            >
-              {work.title}
-            </div>
-          )
-        )}
+        <div
+          style={{
+            fontSize: "11pt",
+            letterSpacing: "0.08em",
+            marginLeft: "8mm",
+          }}
+        >
+          目次
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "4mm",
+          }}
+        >
+          {works.map(
+            (work, index) => (
+              <div
+                key={work.id}
+                style={{
+                  display: "flex",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: "4mm",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <span>
+                  {work.title}
+                </span>
+
+                <span
+                  style={{
+                    fontSize: "7.5pt",
+                    color: "#555",
+                  }}
+                >
+                  {pageNumbers[index] ??
+                    ""}
+                </span>
+              </div>
+            ),
+          )}
+        </div>
       </div>
     </VerticalPage>
   );
@@ -677,16 +484,6 @@ function BodyPage({
   columns: LayoutUnit[][];
   pageNumber: number;
 }) {
-  /*
-   * ここを明示的に型付けする。
-   *
-   * これによって
-   *
-   * Parameter 'unit' implicitly has an 'any' type
-   * Parameter 'unitIndex' implicitly has an 'any' type
-   *
-   * を防ぐ。
-   */
   const paddedColumns: Array<
     LayoutUnit[] | null
   > = [
@@ -695,11 +492,129 @@ function BodyPage({
       Math.max(
         0,
         COLUMNS_PER_PAGE -
-          columns.length
-      )
+          columns.length,
+      ),
     ).fill(null),
   ];
 
+  return (
+    <VerticalPage
+      pageNumber={pageNumber}
+    >
+      {/*
+       * 本文全体を3mm下げる。
+       *
+       * padding-top は使わない。
+       * padding で高さを消費すると、
+       * 40文字目が下端で切れるため。
+       */}
+      <div
+        style={{
+          width: CONTENT_WIDTH,
+
+          /*
+           * 126mmではなく132mm確保。
+           */
+          height: BODY_COLUMN_HEIGHT,
+
+          /*
+           * ページ上端から3mm下げる。
+           */
+          marginTop: BODY_TOP_OFFSET,
+          marginLeft: "auto",
+          marginRight: "auto",
+
+          display: "flex",
+          flexDirection: "row-reverse",
+          alignItems: "flex-start",
+          justifyContent: "flex-start",
+
+          overflow: "visible",
+        }}
+      >
+        {paddedColumns.map(
+          (
+            column,
+            columnIndex,
+          ) => (
+            <div
+              key={columnIndex}
+              lang="ja"
+              style={{
+                width: COLUMN_WIDTH,
+
+                /*
+                 * 132mmの高さをそのまま本文に使う。
+                 */
+                height: BODY_COLUMN_HEIGHT,
+
+                flex: `0 0 ${COLUMN_WIDTH}`,
+
+                boxSizing: "border-box",
+
+                writingMode:
+                  "vertical-rl",
+
+                textOrientation:
+                  "mixed",
+
+                fontFamily: "serif",
+
+                fontSize:
+                  BODY_FONT_SIZE,
+
+                lineHeight: 1,
+                letterSpacing: "0",
+
+                lineBreak: "strict",
+
+                wordBreak: "normal",
+
+                overflowWrap:
+                  "normal",
+
+                whiteSpace:
+                  "nowrap",
+
+                /*
+                 * ここで切らない。
+                 */
+                overflow: "visible",
+              }}
+            >
+              {column
+                ? column.map(
+                    (
+                      unit,
+                      unitIndex,
+                    ) => (
+                      <span
+                        key={unitIndex}
+                      >
+                        {
+                          unit.text
+                        }
+                      </span>
+                    ),
+                  )
+                : null}
+            </div>
+          ),
+        )}
+      </div>
+    </VerticalPage>
+  );
+}
+
+/* =========================================================
+   奥付
+========================================================= */
+
+function ColophonPage({
+  pageNumber,
+}: {
+  pageNumber: number;
+}) {
   return (
     <VerticalPage
       pageNumber={pageNumber}
@@ -710,150 +625,43 @@ function BodyPage({
           height: CONTENT_HEIGHT,
           margin: "0 auto",
           display: "flex",
-          flexDirection:
-            "row-reverse",
           alignItems: "flex-start",
-          justifyContent:
-            "flex-start",
-          overflow: "hidden",
+          justifyContent: "center",
+          writingMode: "vertical-rl",
+          textOrientation: "mixed",
+          fontFamily: "serif",
+          fontSize: "7.5pt",
+          lineHeight: 1.8,
+          paddingTop: "15mm",
+          boxSizing: "border-box",
         }}
       >
-        {paddedColumns.map(
-          (
-            column: LayoutUnit[] | null,
-            columnIndex: number
-          ) => (
-            <div
-              key={columnIndex}
-              style={{
-                width: COLUMN_WIDTH,
-                height: CONTENT_HEIGHT,
-                flex: `0 0 ${COLUMN_WIDTH}`,
-                boxSizing: "border-box",
-                writingMode:
-                  "vertical-rl",
-                textOrientation:
-                  "mixed",
-                fontFamily: "serif",
-                fontSize:
-                  BODY_FONT_SIZE,
-                lineHeight: 1,
-                letterSpacing: "0",
-                overflow: "hidden",
-                wordBreak: "normal",
-                overflowWrap:
-                  "normal",
-              }}
-            >
-              {column
-                ? column.map(
-                    (
-                      unit: LayoutUnit,
-                      unitIndex: number
-                    ) => {
-                      /*
-                       * 改行
-                       */
-                      if (
-                        unit.type ===
-                        "newline"
-                      ) {
-                        return (
-                          <span
-                            key={
-                              unitIndex
-                            }
-                          >
-                            {"\n"}
-                          </span>
-                        );
-                      }
-
-                      /*
-                       * ルビ
-                       */
-                      if (
-                        unit.type ===
-                        "ruby"
-                      ) {
-                        return (
-                          <ruby
-                            key={
-                              unitIndex
-                            }
-                            style={{
-                              rubyPosition:
-                                "over",
-                            }}
-                          >
-                            {unit.text}
-
-                            <rt
-                              style={{
-                                fontSize:
-                                  "0.5em",
-                                lineHeight: 1,
-                              }}
-                            >
-                              {
-                                unit.ruby
-                              }
-                            </rt>
-                          </ruby>
-                        );
-                      }
-
-                      /*
-                       * 通常文字
-                       */
-                      return (
-                        <span
-                          key={
-                            unitIndex
-                          }
-                        >
-                          {unit.text}
-                        </span>
-                      );
-                    }
-                  )
-                : null}
-            </div>
-          )
-        )}
+        <div>
+          編む本
+        </div>
       </div>
     </VerticalPage>
   );
 }
 
 /* =========================================================
-   印刷CSS
+   印刷用CSS
 ========================================================= */
 
 function PrintStyles() {
   return (
-    <style>{`
-      @page {
-        size: A6 portrait;
-        margin: 0;
-      }
-
+    <style jsx global>{`
       @media print {
         html,
         body {
-          width: 105mm;
-          margin: 0;
-          padding: 0;
+          margin: 0 !important;
+          padding: 0 !important;
           background: #fff !important;
         }
 
         body {
-          -webkit-print-color-adjust: exact;
-          print-color-adjust: exact;
-        }
-
-        .screen-only {
-          display: none !important;
+          -webkit-print-color-adjust: exact !important;
+          print-color-adjust: exact !important;
         }
 
         .print-root {
@@ -871,6 +679,12 @@ function PrintStyles() {
           box-shadow: none !important;
           break-inside: avoid !important;
           page-break-inside: avoid !important;
+          overflow: hidden !important;
+        }
+
+        @page {
+          size: A6 portrait;
+          margin: 0;
         }
       }
     `}</style>
@@ -878,135 +692,368 @@ function PrintStyles() {
 }
 
 /* =========================================================
-   完成本ページ
+   Final Page
 ========================================================= */
 
 export default function FinalPage() {
-  const [book, setBook] =
-    useState<BookData | null>(
-      null
-    );
+  const [
+    data,
+    setData,
+  ] = useState<BookData | null>(
+    null,
+  );
 
-  const [worksText, setWorksText] =
-    useState<WorkText[]>([]);
+  const [
+    works,
+    setWorks,
+  ] = useState<WorkText[]>([]);
 
-  const [loading, setLoading] =
-    useState(true);
+  const [
+    loading,
+    setLoading,
+  ] = useState(true);
+
+  const [
+    error,
+    setError,
+  ] = useState("");
+
+  /* =======================================================
+     青空文庫本文取得
+  ======================================================= */
 
   useEffect(() => {
-    const savedBook =
-      loadBookData();
+    const book = loadBookData();
 
-    setBook(savedBook);
+    setData(book);
 
-    async function loadTexts() {
-      const results: WorkText[] =
-        [];
+    async function loadWorks() {
+      try {
+        setLoading(true);
+        setError("");
 
-      for (const work of savedBook.works) {
-        try {
-          const response =
-            await fetch(
-              `/api/aozora?url=${encodeURIComponent(
-                work.xhtmlUrl
-              )}`
-            );
+        const results: WorkText[] =
+          [];
 
-          if (!response.ok) {
-            throw new Error(
-              "本文の取得に失敗しました"
-            );
+        for (const work of book.works) {
+          try {
+            const response =
+              await fetch(
+                `/api/aozora?url=${encodeURIComponent(
+                  work.xhtmlUrl,
+                )}`,
+                {
+                  cache: "no-store",
+                },
+              );
+
+            const result =
+              await response.json();
+
+            if (!response.ok) {
+              throw new Error(
+                result.error ??
+                  "本文の取得に失敗しました。",
+              );
+            }
+
+            results.push({
+              id: work.id,
+              title: work.title,
+              author: work.author,
+              text:
+                result.text ?? "",
+            });
+          } catch (
+            workError
+          ) {
+            results.push({
+              id: work.id,
+              title: work.title,
+              author: work.author,
+              text: "",
+              error:
+                workError instanceof
+                Error
+                  ? workError.message
+                  : "本文の取得に失敗しました。",
+            });
           }
-
-          const data =
-            await response.json();
-
-          results.push({
-            id: work.id,
-            title: work.title,
-            author: work.author,
-            text:
-              data.text ?? "",
-            content:
-              Array.isArray(
-                data.content
-              )
-                ? data.content
-                : [],
-          });
-        } catch (error) {
-          results.push({
-            id: work.id,
-            title: work.title,
-            author: work.author,
-            text: "",
-            content: [],
-            error:
-              error instanceof
-              Error
-                ? error.message
-                : "本文の取得に失敗しました",
-          });
         }
-      }
 
-      setWorksText(results);
-      setLoading(false);
+        setWorks(results);
+      } catch (loadError) {
+        setError(
+          loadError instanceof
+            Error
+            ? loadError.message
+            : "本の読み込みに失敗しました。",
+        );
+      } finally {
+        setLoading(false);
+      }
     }
 
-    loadTexts();
+    loadWorks();
   }, []);
 
-  function handleCreatePdf() {
-    window.print();
-  }
+  /* =======================================================
+     ローディング
+  ======================================================= */
 
   if (loading) {
     return (
       <main
         style={{
-          maxWidth: "900px",
-          margin: "0 auto",
-          padding:
-            "60px 20px",
-          textAlign: "center",
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#eee",
+          fontFamily:
+            "sans-serif",
         }}
       >
-        <h1>完成した本</h1>
-
-        <p>
-          本文を組版しています……
-        </p>
+        本を組版しています……
       </main>
     );
   }
 
-  if (!book) {
+  /* =======================================================
+     エラー
+  ======================================================= */
+
+  if (error) {
     return (
       <main
         style={{
-          maxWidth: "900px",
-          margin: "0 auto",
-          padding:
-            "60px 20px",
+          padding: "40px",
+          fontFamily:
+            "sans-serif",
         }}
       >
-        <h1>完成した本</h1>
+        <h1>エラー</h1>
 
-        <p>
-          本のデータが見つかりません。
-        </p>
+        <p>{error}</p>
       </main>
+    );
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  /* =======================================================
+     ページ生成
+  ======================================================= */
+
+  const bodyPages: ReactNode[] =
+    [];
+
+  /*
+   * 1. 表紙
+   */
+
+  bodyPages.push(
+    <CoverPage
+      key="cover"
+      data={data}
+    />,
+  );
+
+  /*
+   * 2. 本全体のタイトルページ
+   */
+
+  bodyPages.push(
+    <TitlePage
+      key="book-title"
+      title={data.title}
+      author={data.editor}
+      pageNumber={1}
+    />,
+  );
+
+  /*
+   * 各作品の本文ページを計算
+   */
+
+  const workPageData =
+    works.map((work) => {
+      const pages =
+        splitTextIntoPages(
+          work.text,
+        );
+
+      return {
+        work,
+        pages,
+      };
+    });
+
+  /*
+   * 作品開始ページ番号
+   *
+   * 1 = 本全体タイトル
+   * 2 = 目次
+   * 3以降 = 各作品タイトル
+   */
+
+  const tocPageNumbers: number[] =
+    [];
+
+  let currentPageNumber = 3;
+
+  for (const item of workPageData) {
+    tocPageNumbers.push(
+      currentPageNumber,
+    );
+
+    /*
+     * 作品タイトルページ
+     */
+    currentPageNumber += 1;
+
+    /*
+     * 本文ページ
+     */
+    currentPageNumber +=
+      item.pages.length;
+  }
+
+  /*
+   * 3. 目次
+   */
+
+  bodyPages.push(
+    <TableOfContents
+      key="toc"
+      works={works}
+      pageNumbers={
+        tocPageNumbers
+      }
+    />,
+  );
+
+  /*
+   * 4. 各作品
+   */
+
+  for (
+    let workIndex = 0;
+    workIndex <
+    workPageData.length;
+    workIndex += 1
+  ) {
+    const item =
+      workPageData[
+        workIndex
+      ];
+
+    /*
+     * 作品タイトル
+     */
+
+    bodyPages.push(
+      <TitlePage
+        key={`${item.work.id}-title`}
+        title={
+          item.work.title
+        }
+        author={
+          item.work.author
+        }
+        pageNumber={
+          tocPageNumbers[
+            workIndex
+          ]
+        }
+      />,
+    );
+
+    /*
+     * 本文
+     */
+
+    for (
+      let pageIndex = 0;
+      pageIndex <
+      item.pages.length;
+      pageIndex += 1
+    ) {
+      bodyPages.push(
+        <BodyPage
+          key={`${item.work.id}-body-${pageIndex}`}
+          columns={
+            item.pages[
+              pageIndex
+            ]
+          }
+          pageNumber={
+            tocPageNumbers[
+              workIndex
+            ] +
+            1 +
+            pageIndex
+          }
+        />,
+      );
+    }
+  }
+
+  /*
+   * 5. 奥付
+   */
+
+  const colophonPageNumber =
+    currentPageNumber;
+
+  bodyPages.push(
+    <ColophonPage
+      key="colophon"
+      pageNumber={
+        colophonPageNumber
+      }
+    />,
+  );
+
+  /*
+   * 6. 本文部分を偶数ページにする
+   */
+
+  const contentPageCount =
+    bodyPages.length - 1;
+
+  if (
+    contentPageCount % 2 !==
+    0
+  ) {
+    bodyPages.push(
+      <VerticalPage
+        key="blank-page"
+      />,
     );
   }
 
   /*
-   * 本文ページのノンブル。
-   *
-   * 現在は「本全体の扉」「目次」「作品扉」は
-   * ノンブル対象外としている。
+   * 7. 裏表紙
    */
-  let bodyPageNumber = 1;
+
+  bodyPages.push(
+    <div
+      key="back-cover"
+      className="print-page"
+      style={{
+        width: PAGE_WIDTH,
+        height: PAGE_HEIGHT,
+        background: "#f8f3df",
+      }}
+    />,
+  );
+
+  /* =======================================================
+     表示
+  ======================================================= */
 
   return (
     <>
@@ -1015,251 +1062,31 @@ export default function FinalPage() {
       <main
         className="print-root"
         style={{
-          background: "#f1f1f1",
           minHeight: "100vh",
-          padding:
-            "50px 20px 100px",
+          background: "#ddd",
+          padding: "24px",
+          boxSizing:
+            "border-box",
+          display: "flex",
+          flexDirection:
+            "column",
+          alignItems: "center",
+          gap: "16px",
         }}
       >
-        {/* =================================================
-            画面上の操作部分
-        ================================================= */}
-
-        <div
-          className="screen-only"
-          style={{
-            width: "100%",
-            maxWidth: "700px",
-            margin:
-              "0 auto 40px",
-            textAlign: "center",
-          }}
-        >
-          <h1
-            style={{
-              fontFamily: "serif",
-              fontWeight: "normal",
-              marginBottom:
-                "12px",
-            }}
-          >
-            完成した本
-          </h1>
-
-          <p
-            style={{
-              margin: 0,
-              color: "#666",
-              fontSize: "14px",
-            }}
-          >
-            A6判　105mm ×
-            148mm
-            <br />
-            {CHARS_PER_COLUMN}
-            文字 ×{" "}
-            {COLUMNS_PER_PAGE}
-            列
-            <br />
-            1ページあたり{" "}
-            {CHARS_PER_COLUMN *
-              COLUMNS_PER_PAGE}
-            文字
-          </p>
-
-          <button
-            type="button"
-            onClick={
-              handleCreatePdf
-            }
-            style={{
-              marginTop: "24px",
-              padding:
-                "12px 28px",
-              border: "none",
-              borderRadius: "6px",
-              background: "#222",
-              color: "#fff",
-              fontSize: "15px",
-              cursor: "pointer",
-            }}
-          >
-            PDFを作成する
-          </button>
-
-          <p
-            style={{
-              marginTop: "10px",
-              fontSize: "12px",
-              color: "#777",
-            }}
-          >
-            「PDFを作成する」を押したあと、
-            「PDFとして保存」を選択してください。
-          </p>
-        </div>
-
-        {/* =================================================
-            本体
-        ================================================= */}
-
-        <div
-          style={{
-            width: "100%",
-          }}
-        >
-          {/* 表紙 */}
-          <CoverPage
-            title={book.title}
-            editor={book.editor}
-            coverColor={
-              book.coverColor
-            }
-          />
-
-          {/* 本全体の扉 */}
-          <TitlePage
-            title={book.title}
-            author={`編者　${book.editor}`}
-          />
-
-          {/* 目次 */}
-          {book.works.length >
-            0 && (
-            <TableOfContents
-              works={
-                book.works
-              }
-            />
-          )}
-
-          {/* =================================================
-              各作品
-          ================================================= */}
-
-          {worksText.map(
-            (work) => {
-              /*
-               * APIから返ってきたcontentを
-               * 優先して使う。
-               *
-               * contentがない古いデータの場合は
-               * textへフォールバック。
-               */
-              const units =
-                work.content.length >
-                0
-                  ? contentToLayoutUnits(
-                      work.content
-                    )
-                  : textToLayoutUnits(
-                      work.text
-                    );
-
-              const pages =
-                splitContentIntoPages(
-                  units
-                );
-
-              return (
-                <section
-                  key={work.id}
-                >
-                  {/* 作品扉 */}
-                  <TitlePage
-                    title={
-                      work.title
-                    }
-                    author={
-                      work.author
-                    }
-                  />
-
-                  {/* 本文 */}
-                  {work.error ? (
-                    <VerticalPage>
-                      <div
-                        style={{
-                          fontFamily:
-                            "serif",
-                          color:
-                            "#a00",
-                          writingMode:
-                            "vertical-rl",
-                        }}
-                      >
-                        {
-                          work.error
-                        }
-                      </div>
-                    </VerticalPage>
-                  ) : (
-                    pages.map(
-                      (
-                        pageColumns: LayoutUnit[][],
-                        index: number
-                      ) => {
-                        const currentPageNumber =
-                          bodyPageNumber;
-
-                        bodyPageNumber +=
-                          1;
-
-                        return (
-                          <BodyPage
-                            key={`${work.id}-${index}`}
-                            columns={
-                              pageColumns
-                            }
-                            pageNumber={
-                              currentPageNumber
-                            }
-                          />
-                        );
-                      }
-                    )
-                  )}
-                </section>
-              );
-            }
-          )}
-
-          {/* =================================================
-              奥付
-          ================================================= */}
-
-          <VerticalPage
-            pageBreakAfter={false}
-          >
+        {bodyPages.map(
+          (page, index) => (
             <div
+              key={index}
               style={{
-                width: "100%",
-                height: "100%",
-                writingMode:
-                  "vertical-rl",
-                textOrientation:
-                  "mixed",
-                fontFamily: "serif",
-                fontSize: "9pt",
-                lineHeight: 1.8,
-                letterSpacing: "0",
-                display: "flex",
-                justifyContent:
-                  "center",
-                alignItems:
-                  "center",
-                whiteSpace:
-                  "pre-wrap",
+                boxShadow:
+                  "0 2px 10px rgba(0,0,0,0.12)",
               }}
             >
-              編む本
-              {"\n"}
-              {book.title}
-              {"\n"}
-              編者　{book.editor}
+              {page}
             </div>
-          </VerticalPage>
-        </div>
+          ),
+        )}
       </main>
     </>
   );
