@@ -48,7 +48,7 @@ const COLUMN_WIDTH = "5.4mm";
  * padding-top ではなく、
  * 本文領域そのものを広げて位置を調整する。
  */
-const BODY_TOP_OFFSET = "7mm";
+const BODY_TOP_OFFSET = "10mm";
 
 /* =========================================================
    型
@@ -394,6 +394,8 @@ function TitlePage({
    目次
 ========================================================= */
 
+
+
 function TableOfContents({
   works,
   pageNumbers,
@@ -405,74 +407,59 @@ function TableOfContents({
     <VerticalPage>
       <div
         style={{
-          width: CONTENT_WIDTH,
-          height: CONTENT_HEIGHT,
-          margin: "0 auto",
-          padding: "8mm 6mm",
-          boxSizing: "border-box",
+          position: "absolute",
+          inset: 0,
           display: "flex",
           flexDirection: "row-reverse",
-          alignItems: "flex-start",
+          alignItems: "center",
           justifyContent: "center",
           gap: "8mm",
           writingMode: "vertical-rl",
-          textOrientation: "mixed",
+          textOrientation: "upright",
           fontFamily: "serif",
-          fontSize: "8.5pt",
-          lineHeight: 1.8,
+          boxSizing: "border-box",
+          padding: "12mm",
         }}
       >
-        <div
-          style={{
-            fontSize: "11pt",
-            letterSpacing: "0.08em",
-            marginLeft: "8mm",
-          }}
-        >
-          目次
-        </div>
-
+        {/* 作品タイトルとページ番号を、ひとつの縦書き列にする */}
         <div
           style={{
             display: "flex",
             flexDirection: "column",
-            gap: "4mm",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "8mm",
+            flexShrink: 0,
           }}
         >
-          {works.map(
-            (work, index) => (
-              <div
-                key={work.id}
+          {works.map((work, index) => (
+            <div
+              key={work.id}
+              style={{
+                writingMode: "vertical-rl",
+                textOrientation: "upright",
+                fontSize: "8.5pt",
+                lineHeight: 1.6,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span>{work.title}</span>
+              <span
                 style={{
-                  display: "flex",
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: "4mm",
-                  whiteSpace: "nowrap",
+                  fontSize: "7.5pt",
+                  color: "#a15b46",
+                  marginTop: "2mm",
                 }}
               >
-                <span>
-                  {work.title}
-                </span>
-
-                <span
-                  style={{
-                    fontSize: "7.5pt",
-                    color: "#555",
-                  }}
-                >
-                  {pageNumbers[index] ??
-                    ""}
-                </span>
-              </div>
-            ),
-          )}
+                {pageNumbers[index] ?? ""}
+              </span>
+            </div>
+          ))}
         </div>
       </div>
     </VerticalPage>
   );
 }
-
 /* =========================================================
    本文ページ
 ========================================================= */

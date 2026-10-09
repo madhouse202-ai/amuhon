@@ -1,257 +1,169 @@
-import { NextResponse } from "next/server";
 
-type RubyPart = {
-  type: "ruby";
-  text: string;
-  ruby: string;
-};
+import { NextResponse } from "next/server";
 
 type TextPart = {
   type: "text";
   text: string;
 };
 
-type ContentPart = RubyPart | TextPart;
+type ContentPart = TextPart;
 
-function decodeHtml(html: string) {
+/**
+ * HTMLエンティティを通常の文字に戻す
+ */
+function decodeHtml(html: string): string {
   return html
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#x27;/gi, "'")
-    .replace(/&#(\d+);/g, (_, code) => {
-      const value = Number(code);
-      return Number.isFinite(value)
-        ? String.fromCodePoint(value)
-        : "";
-    })
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => {
-      const value = parseInt(code, 16);
-      return Number.isFinite(value)
-        ? String.fromCodePoint(value)
-        : "";
-    });
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, decimal: string) =>
+      String.fromCodePoint(Number(decimal))
+    )
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) =>
+      String.fromCodePoint(parseInt(hex, 16))
+    );
 }
 
-function stripTags(html: string) {
-  return html.replace(/<[^>]+>/g, "");
+/**
+ * HTMLタグを取り除く
+ */
+function stripTags(html: string): string {
+  return html.replace(/<[^>]*>/g, "");
 }
 
-function normalizeText(text: string) {
+/**
+ * 本文の改行や空白を整える
+ */
+function normalizeText(text: string): string {
   return text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
+    .replace(/\r\n?/g, "\n")
     .replace(/\u00a0/g, " ")
     .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
 /**
- * 青空文庫XHTMLから、
- *
- * <ruby>本文<rt>ルビ</rt></ruby>
- *
- * を見つけて、ルビ情報を別構造にする。
- *
- * <rp>（</rp> や <rp>）</rp> は完全に無視する。
+ * 青空文庫HTMLから main_text の中身を抽出する
  */
-function parseRubyXhtml(html: string) {
-  const content: ContentPart[] = [];
+function extractMainText(html: string): string | null {
+  const openingTag = /<div\b[^>]*class=["'][^"']*\bmain_text\b[^"']*["'][^>]*>/i;
+  const match = openingTag.exec(html);
 
-  let cursor = 0;
+  if (!match || match.index === undefined) {
+    return null;
+  }
 
-  const rubyRegex =
-    /<ruby\b[^>]*>([\s\S]*?)<\/ruby>/gi;
+  const start = match.index + match[0].length;
+  const rest = html.slice(start);
+  const divTags = /<\/?div\b[^>]*>/gi;
 
-  let match: RegExpExecArray | null;
+  let depth = 1;
+  let lastIndex = 0;
+  let tagMatch: RegExpExecArray | null;
 
-  while ((match = rubyRegex.exec(html)) !== null) {
-    const before = html.slice(cursor, match.index);
+  while ((tagMatch = divTags.exec(rest)) !== null) {
+    const tag = tagMatch[0];
 
-    addPlainHtml(content, before);
+    if (/^<\/div/i.test(tag)) {
+      depth -= 1;
 
-    const rubyHtml = match[1];
-
-    const rtMatch =
-      rubyHtml.match(/<rt\b[^>]*>([\s\S]*?)<\/rt>/i);
-
-    if (!rtMatch) {
-      addPlainHtml(content, rubyHtml);
-      cursor = rubyRegex.lastIndex;
-      continue;
+      if (depth === 0) {
+        return rest.slice(0, tagMatch.index);
+      }
+    } else if (!/\/>$/.test(tag)) {
+      depth += 1;
     }
 
-    const baseHtml = rubyHtml
-      .replace(/<rt\b[^>]*>[\s\S]*?<\/rt>/gi, "")
-      .replace(/<rp\b[^>]*>[\s\S]*?<\/rp>/gi, "");
-
-    const base = normalizeInlineText(
-      decodeHtml(stripTags(baseHtml))
-    );
-
-    const ruby = normalizeInlineText(
-      decodeHtml(stripTags(rtMatch[1]))
-    );
-
-    if (base && ruby) {
-      content.push({
-        type: "ruby",
-        text: base,
-        ruby,
-      });
-    } else {
-      addPlainHtml(content, rubyHtml);
-    }
-
-    cursor = rubyRegex.lastIndex;
+    lastIndex = divTags.lastIndex;
   }
 
-  addPlainHtml(content, html.slice(cursor));
-
-  return content;
-}
-
-function addPlainHtml(
-  content: ContentPart[],
-  html: string
-) {
-  if (!html) {
-    return;
-  }
-
-  let text = html;
-
-  text = text
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "");
-
-  /*
-   * 改行を持つ要素を先に処理する。
-   */
-  text = text
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<\/div>/gi, "\n")
-    .replace(/<\/h[1-6]>/gi, "\n\n")
-    .replace(/<hr\b[^>]*>/gi, "\n");
-
-  /*
-   * 青空文庫XHTMLに含まれる注釈用要素などは
-   * 本文そのものではないので、タグだけ除去する。
-   */
-  text = stripTags(text);
-  text = decodeHtml(text);
-
-  if (!text) {
-    return;
-  }
-
-  content.push({
-    type: "text",
-    text,
-  });
-}
-
-function normalizeInlineText(text: string) {
-  return text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/\u00a0/g, " ")
-    .trim();
+  void lastIndex;
+  return null;
 }
 
 /**
- * 青空文庫のテキスト形式に残っている
- *
- * ［＃「本文」の左に「ルビ」のルビ］
- *
- * のような注記を処理する。
- *
- * 今回はまず本文側からルビを取り除き、
- * 構造化データとして保存するための前処理を行う。
+ * 青空文庫の本文HTMLをプレーンテキストに変換する
+ * ルビの読み仮名とルビ用括弧は、タグ除去より先に削除する
  */
-function parseAozoraRubyAnnotations(
-  content: ContentPart[]
-) {
-  const result: ContentPart[] = [];
+function parseMainTextHtml(html: string): string {
+  let text = html;
 
-  const rubyAnnotationRegex =
-    /(.+?)［＃「([^」]+)」の(?:左|右)に「([^」]+)」のルビ］/g;
-
-  for (const part of content) {
-    if (part.type !== "text") {
-      result.push(part);
-      continue;
-    }
-
-    let text = part.text;
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
-
-    rubyAnnotationRegex.lastIndex = 0;
-
-    while (
-      (match = rubyAnnotationRegex.exec(text)) !== null
-    ) {
-      const before = text.slice(
-        lastIndex,
-        match.index + match[1].length
-      );
-
-      if (before) {
-        result.push({
-          type: "text",
-          text: before,
-        });
-      }
-
-      result.push({
-        type: "ruby",
-        text: match[2],
-        ruby: match[3],
-      });
-
-      lastIndex =
-        match.index + match[0].length;
-    }
-
-    if (lastIndex === 0) {
-      result.push(part);
-    } else if (lastIndex < text.length) {
-      result.push({
-        type: "text",
-        text: text.slice(lastIndex),
-      });
-    }
-  }
-
-  return result;
-}
-
-function contentToPlainText(
-  content: ContentPart[]
-) {
-  return normalizeText(
-    content
-      .map((part) => part.text)
-      .join("")
+  // スクリプトやスタイルを削除
+  text = text.replace(
+    /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
+    ""
   );
+
+  // ルビの読み仮名を削除
+  text = text.replace(/<rt\b[^>]*>[\s\S]*?<\/rt\s*>/gi, "");
+
+  // ルビの代替表示用括弧を削除
+  text = text.replace(/<rp\b[^>]*>[\s\S]*?<\/rp\s*>/gi, "");
+
+  // ルビに関連する補助要素を削除
+  text = text.replace(/<\/?(?:ruby|rb|rtc)\b[^>]*>/gi, "");
+
+  // 改行に相当するHTML要素を改行へ変換
+  text = text.replace(/<br\b[^>]*\/?>/gi, "\n");
+  text = text.replace(
+    /<\/(?:p|div|h[1-6]|blockquote|pre|section|article)\s*>/gi,
+    "\n"
+  );
+  text = text.replace(
+    /<(?:p|div|h[1-6]|blockquote|pre|section|article)\b[^>]*>/gi,
+    ""
+  );
+  text = text.replace(/<hr\b[^>]*\/?>/gi, "\n");
+
+  // 残ったHTMLタグを取り除いてからエンティティを復元
+  text = stripTags(text);
+  text = decodeHtml(text);
+
+  return normalizeText(text);
 }
 
-function isAllowedAozoraUrl(value: string) {
+/**
+ * 既存データに残っている青空文庫形式のルビ記法も除去する
+ */
+function removeRubyAnnotations(text: string): string {
+  return text
+    // HTML形式のルビが文字列として残っている場合
+    .replace(/<rt\b[^>]*>[\s\S]*?<\/rt\s*>/gi, "")
+    .replace(/<rp\b[^>]*>[\s\S]*?<\/rp\s*>/gi, "")
+    .replace(/<\/?(?:ruby|rb|rtc)\b[^>]*>/gi, "")
+    // 青空文庫の注記形式：｜漢字《かんじ》
+    .replace(/｜([^《\n]+)《[^》\n]*》/g, "$1")
+    // 直前の文字に続くルビ形式：漢字《かんじ》
+    .replace(/([一-龯々〆ヵヶ]+)《[^》\n]*》/g, "$1")
+    // 括弧形式で残った読み仮名（HTMLのrp/rt除去後に使う）
+    .replace(/（[^（）\n]*）/g, (match) => {
+      // 一般の文章の括弧まで消さないよう、読み仮名らしい場合のみ除去
+      const inside = match.slice(1, -1);
+      return /^[ぁ-ゖァ-ヺー・ゔゕゖ]+$/.test(inside) ? "" : match;
+    })
+    .trim();
+}
+
+function makeContent(text: string): ContentPart[] {
+  return text ? [{ type: "text", text }] : [];
+}
+
+/**
+ * 青空文庫のURLだけ許可する
+ */
+function isAllowedAozoraUrl(value: string): boolean {
   try {
     const url = new URL(value);
 
     return (
       url.protocol === "https:" &&
-      (
-        url.hostname === "aozora.gr.jp" ||
-        url.hostname === "www.aozora.gr.jp"
-      )
+      (url.hostname === "aozora.gr.jp" ||
+        url.hostname === "www.aozora.gr.jp")
     );
   } catch {
     return false;
@@ -259,129 +171,78 @@ function isAllowedAozoraUrl(value: string) {
 }
 
 export async function GET(request: Request) {
-  const { searchParams } =
-    new URL(request.url);
-
-  const url =
-    searchParams.get("url")?.trim() ?? "";
-
-  if (!url) {
-    return NextResponse.json(
-      {
-        error:
-          "青空文庫のURLが指定されていません。",
-      },
-      { status: 400 }
-    );
-  }
-
-  if (!isAllowedAozoraUrl(url)) {
-    return NextResponse.json(
-      {
-        error:
-          "青空文庫のURLのみ取得できます。",
-      },
-      { status: 400 }
-    );
-  }
-
   try {
-    console.log(
-      "青空文庫本文を取得:",
-      url
-    );
+    const { searchParams } = new URL(request.url);
+    const sourceUrl = searchParams.get("url");
 
-    const response = await fetch(url, {
+    if (!sourceUrl || !isAllowedAozoraUrl(sourceUrl)) {
+      return NextResponse.json(
+        { error: "有効な青空文庫のURLを指定してください。" },
+        { status: 400 }
+      );
+    }
+
+    const response = await fetch(sourceUrl, {
+      headers: {
+        "User-Agent": "Amuhon/1.0",
+      },
       cache: "no-store",
     });
 
     if (!response.ok) {
-      throw new Error(
-        `青空文庫本文の取得に失敗しました: ${response.status}`
+      return NextResponse.json(
+        { error: "青空文庫から本文を取得できませんでした。" },
+        { status: 502 }
       );
     }
 
-    const buffer =
-      await response.arrayBuffer();
+    const buffer = await response.arrayBuffer();
+    const contentType = response.headers.get("content-type") ?? "";
 
-    const bytes =
-      new Uint8Array(buffer);
+    let html: string;
 
-    /*
-     * 文字コードを判定する。
-     */
-    const sample =
-      new TextDecoder("utf-8", {
-        fatal: false,
-      }).decode(bytes.slice(0, 4096));
-
-    const charsetMatch =
-      sample.match(
-        /charset=["']?([a-zA-Z0-9_-]+)/i
-      );
-
-    const charset =
-      charsetMatch?.[1]?.toLowerCase() ??
-      "utf-8";
-
-    let html = "";
-
-    if (
-      charset.includes("shift") ||
-      charset.includes("sjis")
-    ) {
-      html = new TextDecoder(
-        "shift_jis"
-      ).decode(bytes);
+    if (/shift[_-]?jis|sjis/i.test(contentType)) {
+      html = new TextDecoder("shift_jis").decode(buffer);
     } else {
-      html = new TextDecoder(
-        "utf-8"
-      ).decode(bytes);
+      const bytes = new Uint8Array(buffer);
+      const head = new TextDecoder("ascii").decode(bytes.slice(0, 500));
+
+      if (/charset\s*=\s*["']?shift[_-]?jis/i.test(head)) {
+        html = new TextDecoder("shift_jis").decode(buffer);
+      } else {
+        html = new TextDecoder("utf-8").decode(buffer);
+      }
     }
 
-    /*
-     * XHTMLからルビを含む構造を取得する。
-     */
-    let content =
-      parseRubyXhtml(html);
+    const mainTextHtml = extractMainText(html);
 
-    /*
-     * XHTMLではなく、
-     * 青空文庫注記形式が残っている場合にも対応する。
-     */
-    content =
-      parseAozoraRubyAnnotations(
-        content
+    if (!mainTextHtml) {
+      return NextResponse.json(
+        { error: "本文領域（main_text）が見つかりませんでした。" },
+        { status: 422 }
       );
+    }
 
-    /*
-     * 本文だけを取り出したプレーンテキスト。
-     *
-     * 現在のfinal/page.tsxはまだ
-     * data.textを使っているため、
-     * 次の段階まではこちらを返す。
-     */
-    const text =
-      contentToPlainText(content);
+    const parsedText = parseMainTextHtml(mainTextHtml);
+    const text = removeRubyAnnotations(parsedText);
+
+    if (!text) {
+      return NextResponse.json(
+        { error: "本文を抽出できませんでした。" },
+        { status: 422 }
+      );
+    }
 
     return NextResponse.json({
       text,
-      content,
-      sourceUrl: url,
+      content: makeContent(text),
+      sourceUrl,
     });
   } catch (error) {
-    console.error(
-      "青空文庫本文取得エラー:",
-      error
-    );
+    console.error("Aozora text fetch error:", error);
 
     return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "青空文庫本文の取得に失敗しました。",
-      },
+      { error: "本文の取得中にエラーが発生しました。" },
       { status: 500 }
     );
   }
