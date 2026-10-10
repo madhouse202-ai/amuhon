@@ -15,6 +15,8 @@ export default function PreviewPage() {
 
   useEffect(() => {
     const savedBook = loadBookData();
+    // Hydrate browser-only localStorage after mount to avoid server/client mismatch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setBook(savedBook);
   }, []);
 

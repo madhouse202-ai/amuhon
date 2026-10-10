@@ -24,3 +24,88 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* The named page size applies only to the final book's printable sheets. */
+@page amuhon-book {
+  size: 105mm 148mm;
+  margin: 0;
+}
+
+.print-sheet {
+  page: amuhon-book;
+}
+
+@media print {
+  html:has(.print-root),
+  html:has(.print-root) body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+
+  html:has(.print-root) body {
+    display: block !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .print-root {
+    display: block !important;
+    width: 105mm !important;
+    min-height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+
+  .print-controls {
+    display: none !important;
+  }
+
+  .print-sheet {
+    width: 105mm !important;
+    height: 148mm !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    break-after: page !important;
+    page-break-after: always !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .print-sheet:last-child {
+    break-after: auto !important;
+    page-break-after: auto !important;
+  }
+
+  .print-page:not(.cover-page) {
+    width: 105mm !important;
+    height: 148mm !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    overflow: visible !important;
+  }
+
+  .body-content > div {
+    line-height: 1 !important;
+    letter-spacing: 0 !important;
+  }
+
+  /* Each body glyph occupies one fixed em cell; ruby annotations are omitted. */
+  .print-character-cell {
+    position: absolute;
+    block-size: 1em;
+    box-sizing: border-box;
+    line-height: 1;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .cover-page--classic .cover-page__content {
+    outline: 1px solid currentColor;
+    outline-offset: 6mm;
+  }
+}

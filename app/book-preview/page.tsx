@@ -115,6 +115,8 @@ export default function BookPreviewPage() {
     const savedBook =
       loadBookData();
 
+    // This state is hydrated from browser-only localStorage after mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setBook(savedBook);
 
     if (
@@ -133,11 +135,14 @@ export default function BookPreviewPage() {
           const results =
             await Promise.all(
               savedBook.works.map(
-                async (title) => {
+                async (work) => {
+                  if (!work.xhtmlUrl) {
+                    throw new Error(`${work.title} の本文URLがありません。`);
+                  }
                   const response =
                     await fetch(
-                      `/api/aozora?title=${encodeURIComponent(
-                        title
+                      `/api/aozora?url=${encodeURIComponent(
+                        work.xhtmlUrl
                       )}`
                     );
 
@@ -147,15 +152,13 @@ export default function BookPreviewPage() {
                   if (!response.ok) {
                     throw new Error(
                       data.error ||
-                        `${title} の取得に失敗しました。`
+                        `${work.title} の取得に失敗しました。`
                     );
                   }
 
                   return {
-                    title:
-                      data.title,
-                    author:
-                      data.author,
+                    title: work.title,
+                    author: work.author,
                     text:
                       data.text,
                   };

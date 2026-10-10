@@ -22,6 +22,8 @@ export default function CoverPage() {
   useEffect(() => {
     const book = loadBookData();
 
+    // Hydrate browser-only localStorage after mount to avoid server/client mismatch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTitle(book.title);
     setEditor(book.editor);
     setCoverStyle(book.coverStyle);

@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -21,33 +22,24 @@ const COLUMNS_PER_PAGE = 16;
 const PAGE_WIDTH = "105mm";
 const PAGE_HEIGHT = "148mm";
 
-const BODY_FONT_SIZE = "8.5pt";
+const BODY_FONT_SIZE_PT = 8.5;
+const BODY_FONT_SIZE = `${BODY_FONT_SIZE_PT}pt`;
+const POINT_TO_MM = 25.4 / 72;
+const BODY_COLUMN_SAFETY_MM = 2;
 
 const CONTENT_WIDTH = "87mm";
 
-/*
- * 本文の縦方向を少し広げる。
- *
- * これまで：
- *   126mm
- *
- * 今回：
- *   132mm
- *
- * 40文字を収めるための高さを確保しつつ、
- * 本文全体をページ上端から少し下げる。
- */
 const CONTENT_HEIGHT = "126mm";
-const BODY_COLUMN_HEIGHT = "132mm";
+// 1字を1emで描画するため、分割上限とCSS上の実寸が一致する。
+// 8.5pt × 40字 = 約119.94mm。2mmを印刷・フォント丸めの安全余白にする。
+const BODY_COLUMN_HEIGHT = `${(
+  BODY_FONT_SIZE_PT * POINT_TO_MM * CHARS_PER_COLUMN +
+  BODY_COLUMN_SAFETY_MM
+).toFixed(2)}mm`;
 
 const COLUMN_WIDTH = "5.4mm";
 
-/*
- * 本文をページ上端から下げる量。
- *
- * padding-top ではなく、
- * 本文領域そのものを広げて位置を調整する。
- */
+/* The body starts below the page header area and has a separate safe bottom. */
 const BODY_TOP_OFFSET = "10mm";
 
 /* =========================================================
@@ -66,6 +58,10 @@ type LayoutUnit = {
   type: "text";
   text: string;
 };
+
+function unitCharacterCount(unit: LayoutUnit): number {
+  return Array.from(unit.text).length;
+}
 
 /* =========================================================
    禁則処理
@@ -94,12 +90,10 @@ function textToLayoutUnits(
     return [];
   }
 
-  return Array.from(text).map(
-    (char): LayoutUnit => ({
-      type: "text",
-      text: char,
-    }),
-  );
+  return Array.from(text, (char) => ({
+    type: "text" as const,
+    text: char,
+  }));
 }
 
 /* =========================================================
@@ -112,42 +106,47 @@ function splitParagraphIntoColumns(
   const columns: LayoutUnit[][] = [];
 
   let current: LayoutUnit[] = [];
+  let currentCharacterCount = 0;
 
   const flush = () => {
     if (current.length > 0) {
       columns.push(current);
       current = [];
+      currentCharacterCount = 0;
     }
   };
 
   for (const unit of units) {
-    const char = unit.text;
+    const characters = Array.from(unit.text);
+    const firstChar = characters[0];
+    const lastChar = characters[characters.length - 1];
+    const unitLength = unitCharacterCount(unit);
 
-    if (!char) {
+    if (!firstChar) {
       continue;
     }
 
-    if (char === "\n") {
+    if (unit.text === "\n") {
       flush();
       continue;
     }
 
-    if (
-      current.length >= CHARS_PER_COLUMN
-    ) {
-      if (
-        isLineStartKinsoku(char) &&
-        current.length > 1
-      ) {
+    if (currentCharacterCount + unitLength > CHARS_PER_COLUMN) {
+      if (isLineStartKinsoku(firstChar) && current.length > 0) {
         const last = current.pop();
+        if (last) {
+          currentCharacterCount -= unitCharacterCount(last);
+        }
 
         flush();
 
         if (last) {
           current.push(last);
+          currentCharacterCount += unitCharacterCount(last);
         }
 
         current.push(unit);
+        currentCharacterCount += unitLength;
 
         continue;
       }
@@ -156,14 +155,14 @@ function splitParagraphIntoColumns(
     }
 
     if (
-      current.length ===
-        CHARS_PER_COLUMN - 1 &&
-      isLineEndKinsoku(char)
+      currentCharacterCount + unitLength === CHARS_PER_COLUMN &&
+      isLineEndKinsoku(lastChar)
     ) {
       flush();
     }
 
     current.push(unit);
+    currentCharacterCount += unitLength;
   }
 
   flush();
@@ -178,27 +177,18 @@ function splitParagraphIntoColumns(
 function splitTextIntoColumns(
   text: string,
 ): LayoutUnit[][] {
-  const columns: LayoutUnit[][] = [];
+  const units: LayoutUnit[] = [];
+  const paragraphs = text.split(/\r?\n/).filter((paragraph) => paragraph.trim());
 
-  const paragraphs = text.split(
-    /\r?\n/,
-  );
-
-  for (const paragraph of paragraphs) {
-    if (!paragraph.trim()) {
-      continue;
+  paragraphs.forEach((paragraph, index) => {
+    if (index > 0) {
+      // 段落頭は全角1字下げ。同じ列の残りを次段落にも使い、列端の空きを抑える。
+      units.push({ type: "text", text: "　" });
     }
+    units.push(...textToLayoutUnits(paragraph));
+  });
 
-    const units =
-      textToLayoutUnits(paragraph);
-
-    const paragraphColumns =
-      splitParagraphIntoColumns(units);
-
-    columns.push(...paragraphColumns);
-  }
-
-  return columns;
+  return splitParagraphIntoColumns(units);
 }
 
 /* =========================================================
@@ -242,13 +232,20 @@ function CoverPage({
 }: {
   data: BookData;
 }) {
+  const palette = {
+    red: { background: "#9e2f2f", foreground: "#fff8eb" },
+    blue: { background: "#315f8f", foreground: "#f7f4e9" },
+    green: { background: "#47704e", foreground: "#f7f4e9" },
+  }[data.coverColor];
+
   return (
     <div
-      className="print-page"
+      className={`print-page cover-page cover-page--${data.coverStyle}`}
       style={{
         width: PAGE_WIDTH,
         height: PAGE_HEIGHT,
-        background: "#f8f3df",
+        background: palette.background,
+        color: palette.foreground,
         boxSizing: "border-box",
         position: "relative",
         overflow: "hidden",
@@ -259,6 +256,7 @@ function CoverPage({
       }}
     >
       <div
+        className="cover-page__content"
         style={{
           textAlign: "center",
           padding: "12mm",
@@ -277,7 +275,8 @@ function CoverPage({
         <div
           style={{
             fontSize: "9pt",
-            color: "#555",
+            color: "inherit",
+            opacity: 0.85,
           }}
         >
           {data.editor}
@@ -307,7 +306,7 @@ function VerticalPage({
         background: "#f8f3df",
         boxSizing: "border-box",
         position: "relative",
-        overflow: "hidden",
+        overflow: "visible",
         fontFamily: "serif",
       }}
     >
@@ -488,25 +487,12 @@ function BodyPage({
     <VerticalPage
       pageNumber={pageNumber}
     >
-      {/*
-       * 本文全体を3mm下げる。
-       *
-       * padding-top は使わない。
-       * padding で高さを消費すると、
-       * 40文字目が下端で切れるため。
-       */}
       <div
+        className="body-content"
         style={{
           width: CONTENT_WIDTH,
 
-          /*
-           * 126mmではなく132mm確保。
-           */
           height: BODY_COLUMN_HEIGHT,
-
-          /*
-           * ページ上端から3mm下げる。
-           */
           marginTop: BODY_TOP_OFFSET,
           marginLeft: "auto",
           marginRight: "auto",
@@ -530,10 +516,8 @@ function BodyPage({
               style={{
                 width: COLUMN_WIDTH,
 
-                /*
-                 * 132mmの高さをそのまま本文に使う。
-                 */
                 height: BODY_COLUMN_HEIGHT,
+                position: "relative",
 
                 flex: `0 0 ${COLUMN_WIDTH}`,
 
@@ -570,20 +554,27 @@ function BodyPage({
               }}
             >
               {column
-                ? column.map(
-                    (
-                      unit,
-                      unitIndex,
-                    ) => (
+                ? column.map((unit, unitIndex) => {
+                    const inlineOffset = column
+                      .slice(0, unitIndex)
+                      .reduce(
+                        (total, previous) => total + unitCharacterCount(previous),
+                        0,
+                      );
+
+                    return (
                       <span
                         key={unitIndex}
+                        className="print-character-cell"
+                        style={{
+                          insetInlineStart: `${inlineOffset}em`,
+                          inlineSize: `${unitCharacterCount(unit)}em`,
+                        }}
                       >
-                        {
-                          unit.text
-                        }
+                        {unit.text}
                       </span>
-                    ),
-                  )
+                    );
+                  })
                 : null}
             </div>
           ),
@@ -632,53 +623,6 @@ function ColophonPage({
 }
 
 /* =========================================================
-   印刷用CSS
-========================================================= */
-
-function PrintStyles() {
-  return (
-    <style jsx global>{`
-      @media print {
-        html,
-        body {
-          margin: 0 !important;
-          padding: 0 !important;
-          background: #fff !important;
-        }
-
-        body {
-          -webkit-print-color-adjust: exact !important;
-          print-color-adjust: exact !important;
-        }
-
-        .print-root {
-          width: 105mm !important;
-          min-height: auto !important;
-          margin: 0 !important;
-          padding: 0 !important;
-          background: #fff !important;
-        }
-
-        .print-page {
-          width: 105mm !important;
-          height: 148mm !important;
-          margin: 0 !important;
-          box-shadow: none !important;
-          break-inside: avoid !important;
-          page-break-inside: avoid !important;
-          overflow: hidden !important;
-        }
-
-        @page {
-          size: A6 portrait;
-          margin: 0;
-        }
-      }
-    `}</style>
-  );
-}
-
-/* =========================================================
    Final Page
 ========================================================= */
 
@@ -705,84 +649,96 @@ export default function FinalPage() {
     setError,
   ] = useState("");
 
+  const [progress, setProgress] = useState({ completed: 0, total: 0 });
+  const [isPrinting, setIsPrinting] = useState(false);
+  const printingRef = useRef(false);
+
+  const loadWorks = async (book: BookData) => {
+    setLoading(true);
+    setError("");
+    setWorks([]);
+    setProgress({ completed: 0, total: book.works.length });
+
+    const results: WorkText[] = [];
+    for (const work of book.works) {
+      try {
+        if (!work.xhtmlUrl) {
+          throw new Error("本文URLが登録されていません。");
+        }
+        const response = await fetch(
+          `/api/aozora?url=${encodeURIComponent(work.xhtmlUrl)}`,
+          { cache: "no-store" },
+        );
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error ?? "本文の取得に失敗しました。");
+        }
+        if (typeof result.text !== "string" || !result.text.trim()) {
+          throw new Error("取得した本文が空でした。");
+        }
+        results.push({
+          id: work.id,
+          title: work.title,
+          author: work.author,
+          text: result.text,
+        });
+      } catch (workError) {
+        results.push({
+          id: work.id,
+          title: work.title,
+          author: work.author,
+          text: "",
+          error: workError instanceof Error
+            ? workError.message
+            : "本文の取得に失敗しました。",
+        });
+      }
+      setWorks([...results]);
+      setProgress({ completed: results.length, total: book.works.length });
+    }
+    setLoading(false);
+  };
+
   /* =======================================================
      青空文庫本文取得
   ======================================================= */
 
   useEffect(() => {
-    const book = loadBookData();
-
-    setData(book);
-
-    async function loadWorks() {
-      try {
-        setLoading(true);
-        setError("");
-
-        const results: WorkText[] =
-          [];
-
-        for (const work of book.works) {
-          try {
-            const response =
-              await fetch(
-                `/api/aozora?url=${encodeURIComponent(
-                  work.xhtmlUrl,
-                )}`,
-                {
-                  cache: "no-store",
-                },
-              );
-
-            const result =
-              await response.json();
-
-            if (!response.ok) {
-              throw new Error(
-                result.error ??
-                  "本文の取得に失敗しました。",
-              );
-            }
-
-            results.push({
-              id: work.id,
-              title: work.title,
-              author: work.author,
-              text:
-                result.text ?? "",
-            });
-          } catch (
-            workError
-          ) {
-            results.push({
-              id: work.id,
-              title: work.title,
-              author: work.author,
-              text: "",
-              error:
-                workError instanceof
-                Error
-                  ? workError.message
-                  : "本文の取得に失敗しました。",
-            });
-          }
-        }
-
-        setWorks(results);
-      } catch (loadError) {
-        setError(
-          loadError instanceof
-            Error
-            ? loadError.message
-            : "本の読み込みに失敗しました。",
-        );
-      } finally {
+    void Promise.resolve().then(() => {
+      const book = loadBookData();
+      setData(book);
+      if (book.works.length === 0) {
+        setError("本に作品がありません。作品を選んでからPDFを作成してください。");
         setLoading(false);
+        return;
       }
-    }
-
-    loadWorks();
+      void loadWorks(book);
+    });
   }, []);
+
+  useEffect(() => {
+    const resetPrinting = () => {
+      printingRef.current = false;
+      setIsPrinting(false);
+    };
+    window.addEventListener("afterprint", resetPrinting);
+    return () => window.removeEventListener("afterprint", resetPrinting);
+  }, []);
+
+  const retryFailedWorks = async () => {
+    if (!data || loading) return;
+    await loadWorks(data);
+  };
+
+  const canPrint = Boolean(data && !loading && !error && works.length > 0 &&
+    works.every((work) => !work.error && work.text.trim().length > 0));
+
+  const savePdf = () => {
+    if (!canPrint || printingRef.current) return;
+    printingRef.current = true;
+    setIsPrinting(true);
+    window.requestAnimationFrame(() => window.print());
+  };
 
   /* =======================================================
      ローディング
@@ -801,7 +757,10 @@ export default function FinalPage() {
             "sans-serif",
         }}
       >
-        本を組版しています……
+        <div>
+          本文を取得して組版しています……
+          <p aria-live="polite">{progress.completed} / {progress.total} 作品</p>
+        </div>
       </main>
     );
   }
@@ -1044,8 +1003,6 @@ export default function FinalPage() {
 
   return (
     <>
-      <PrintStyles />
-
       <main
         className="print-root"
         style={{
@@ -1061,10 +1018,36 @@ export default function FinalPage() {
           gap: "16px",
         }}
       >
+        <section className="print-controls mb-6 w-full max-w-3xl rounded-xl bg-white p-6 text-stone-800 shadow" aria-label="PDF出力">
+          <h1 className="text-xl font-bold">完成した本</h1>
+          {works.some((work) => work.error) && (
+            <div role="alert" className="print-errors mt-4 rounded-lg border border-red-200 bg-red-50 p-4 text-red-900">
+              <p>本文を取得できなかった作品があります。全作品の本文を取得するまでPDFを保存できません。</p>
+              <ul>
+                {works.filter((work) => work.error).map((work) => (
+                  <li key={work.id}><strong>{work.title}</strong>：{work.error}</li>
+                ))}
+              </ul>
+              <button className="mt-3 rounded bg-stone-800 px-4 py-2 text-white disabled:opacity-50" type="button" onClick={retryFailedWorks} disabled={loading}>
+                {loading ? "再取得中…" : "作品本文を再取得"}
+              </button>
+            </div>
+          )}
+          {canPrint ? (
+            <button className="mt-4 rounded bg-stone-800 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={savePdf} disabled={isPrinting}>
+              {isPrinting ? "印刷画面を準備しています…" : "PDFを保存"}
+            </button>
+          ) : (
+            <p>PDFを保存するには、すべての作品本文の取得が必要です。</p>
+          )}
+          <p>印刷画面で用紙サイズを A6、保存先を「PDFに保存」にしてください。</p>
+        </section>
+
         {bodyPages.map(
           (page, index) => (
             <div
               key={index}
+              className="print-sheet"
               style={{
                 boxShadow:
                   "0 2px 10px rgba(0,0,0,0.12)",

@@ -128,15 +128,11 @@ function parseMainTextHtml(html: string): string {
 }
 
 /**
- * 既存データに残っている青空文庫形式のルビ記法も除去する
+ * HTML解析後に残った青空文庫注記の読みだけを除き、親文字を保持する。
  */
 function removeRubyAnnotations(text: string): string {
   return text
-    // HTML形式のルビが文字列として残っている場合
-    .replace(/<rt\b[^>]*>[\s\S]*?<\/rt\s*>/gi, "")
-    .replace(/<rp\b[^>]*>[\s\S]*?<\/rp\s*>/gi, "")
-    .replace(/<\/?(?:ruby|rb|rtc)\b[^>]*>/gi, "")
-    // 青空文庫の注記形式：｜漢字《かんじ》
+    // 青空文庫の注記形式：｜親文字《読み》
     .replace(/｜([^《\n]+)《[^》\n]*》/g, "$1")
     // 直前の文字に続くルビ形式：漢字《かんじ》
     .replace(/([一-龯々〆ヵヶ]+)《[^》\n]*》/g, "$1")
