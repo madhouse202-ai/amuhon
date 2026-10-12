@@ -25,7 +25,12 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
-/* The named page size applies only to the final book's printable sheets. */
+/* Keep the screen preview and browser print canvas on the same physical page. */
+@page {
+  size: 105mm 148mm;
+  margin: 0;
+}
+
 @page amuhon-book {
   size: 105mm 148mm;
   margin: 0;
@@ -33,6 +38,39 @@ body {
 
 .print-sheet {
   page: amuhon-book;
+  width: 105mm;
+  height: 148mm;
+  box-sizing: border-box;
+  flex: 0 0 148mm;
+  margin: 0;
+  padding: 0;
+  break-inside: avoid;
+}
+
+.print-page {
+  box-sizing: border-box;
+}
+
+/* Render the same fixed em cells in the preview and in print output. */
+.print-character-cell {
+  position: absolute;
+  block-size: 1em;
+  box-sizing: border-box;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.print-page__number {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 3.5mm;
+  height: 4mm;
+  box-sizing: border-box;
+  line-height: 4mm;
+  text-align: center;
+  font-size: 8pt;
+  color: #555;
 }
 
 @media print {
@@ -92,16 +130,6 @@ body {
   .body-content > div {
     line-height: 1 !important;
     letter-spacing: 0 !important;
-  }
-
-  /* Each body glyph occupies one fixed em cell; ruby annotations are omitted. */
-  .print-character-cell {
-    position: absolute;
-    block-size: 1em;
-    box-sizing: border-box;
-    line-height: 1;
-    text-align: center;
-    white-space: nowrap;
   }
 
   .cover-page--classic .cover-page__content {

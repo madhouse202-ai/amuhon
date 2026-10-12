@@ -178,14 +178,20 @@ function splitTextIntoColumns(
   text: string,
 ): LayoutUnit[][] {
   const units: LayoutUnit[] = [];
-  const paragraphs = text.split(/\r?\n/).filter((paragraph) => paragraph.trim());
+  const paragraphs = text
+    .split(/\r?\n(?:[ \t]*\r?\n)+/)
+    .map((paragraph) => paragraph.replace(/\r?\n/g, ""))
+    .filter((paragraph) => paragraph.trim());
 
   paragraphs.forEach((paragraph, index) => {
     if (index > 0) {
-      // 段落頭は全角1字下げ。同じ列の残りを次段落にも使い、列端の空きを抑える。
-      units.push({ type: "text", text: "　" });
+      // 段落境界だけを次の縦列へ送る。通常の折り返しとは別に扱い、空列は作らない。
+      units.push({ type: "text", text: "\n" });
     }
-    units.push(...textToLayoutUnits(paragraph));
+
+    // 青空文庫本文に含まれる既存の字下げを正規化し、段落頭を全角1字に統一する。
+    units.push({ type: "text", text: "　" });
+    units.push(...textToLayoutUnits(paragraph.replace(/^　+/, "")));
   });
 
   return splitParagraphIntoColumns(units);
@@ -314,15 +320,7 @@ function VerticalPage({
 
       {pageNumber !== undefined ? (
         <div
-          style={{
-            position: "absolute",
-            bottom: "3.5mm",
-            left: 0,
-            right: 0,
-            textAlign: "center",
-            fontSize: "8pt",
-            color: "#555",
-          }}
+          className="print-page__number"
         >
           {pageNumber}
         </div>
@@ -493,9 +491,10 @@ function BodyPage({
           width: CONTENT_WIDTH,
 
           height: BODY_COLUMN_HEIGHT,
-          marginTop: BODY_TOP_OFFSET,
-          marginLeft: "auto",
-          marginRight: "auto",
+          position: "absolute",
+          top: BODY_TOP_OFFSET,
+          left: "50%",
+          transform: "translateX(-50%)",
 
           display: "flex",
           flexDirection: "row-reverse",

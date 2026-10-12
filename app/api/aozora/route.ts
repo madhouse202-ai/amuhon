@@ -112,7 +112,7 @@ function parseMainTextHtml(html: string): string {
   text = text.replace(/<br\b[^>]*\/?>/gi, "\n");
   text = text.replace(
     /<\/(?:p|div|h[1-6]|blockquote|pre|section|article)\s*>/gi,
-    "\n"
+    "\n\n"
   );
   text = text.replace(
     /<(?:p|div|h[1-6]|blockquote|pre|section|article)\b[^>]*>/gi,
