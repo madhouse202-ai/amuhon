@@ -61,6 +61,21 @@ body {
   white-space: nowrap;
 }
 
+.print-character-cell__ruby {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  display: block;
+  inline-size: max-content;
+  block-size: max-content;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  font-size: 0.5em;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+}
+
 .print-page__number {
   position: absolute;
   inset-inline: 0;

@@ -39,6 +39,9 @@ const BODY_COLUMN_HEIGHT = `${(
 
 const COLUMN_WIDTH = "5.4mm";
 
+// 本文ルビの表示を個別に切り替える。false では従来の親文字だけを描画する。
+const ENABLE_RUBY = true;
+
 /* The body starts below the page header area and has a separate safe bottom. */
 const BODY_TOP_OFFSET = "10mm";
 
@@ -57,6 +60,7 @@ type WorkText = {
 type LayoutUnit = {
   type: "text";
   text: string;
+  ruby?: string;
 };
 
 function unitCharacterCount(unit: LayoutUnit): number {
@@ -90,10 +94,30 @@ function textToLayoutUnits(
     return [];
   }
 
-  return Array.from(text, (char) => ({
-    type: "text" as const,
-    text: char,
-  }));
+  const units: LayoutUnit[] = [];
+  const rubyPattern = /｜([^《\n]+)《([^》\n]+)》|([一-龯々〆ヵヶ]+)《([^》\n]+)》/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = rubyPattern.exec(text)) !== null) {
+    units.push(...plainTextUnits(text.slice(cursor, match.index)));
+    const base = match[1] ?? match[3];
+    const reading = match[2] ?? match[4];
+    if (ENABLE_RUBY) {
+      // 親文字全体を一つの組版単位にし、列幅は親文字の字数だけで計算する。
+      units.push({ type: "text", text: base, ruby: reading });
+    } else {
+      units.push(...plainTextUnits(base));
+    }
+    cursor = match.index + match[0].length;
+  }
+
+  units.push(...plainTextUnits(text.slice(cursor)));
+  return units;
+}
+
+function plainTextUnits(text: string): LayoutUnit[] {
+  return Array.from(text, (char) => ({ type: "text" as const, text: char }));
 }
 
 /* =========================================================
@@ -189,9 +213,12 @@ function splitTextIntoColumns(
       units.push({ type: "text", text: "\n" });
     }
 
-    // 青空文庫本文に含まれる既存の字下げを正規化し、段落頭を全角1字に統一する。
-    units.push({ type: "text", text: "　" });
-    units.push(...textToLayoutUnits(paragraph.replace(/^　+/, "")));
+    // 青空文庫本文に含まれる既存の字下げを正規化してから、段落頭の字下げを決める。
+    const normalizedParagraph = paragraph.replace(/^　+/, "");
+    if (!normalizedParagraph.startsWith("「")) {
+      units.push({ type: "text", text: "　" });
+    }
+    units.push(...textToLayoutUnits(normalizedParagraph));
   });
 
   return splitParagraphIntoColumns(units);
@@ -571,6 +598,11 @@ function BodyPage({
                         }}
                       >
                         {unit.text}
+                        {unit.ruby ? (
+                          <span className="print-character-cell__ruby" aria-hidden="true">
+                            {unit.ruby}
+                          </span>
+                        ) : null}
                       </span>
                     );
                   })
@@ -665,7 +697,7 @@ export default function FinalPage() {
           throw new Error("本文URLが登録されていません。");
         }
         const response = await fetch(
-          `/api/aozora?url=${encodeURIComponent(work.xhtmlUrl)}`,
+          `/api/aozora?url=${encodeURIComponent(work.xhtmlUrl)}${ENABLE_RUBY ? "&ruby=1" : ""}`,
           { cache: "no-store" },
         );
         const result = await response.json();

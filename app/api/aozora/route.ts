@@ -90,7 +90,7 @@ function extractMainText(html: string): string | null {
  * 青空文庫の本文HTMLをプレーンテキストに変換する
  * ルビの読み仮名とルビ用括弧は、タグ除去より先に削除する
  */
-function parseMainTextHtml(html: string): string {
+function parseMainTextHtml(html: string, includeRuby = false): string {
   let text = html;
 
   // スクリプトやスタイルを削除
@@ -98,6 +98,22 @@ function parseMainTextHtml(html: string): string {
     /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
     ""
   );
+
+  // /final 専用: HTMLルビを青空文庫の注記形式にして読みを保持する。
+  // 通常のAPI利用者には従来どおり親文字だけを返す。
+  if (includeRuby) {
+    text = text.replace(/<ruby\b[^>]*>([\s\S]*?)<\/ruby\s*>/gi, (_match, inner: string) => {
+      const reading = Array.from(inner.matchAll(/<rt\b[^>]*>([\s\S]*?)<\/rt\s*>/gi))
+        .map((match) => decodeHtml(stripTags(match[1])).trim())
+        .join("");
+      const baseMarkup = inner
+        .replace(/<rt\b[^>]*>[\s\S]*?<\/rt\s*>/gi, "")
+        .replace(/<rp\b[^>]*>[\s\S]*?<\/rp\s*>/gi, "")
+        .replace(/<\/?(?:rb|rtc)\b[^>]*>/gi, "");
+      const base = decodeHtml(stripTags(baseMarkup));
+      return reading && base ? `｜${base}《${reading}》` : base;
+    });
+  }
 
   // ルビの読み仮名を削除
   text = text.replace(/<rt\b[^>]*>[\s\S]*?<\/rt\s*>/gi, "");
@@ -219,8 +235,9 @@ export async function GET(request: Request) {
       );
     }
 
-    const parsedText = parseMainTextHtml(mainTextHtml);
-    const text = removeRubyAnnotations(parsedText);
+    const includeRuby = new URL(request.url).searchParams.get("ruby") === "1";
+    const parsedText = parseMainTextHtml(mainTextHtml, includeRuby);
+    const text = includeRuby ? normalizeText(parsedText) : removeRubyAnnotations(parsedText);
 
     if (!text) {
       return NextResponse.json(
