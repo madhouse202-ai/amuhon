@@ -17,6 +17,10 @@ export type BookData = {
   editor: string;
   coverStyle: CoverStyle;
   coverColor: CoverColor;
+  /** Official cover-calculator inputs for the separate spread artwork. */
+  coverPaperCode?: string;
+  coverSpineWidthMm?: number;
+  coverSpineWidthPageCount?: number;
 };
 
 export const defaultBookData: BookData = {

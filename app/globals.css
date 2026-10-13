@@ -132,6 +132,16 @@ body {
     page-break-after: auto !important;
   }
 
+  .print-root--body-only .print-sheet--front-cover,
+  .print-root--body-only .print-sheet--back-cover {
+    display: none !important;
+  }
+
+  .print-root--body-only .print-sheet:nth-last-child(2) {
+    break-after: auto !important;
+    page-break-after: auto !important;
+  }
+
   .print-page:not(.cover-page) {
     width: 105mm !important;
     height: 148mm !important;

@@ -6,6 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useRouter } from "next/navigation";
 
 import {
   loadBookData,
@@ -56,6 +57,9 @@ type WorkText = {
   text: string;
   error?: string;
 };
+
+type PdfOutputMode = "all-pages" | "body-only";
+const COVER_PAGE_COUNT_SESSION_KEY = "amuhon-cover-page-count";
 
 type LayoutUnit = {
   type: "text";
@@ -658,6 +662,7 @@ function ColophonPage({
 ========================================================= */
 
 export default function FinalPage() {
+  const router = useRouter();
   const [
     data,
     setData,
@@ -682,6 +687,7 @@ export default function FinalPage() {
 
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const [isPrinting, setIsPrinting] = useState(false);
+  const [pdfOutputMode, setPdfOutputMode] = useState<PdfOutputMode>("all-pages");
   const printingRef = useRef(false);
 
   const loadWorks = async (book: BookData) => {
@@ -751,6 +757,7 @@ export default function FinalPage() {
     const resetPrinting = () => {
       printingRef.current = false;
       setIsPrinting(false);
+      setPdfOutputMode("all-pages");
     };
     window.addEventListener("afterprint", resetPrinting);
     return () => window.removeEventListener("afterprint", resetPrinting);
@@ -764,11 +771,21 @@ export default function FinalPage() {
   const canPrint = Boolean(data && !loading && !error && works.length > 0 &&
     works.every((work) => !work.error && work.text.trim().length > 0));
 
-  const savePdf = () => {
+  const savePdf = (mode: PdfOutputMode) => {
     if (!canPrint || printingRef.current) return;
     printingRef.current = true;
+    setPdfOutputMode(mode);
     setIsPrinting(true);
     window.requestAnimationFrame(() => window.print());
+  };
+
+  const openSpreadCover = () => {
+    if (!canPrint || !data) return;
+    sessionStorage.setItem(COVER_PAGE_COUNT_SESSION_KEY, JSON.stringify({
+      pageCount: bodyPages.length - 2,
+      worksKey: JSON.stringify(data.works.map((work) => [work.id, work.xhtmlUrl])),
+    }));
+    router.push("/cover");
   };
 
   /* =======================================================
@@ -1035,7 +1052,7 @@ export default function FinalPage() {
   return (
     <>
       <main
-        className="print-root"
+        className={`print-root${pdfOutputMode === "body-only" ? " print-root--body-only" : ""}`}
         style={{
           minHeight: "100vh",
           background: "#ddd",
@@ -1065,9 +1082,17 @@ export default function FinalPage() {
             </div>
           )}
           {canPrint ? (
-            <button className="mt-4 rounded bg-stone-800 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={savePdf} disabled={isPrinting}>
-              {isPrinting ? "印刷画面を準備しています…" : "PDFを保存"}
-            </button>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button className="rounded bg-stone-800 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => savePdf("all-pages")} disabled={isPrinting}>
+                {isPrinting && pdfOutputMode === "all-pages" ? "印刷画面を準備しています…" : "全ページPDFを保存"}
+              </button>
+              <button className="rounded border border-stone-800 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={() => savePdf("body-only")} disabled={isPrinting}>
+                {isPrinting && pdfOutputMode === "body-only" ? "印刷画面を準備しています…" : "本文PDFを保存（表紙なし）"}
+              </button>
+              <button className="rounded border border-stone-500 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={openSpreadCover} disabled={isPrinting}>
+                見開きカバーを作成
+              </button>
+            </div>
           ) : (
             <p>PDFを保存するには、すべての作品本文の取得が必要です。</p>
           )}
@@ -1078,7 +1103,7 @@ export default function FinalPage() {
           (page, index) => (
             <div
               key={index}
-              className="print-sheet"
+              className={`print-sheet${index === 0 ? " print-sheet--front-cover" : index === bodyPages.length - 1 ? " print-sheet--back-cover" : ""}`}
               style={{
                 boxShadow:
                   "0 2px 10px rgba(0,0,0,0.12)",
