@@ -21,7 +21,18 @@ export type BookData = {
   coverPaperCode?: string;
   coverSpineWidthMm?: number;
   coverSpineWidthPageCount?: number;
+  /** True only after the user confirms this is the matching official calculator result. */
+  coverSpineWidthConfirmed?: boolean;
 };
+
+/** Stable snapshot key for validating that the final-page count belongs to the same book. */
+export function bookLayoutKey(book: BookData, title = book.title, editor = book.editor): string {
+  return JSON.stringify({
+    title,
+    editor,
+    works: book.works.map((work) => [work.id, work.title, work.author, work.xhtmlUrl]),
+  });
+}
 
 export const defaultBookData: BookData = {
   works: [],

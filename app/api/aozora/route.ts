@@ -7,6 +7,7 @@ type TextPart = {
 };
 
 type ContentPart = TextPart;
+const AOZORA_FETCH_TIMEOUT_MS = 20_000;
 
 /**
  * HTMLエンティティを通常の文字に戻す
@@ -194,12 +195,25 @@ export async function GET(request: Request) {
       );
     }
 
-    const response = await fetch(sourceUrl, {
-      headers: {
-        "User-Agent": "Amuhon/1.0",
-      },
-      cache: "no-store",
-    });
+    const upstreamSignal = AbortSignal.timeout(AOZORA_FETCH_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(sourceUrl, {
+        headers: {
+          "User-Agent": "Amuhon/1.0",
+        },
+        cache: "no-store",
+        signal: upstreamSignal,
+      });
+    } catch (error) {
+      if (upstreamSignal.aborted) {
+        return NextResponse.json(
+          { error: "青空文庫からの応答がタイムアウトしました。再試行してください。" },
+          { status: 504 },
+        );
+      }
+      throw error;
+    }
 
     if (!response.ok) {
       return NextResponse.json(

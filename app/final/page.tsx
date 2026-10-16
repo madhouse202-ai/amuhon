@@ -9,9 +9,11 @@ import {
 import { useRouter } from "next/navigation";
 
 import {
+  bookLayoutKey,
   loadBookData,
   type BookData,
 } from "@/lib/book";
+import { isSubmissionPageCount, padPerfectBindingBodyPageCount } from "@/lib/production";
 
 /* =========================================================
    基本設定
@@ -19,6 +21,8 @@ import {
 
 const CHARS_PER_COLUMN = 40;
 const COLUMNS_PER_PAGE = 16;
+const TOC_ENTRIES_PER_PAGE = 12;
+const AOZORA_REQUEST_TIMEOUT_MS = 30_000;
 
 const PAGE_WIDTH = "105mm";
 const PAGE_HEIGHT = "148mm";
@@ -427,10 +431,17 @@ function TitlePage({
 function TableOfContents({
   works,
   pageNumbers,
+  pageIndex,
 }: {
   works: WorkText[];
   pageNumbers: number[];
+  pageIndex: number;
 }) {
+  const pageWorks = works.slice(
+    pageIndex * TOC_ENTRIES_PER_PAGE,
+    (pageIndex + 1) * TOC_ENTRIES_PER_PAGE,
+  );
+
   return (
     <VerticalPage>
       <div
@@ -460,29 +471,45 @@ function TableOfContents({
             flexShrink: 0,
           }}
         >
-          {works.map((work, index) => (
-            <div
-              key={work.id}
-              style={{
-                writingMode: "vertical-rl",
-                textOrientation: "upright",
-                fontSize: "8.5pt",
-                lineHeight: 1.6,
-                whiteSpace: "nowrap",
-              }}
-            >
-              <span>{work.title}</span>
-              <span
+          {pageWorks.map((work, index) => {
+            const workIndex = pageIndex * TOC_ENTRIES_PER_PAGE + index;
+            return (
+              <div
+                key={work.id}
                 style={{
-                  fontSize: "7.5pt",
-                  color: "#a15b46",
-                  marginTop: "2mm",
+                  writingMode: "vertical-rl",
+                  textOrientation: "upright",
+                  fontSize: "8.5pt",
+                  lineHeight: 1.6,
+                  whiteSpace: "nowrap",
                 }}
               >
-                {pageNumbers[index] ?? ""}
-              </span>
-            </div>
-          ))}
+                <span>{work.title}</span>
+                {work.author?.trim() ? (
+                  <span
+                    style={{
+                      display: "block",
+                      fontSize: "7.5pt",
+                      color: "#555",
+                      marginTop: "2mm",
+                    }}
+                  >
+                    {work.author}
+                  </span>
+                ) : null}
+                <span
+                  style={{
+                    display: "block",
+                    fontSize: "7.5pt",
+                    color: "#a15b46",
+                    marginTop: "2mm",
+                  }}
+                >
+                  {pageNumbers[workIndex] ?? ""}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
     </VerticalPage>
@@ -689,8 +716,14 @@ export default function FinalPage() {
   const [isPrinting, setIsPrinting] = useState(false);
   const [pdfOutputMode, setPdfOutputMode] = useState<PdfOutputMode>("all-pages");
   const printingRef = useRef(false);
+  const loadSequenceRef = useRef(0);
+  const loadControllerRef = useRef<AbortController | null>(null);
 
   const loadWorks = async (book: BookData) => {
+    loadControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
+    const sequence = ++loadSequenceRef.current;
     setLoading(true);
     setError("");
     setWorks([]);
@@ -698,15 +731,37 @@ export default function FinalPage() {
 
     const results: WorkText[] = [];
     for (const work of book.works) {
+      if (controller.signal.aborted) return;
       try {
         if (!work.xhtmlUrl) {
           throw new Error("本文URLが登録されていません。");
         }
-        const response = await fetch(
-          `/api/aozora?url=${encodeURIComponent(work.xhtmlUrl)}${ENABLE_RUBY ? "&ruby=1" : ""}`,
-          { cache: "no-store" },
+        const requestController = new AbortController();
+        const timeoutId = window.setTimeout(
+          () => requestController.abort(),
+          AOZORA_REQUEST_TIMEOUT_MS,
         );
-        const result = await response.json();
+        const abortRequest = () => requestController.abort();
+        controller.signal.addEventListener("abort", abortRequest, { once: true });
+        let response: Response;
+        let result: { error?: string; text?: unknown };
+        try {
+          response = await fetch(
+            `/api/aozora?url=${encodeURIComponent(work.xhtmlUrl)}${ENABLE_RUBY ? "&ruby=1" : ""}`,
+            { cache: "no-store", signal: requestController.signal },
+          );
+          result = await response.json();
+        } catch (fetchError) {
+          if (requestController.signal.aborted) {
+            throw new Error(controller.signal.aborted
+              ? "本文取得が中断されました。"
+              : "本文取得がタイムアウトしました（30秒）。再試行してください。");
+          }
+          throw fetchError;
+        } finally {
+          window.clearTimeout(timeoutId);
+          controller.signal.removeEventListener("abort", abortRequest);
+        }
         if (!response.ok) {
           throw new Error(result.error ?? "本文の取得に失敗しました。");
         }
@@ -720,6 +775,7 @@ export default function FinalPage() {
           text: result.text,
         });
       } catch (workError) {
+        if (controller.signal.aborted) return;
         results.push({
           id: work.id,
           title: work.title,
@@ -730,10 +786,14 @@ export default function FinalPage() {
             : "本文の取得に失敗しました。",
         });
       }
+      if (sequence !== loadSequenceRef.current) return;
       setWorks([...results]);
       setProgress({ completed: results.length, total: book.works.length });
     }
-    setLoading(false);
+    if (sequence === loadSequenceRef.current) {
+      setLoading(false);
+      loadControllerRef.current = null;
+    }
   };
 
   /* =======================================================
@@ -741,16 +801,23 @@ export default function FinalPage() {
   ======================================================= */
 
   useEffect(() => {
+    let active = true;
     void Promise.resolve().then(() => {
+      if (!active) return;
       const book = loadBookData();
       setData(book);
       if (book.works.length === 0) {
         setError("本に作品がありません。作品を選んでからPDFを作成してください。");
         setLoading(false);
-        return;
+      } else {
+        void loadWorks(book);
       }
-      void loadWorks(book);
     });
+    return () => {
+      active = false;
+      loadControllerRef.current?.abort();
+      loadSequenceRef.current += 1;
+    };
   }, []);
 
   useEffect(() => {
@@ -782,8 +849,8 @@ export default function FinalPage() {
   const openSpreadCover = () => {
     if (!canPrint || !data) return;
     sessionStorage.setItem(COVER_PAGE_COUNT_SESSION_KEY, JSON.stringify({
-      pageCount: bodyPages.length - 2,
-      worksKey: JSON.stringify(data.works.map((work) => [work.id, work.xhtmlUrl])),
+      bodyPdfPageCount: bodyPages.length - 2,
+      worksKey: bookLayoutKey(data),
     }));
     router.push("/cover");
   };
@@ -885,18 +952,20 @@ export default function FinalPage() {
       };
     });
 
+  const tocPageCount = Math.max(1, Math.ceil(works.length / TOC_ENTRIES_PER_PAGE));
+
   /*
    * 作品開始ページ番号
    *
    * 1 = 本全体タイトル
-   * 2 = 目次
-   * 3以降 = 各作品タイトル
+   * 2以降 = 目次（作品数に応じて複数ページ）
+   * 目次の次から各作品タイトル
    */
 
   const tocPageNumbers: number[] =
     [];
 
-  let currentPageNumber = 3;
+  let currentPageNumber = 2 + tocPageCount;
 
   for (const item of workPageData) {
     tocPageNumbers.push(
@@ -919,15 +988,16 @@ export default function FinalPage() {
    * 3. 目次
    */
 
-  bodyPages.push(
-    <TableOfContents
-      key="toc"
-      works={works}
-      pageNumbers={
-        tocPageNumbers
-      }
-    />,
-  );
+  for (let tocPageIndex = 0; tocPageIndex < tocPageCount; tocPageIndex += 1) {
+    bodyPages.push(
+      <TableOfContents
+        key={`toc-${tocPageIndex}`}
+        works={works}
+        pageNumbers={tocPageNumbers}
+        pageIndex={tocPageIndex}
+      />,
+    );
+  }
 
   /*
    * 4. 各作品
@@ -1011,20 +1081,18 @@ export default function FinalPage() {
     />,
   );
 
-  /*
-   * 6. 本文部分を偶数ページにする
-   */
+  /* Add trailing blanks so the perfect-bound body PDF has an 8-page multiple. */
 
   const contentPageCount =
     bodyPages.length - 1;
 
-  if (
-    contentPageCount % 2 !==
-    0
-  ) {
+  const finalBodyPdfPageCount = padPerfectBindingBodyPageCount(contentPageCount) ?? contentPageCount;
+  const paddingPageCount = finalBodyPdfPageCount - contentPageCount;
+
+  for (let blankIndex = 0; blankIndex < paddingPageCount; blankIndex += 1) {
     bodyPages.push(
       <VerticalPage
-        key="blank-page"
+        key={`perfect-binding-blank-${blankIndex}`}
       />,
     );
   }
@@ -1044,6 +1112,9 @@ export default function FinalPage() {
       }}
     />,
   );
+
+  const submissionPageCount = bodyPages.length - 2;
+  const submissionPageCountValid = isSubmissionPageCount(submissionPageCount);
 
   /* =======================================================
      表示
@@ -1086,15 +1157,20 @@ export default function FinalPage() {
               <button className="rounded bg-stone-800 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => savePdf("all-pages")} disabled={isPrinting}>
                 {isPrinting && pdfOutputMode === "all-pages" ? "印刷画面を準備しています…" : "全ページPDFを保存"}
               </button>
-              <button className="rounded border border-stone-800 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={() => savePdf("body-only")} disabled={isPrinting}>
+              <button className="rounded border border-stone-800 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={() => savePdf("body-only")} disabled={isPrinting || !submissionPageCountValid}>
                 {isPrinting && pdfOutputMode === "body-only" ? "印刷画面を準備しています…" : "本文PDFを保存（表紙なし）"}
               </button>
-              <button className="rounded border border-stone-500 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={openSpreadCover} disabled={isPrinting}>
+              <button className="rounded border border-stone-500 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={openSpreadCover} disabled={isPrinting || !submissionPageCountValid}>
                 見開きカバーを作成
               </button>
             </div>
           ) : (
             <p>PDFを保存するには、すべての作品本文の取得が必要です。</p>
+          )}
+          {canPrint && !submissionPageCountValid && (
+            <p role="alert" className="mt-4 text-red-800">
+              標準入稿データは、末尾白紙を含め20〜500ページの範囲です。既存の8ページ単位調整を維持するため実際の出力範囲は24〜496ページです。現在の本文PDFは{submissionPageCount}ページのため、本文PDFとカバーの出力を停止しています。
+            </p>
           )}
           <p>印刷画面で用紙サイズを A6、保存先を「PDFに保存」にしてください。</p>
         </section>
