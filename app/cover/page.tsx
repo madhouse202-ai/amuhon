@@ -13,6 +13,7 @@ import {
 import {
   BOOK_PRODUCTION,
   calculateCoverLayout,
+  calculateSpineTextLayout,
   isSubmissionPageCount,
   SPINE_WIDTH_MODEL,
   addPngResolutionMetadata,
@@ -64,6 +65,7 @@ export default function CoverPage() {
     useState<CoverColor>("red");
   const [coverPageCount, setCoverPageCount] = useState<CoverPageCount | null>(null);
   const [downloadError, setDownloadError] = useState("");
+  const [showSpineText, setShowSpineText] = useState(true);
 
   const palette = {
     red: { background: "#9e2f2f", foreground: "#fff8eb" },
@@ -110,6 +112,9 @@ export default function CoverPage() {
   const spreadReady = pageCountIsEligible && layout !== null;
   const widthMm = layout?.coverWidthMm ?? 0;
   const heightMm = layout?.coverHeightMm ?? TRIM_HEIGHT_MM + BLEED_MM * 2;
+  const spineTextLayout = spreadReady && coverPageCount
+    ? calculateSpineTextLayout(coverPageCount.bodyPdfPageCount, title || "わたしの本", editor || "編者")
+    : null;
 
   function saveCoverSettings(book = bookData ?? loadBookData()) {
     saveBookData({
@@ -188,6 +193,21 @@ export default function CoverPage() {
       context.font = `${authorFontPx}px "Yu Mincho", "Hiragino Mincho ProN", "Noto Serif JP", serif`;
       context.fillText(editor.trim() || "編者", frontCenterXPx, titleTopPx + titleBlockHeight + authorGapPx + authorFontPx);
       context.restore();
+
+      if (showSpineText && spineTextLayout) {
+        context.save();
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.fillStyle = palette.foreground;
+        context.globalAlpha = 0.92;
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.font = `${spineTextLayout.fontSizeMm * pxPerMmX}px "Yu Mincho", "Hiragino Mincho ProN", "Noto Serif JP", serif`;
+        const spineCenterXPx = (layout.panels.spine.xMm + layout.panels.spine.widthMm / 2) * pxPerMmX;
+        Array.from(spineTextLayout.text).forEach((character, index) => {
+          context.fillText(character, spineCenterXPx, (spineTextLayout.startYmm + index * spineTextLayout.lineHeightMm) * pxPerMmY);
+        });
+        context.restore();
+      }
 
       if (coverStyle === "classic") {
         context.save();
@@ -457,6 +477,15 @@ export default function CoverPage() {
             <p>PNG予定寸法：{layout.pixelWidth} × {layout.pixelHeight}px、350dpi相当（RGB）。実ファイルの寸法と解像度メタデータを出力時に検証します。</p>
           </div>
         )}
+        <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
+          <input type="checkbox" checked={showSpineText} onChange={(event) => setShowSpineText(event.target.checked)} />
+          背表紙にタイトル・編者名を表示
+        </label>
+        {showSpineText && spreadReady && !spineTextLayout && (
+          <p role="status" style={{ marginBottom: "14px", color: "#8a3b12" }}>
+            背幅が狭いか文字量が多いため、背表紙の文字を省略します。チェックを外してカバーを出力してください。
+          </p>
+        )}
         {pageCountMatchesBook && !pageCountIsEligible && (
           <p role="alert" style={{ marginBottom: "16px", color: "#8a3b12" }}>
             {layout
@@ -478,6 +507,7 @@ export default function CoverPage() {
               maxWidth: "760px",
               margin: "0 auto 18px",
               aspectRatio: `${widthMm} / ${heightMm}`,
+              containerType: "inline-size",
               background: palette.background,
               color: palette.foreground,
               boxShadow: "0 3px 12px rgba(0,0,0,.2)",
@@ -490,8 +520,14 @@ export default function CoverPage() {
                 <span style={{ marginTop: "8%", fontSize: "clamp(7px, 1vw, 14px)" }}>{editor || "編者"}</span>
                 <span style={{ position: "absolute", bottom: "3px", fontSize: "10px", opacity: .7 }}>表表紙</span>
               </div>
-              <div style={{ flex: `0 0 ${(layout?.panels.spine.widthMm ?? 0) / (widthMm - BLEED_MM * 2) * 100}%`, borderRight: "1px solid rgba(255,255,255,.6)", boxSizing: "border-box", position: "relative" }}>
-                <span style={{ position: "absolute", bottom: "3px", left: "50%", transform: "translateX(-50%)", fontSize: "10px", whiteSpace: "nowrap", opacity: .7 }}>背表紙</span>
+              <div style={{ flex: `0 0 ${(layout?.panels.spine.widthMm ?? 0) / (widthMm - BLEED_MM * 2) * 100}%`, borderRight: "1px solid rgba(255,255,255,.6)", boxSizing: "border-box", position: "relative", display: "flex", justifyContent: "center", alignItems: "center" }}>
+                {showSpineText && spineTextLayout ? (
+                  <span style={{ writingMode: "vertical-rl", textOrientation: "upright", fontSize: `${spineTextLayout.fontSizeMm / widthMm * 100}cqw`, lineHeight: spineTextLayout.lineHeightMm / spineTextLayout.fontSizeMm, whiteSpace: "pre", maxHeight: `${spineTextLayout.lineHeightMm * Array.from(spineTextLayout.text).length / heightMm * 100}%` }}>
+                    {spineTextLayout.text}
+                  </span>
+                ) : (
+                  <span style={{ position: "absolute", bottom: "3px", left: "50%", transform: "translateX(-50%)", fontSize: "10px", whiteSpace: "nowrap", opacity: .7 }}>背表紙（文字なし）</span>
+                )}
               </div>
               <div style={{ flex: 1, position: "relative" }}>
                 <span style={{ position: "absolute", bottom: "3px", left: "50%", transform: "translateX(-50%)", fontSize: "10px", whiteSpace: "nowrap", opacity: .7 }}>裏表紙</span>

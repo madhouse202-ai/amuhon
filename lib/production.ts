@@ -93,6 +93,42 @@ export function calculateCoverLayout(pageCount: number): CoverLayout | null {
   };
 }
 
+export type SpineTextLayout = {
+  text: string;
+  fontSizeMm: number;
+  lineHeightMm: number;
+  startYmm: number;
+};
+
+/** Fit one Japanese vertical line inside the spine with a 1mm side and 6mm end safe area. */
+export function calculateSpineTextLayout(
+  pageCount: number,
+  title: string,
+  editor: string,
+): SpineTextLayout | null {
+  const cover = calculateCoverLayout(pageCount);
+  if (!cover) return null;
+  const text = [title.trim(), editor.trim()].filter(Boolean).join("　");
+  const characterCount = Array.from(text).length;
+  if (!characterCount) return null;
+
+  const minimumFontMm = 6 * 25.4 / 72;
+  const maximumFontMm = 8 * 25.4 / 72;
+  const availableWidthMm = cover.panels.spine.widthMm - 2;
+  const availableHeightMm = cover.panels.trimHeightMm - 12;
+  let fontSizeMm = Math.min(maximumFontMm, availableWidthMm);
+  fontSizeMm = Math.min(fontSizeMm, availableHeightMm / (characterCount * 1.15));
+  if (fontSizeMm < minimumFontMm) return null;
+
+  const lineHeightMm = fontSizeMm * 1.15;
+  return {
+    text,
+    fontSizeMm,
+    lineHeightMm,
+    startYmm: cover.panels.trimTopMm + cover.panels.trimHeightMm / 2 - (characterCount - 1) * lineHeightMm / 2,
+  };
+}
+
 function crc32(bytes: Uint8Array): number {
   let crc = 0xffffffff;
   for (const byte of bytes) {

@@ -5,6 +5,7 @@ import {
   assertPngPrintProperties,
   calculateCoverLayout,
   calculateSpineWidthMm,
+  calculateSpineTextLayout,
   isSubmissionPageCount,
   padPerfectBindingBodyPageCount,
   readPngPrintProperties,
@@ -45,6 +46,18 @@ test("A6 trim and bleed panel coordinates have no gaps or overlaps", () => {
   assert.equal(layout.panels.trimTopMm, 3);
   assert.equal(layout.panels.trimHeightMm, 148);
   assert.equal(layout.coverWidthMm - (layout.panels.back.xMm + layout.panels.back.widthMm), 3);
+});
+
+test("spine title and editor fit only when safe print space is available", () => {
+  assert.equal(calculateSpineTextLayout(20, "わたしの本", "編者"), null);
+  const layout = calculateSpineTextLayout(100, "わたしの本", "編者");
+  assert.ok(layout);
+  assert.equal(layout.text, "わたしの本　編者");
+  assert.ok(layout.fontSizeMm >= 6 * 25.4 / 72);
+  assert.ok(layout.fontSizeMm <= 8 * 25.4 / 72);
+  const lastCharacterY = layout.startYmm + (Array.from(layout.text).length - 1) * layout.lineHeightMm;
+  assert.ok(layout.startYmm > 3);
+  assert.ok(lastCharacterY < 151);
 });
 
 test("book layout snapshot changes when the current composition changes", () => {

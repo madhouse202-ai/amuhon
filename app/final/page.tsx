@@ -14,14 +14,21 @@ import {
   type BookData,
 } from "@/lib/book";
 import { isSubmissionPageCount, padPerfectBindingBodyPageCount } from "@/lib/production";
+import {
+  BODY_RUBY_ENABLED,
+  CHARS_PER_COLUMN,
+  COLUMNS_PER_PAGE,
+  calculateTocLayout,
+  splitTextIntoPages,
+  unitCharacterCount,
+  type LayoutUnit,
+  type TocEntry,
+} from "@/lib/book-layout";
 
 /* =========================================================
    基本設定
 ========================================================= */
 
-const CHARS_PER_COLUMN = 40;
-const COLUMNS_PER_PAGE = 16;
-const TOC_ENTRIES_PER_PAGE = 12;
 const AOZORA_REQUEST_TIMEOUT_MS = 30_000;
 
 const PAGE_WIDTH = "105mm";
@@ -44,9 +51,6 @@ const BODY_COLUMN_HEIGHT = `${(
 
 const COLUMN_WIDTH = "5.4mm";
 
-// 本文ルビの表示を個別に切り替える。false では従来の親文字だけを描画する。
-const ENABLE_RUBY = true;
-
 /* The body starts below the page header area and has a separate safe bottom. */
 const BODY_TOP_OFFSET = "10mm";
 
@@ -65,204 +69,7 @@ type WorkText = {
 type PdfOutputMode = "all-pages" | "body-only";
 const COVER_PAGE_COUNT_SESSION_KEY = "amuhon-cover-page-count";
 
-type LayoutUnit = {
-  type: "text";
-  text: string;
-  ruby?: string;
-};
-
-function unitCharacterCount(unit: LayoutUnit): number {
-  return Array.from(unit.text).length;
-}
-
-/* =========================================================
-   禁則処理
-========================================================= */
-
-function isLineStartKinsoku(char: string) {
-  return "、。，．：；？！‼⁇⁈⁉・ヽヾ々ー）］】〕〉》」』〙〗〟’”｣｝〉》".includes(
-    char,
-  );
-}
-
-function isLineEndKinsoku(char: string) {
-  return "「『（［【〔〈《〘〖〝‘“".includes(
-    char,
-  );
-}
-
-/* =========================================================
-   テキスト → LayoutUnit
-========================================================= */
-
-function textToLayoutUnits(
-  text: string,
-): LayoutUnit[] {
-  if (!text) {
-    return [];
-  }
-
-  const units: LayoutUnit[] = [];
-  const rubyPattern = /｜([^《\n]+)《([^》\n]+)》|([一-龯々〆ヵヶ]+)《([^》\n]+)》/g;
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = rubyPattern.exec(text)) !== null) {
-    units.push(...plainTextUnits(text.slice(cursor, match.index)));
-    const base = match[1] ?? match[3];
-    const reading = match[2] ?? match[4];
-    if (ENABLE_RUBY) {
-      // 親文字全体を一つの組版単位にし、列幅は親文字の字数だけで計算する。
-      units.push({ type: "text", text: base, ruby: reading });
-    } else {
-      units.push(...plainTextUnits(base));
-    }
-    cursor = match.index + match[0].length;
-  }
-
-  units.push(...plainTextUnits(text.slice(cursor)));
-  return units;
-}
-
-function plainTextUnits(text: string): LayoutUnit[] {
-  return Array.from(text, (char) => ({ type: "text" as const, text: char }));
-}
-
-/* =========================================================
-   1段落を縦列へ分割
-========================================================= */
-
-function splitParagraphIntoColumns(
-  units: LayoutUnit[],
-): LayoutUnit[][] {
-  const columns: LayoutUnit[][] = [];
-
-  let current: LayoutUnit[] = [];
-  let currentCharacterCount = 0;
-
-  const flush = () => {
-    if (current.length > 0) {
-      columns.push(current);
-      current = [];
-      currentCharacterCount = 0;
-    }
-  };
-
-  for (const unit of units) {
-    const characters = Array.from(unit.text);
-    const firstChar = characters[0];
-    const lastChar = characters[characters.length - 1];
-    const unitLength = unitCharacterCount(unit);
-
-    if (!firstChar) {
-      continue;
-    }
-
-    if (unit.text === "\n") {
-      flush();
-      continue;
-    }
-
-    if (currentCharacterCount + unitLength > CHARS_PER_COLUMN) {
-      if (isLineStartKinsoku(firstChar) && current.length > 0) {
-        const last = current.pop();
-        if (last) {
-          currentCharacterCount -= unitCharacterCount(last);
-        }
-
-        flush();
-
-        if (last) {
-          current.push(last);
-          currentCharacterCount += unitCharacterCount(last);
-        }
-
-        current.push(unit);
-        currentCharacterCount += unitLength;
-
-        continue;
-      }
-
-      flush();
-    }
-
-    if (
-      currentCharacterCount + unitLength === CHARS_PER_COLUMN &&
-      isLineEndKinsoku(lastChar)
-    ) {
-      flush();
-    }
-
-    current.push(unit);
-    currentCharacterCount += unitLength;
-  }
-
-  flush();
-
-  return columns;
-}
-
-/* =========================================================
-   本文 → 縦列
-========================================================= */
-
-function splitTextIntoColumns(
-  text: string,
-): LayoutUnit[][] {
-  const units: LayoutUnit[] = [];
-  const paragraphs = text
-    .split(/\r?\n(?:[ \t]*\r?\n)+/)
-    .map((paragraph) => paragraph.replace(/\r?\n/g, ""))
-    .filter((paragraph) => paragraph.trim());
-
-  paragraphs.forEach((paragraph, index) => {
-    if (index > 0) {
-      // 段落境界だけを次の縦列へ送る。通常の折り返しとは別に扱い、空列は作らない。
-      units.push({ type: "text", text: "\n" });
-    }
-
-    // 青空文庫本文に含まれる既存の字下げを正規化してから、段落頭の字下げを決める。
-    const normalizedParagraph = paragraph.replace(/^　+/, "");
-    if (!normalizedParagraph.startsWith("「")) {
-      units.push({ type: "text", text: "　" });
-    }
-    units.push(...textToLayoutUnits(normalizedParagraph));
-  });
-
-  return splitParagraphIntoColumns(units);
-}
-
-/* =========================================================
-   本文 → ページ
-========================================================= */
-
-function splitTextIntoPages(
-  text: string,
-): LayoutUnit[][][] {
-  const columns =
-    splitTextIntoColumns(text);
-
-  const pages: LayoutUnit[][][] = [];
-
-  for (
-    let index = 0;
-    index < columns.length;
-    index += COLUMNS_PER_PAGE
-  ) {
-    pages.push(
-      columns.slice(
-        index,
-        index + COLUMNS_PER_PAGE,
-      ),
-    );
-  }
-
-  if (pages.length === 0) {
-    pages.push([]);
-  }
-
-  return pages;
-}
+const ENABLE_RUBY = BODY_RUBY_ENABLED;
 
 /* =========================================================
    表紙
@@ -430,18 +237,11 @@ function TitlePage({
 
 function TableOfContents({
   works,
-  pageNumbers,
-  pageIndex,
+  entries,
 }: {
   works: WorkText[];
-  pageNumbers: number[];
-  pageIndex: number;
+  entries: TocEntry[];
 }) {
-  const pageWorks = works.slice(
-    pageIndex * TOC_ENTRIES_PER_PAGE,
-    (pageIndex + 1) * TOC_ENTRIES_PER_PAGE,
-  );
-
   return (
     <VerticalPage>
       <div
@@ -452,7 +252,7 @@ function TableOfContents({
           flexDirection: "row-reverse",
           alignItems: "center",
           justifyContent: "center",
-          gap: "8mm",
+          gap: "3mm",
           writingMode: "vertical-rl",
           textOrientation: "upright",
           fontFamily: "serif",
@@ -467,12 +267,12 @@ function TableOfContents({
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            gap: "8mm",
+            gap: "3mm",
             flexShrink: 0,
           }}
         >
-          {pageWorks.map((work, index) => {
-            const workIndex = pageIndex * TOC_ENTRIES_PER_PAGE + index;
+          {entries.map(({ workIndex, pageNumber }) => {
+            const work = works[workIndex];
             return (
               <div
                 key={work.id}
@@ -481,31 +281,24 @@ function TableOfContents({
                   textOrientation: "upright",
                   fontSize: "8.5pt",
                   lineHeight: 1.6,
-                  whiteSpace: "nowrap",
+                  whiteSpace: "normal",
+                  overflowWrap: "anywhere",
+                  height: "124mm",
+                  flex: "0 0 auto",
                 }}
               >
-                <span>{work.title}</span>
-                {work.author?.trim() ? (
-                  <span
-                    style={{
-                      display: "block",
-                      fontSize: "7.5pt",
-                      color: "#555",
-                      marginTop: "2mm",
-                    }}
-                  >
-                    {work.author}
-                  </span>
-                ) : null}
+                <span>
+                  {work.title}
+                  {work.author?.trim() ? `　${work.author.trim()}` : ""}
+                  {"　"}
+                </span>
                 <span
                   style={{
-                    display: "block",
                     fontSize: "7.5pt",
                     color: "#a15b46",
-                    marginTop: "2mm",
                   }}
                 >
-                  {pageNumbers[workIndex] ?? ""}
+                  {pageNumber}
                 </span>
               </div>
             );
@@ -952,37 +745,10 @@ export default function FinalPage() {
       };
     });
 
-  const tocPageCount = Math.max(1, Math.ceil(works.length / TOC_ENTRIES_PER_PAGE));
-
-  /*
-   * 作品開始ページ番号
-   *
-   * 1 = 本全体タイトル
-   * 2以降 = 目次（作品数に応じて複数ページ）
-   * 目次の次から各作品タイトル
-   */
-
-  const tocPageNumbers: number[] =
-    [];
-
-  let currentPageNumber = 2 + tocPageCount;
-
-  for (const item of workPageData) {
-    tocPageNumbers.push(
-      currentPageNumber,
-    );
-
-    /*
-     * 作品タイトルページ
-     */
-    currentPageNumber += 1;
-
-    /*
-     * 本文ページ
-     */
-    currentPageNumber +=
-      item.pages.length;
-  }
+  const tocLayout = calculateTocLayout(works, workPageData.map((item) => item.pages.length));
+  const tocPageCount = tocLayout.pages.length;
+  const tocPageNumbers = tocLayout.pageNumbers;
+  const currentPageNumber = tocLayout.colophonPageNumber;
 
   /*
    * 3. 目次
@@ -993,8 +759,7 @@ export default function FinalPage() {
       <TableOfContents
         key={`toc-${tocPageIndex}`}
         works={works}
-        pageNumbers={tocPageNumbers}
-        pageIndex={tocPageIndex}
+        entries={tocLayout.pages[tocPageIndex]}
       />,
     );
   }
@@ -1115,6 +880,7 @@ export default function FinalPage() {
 
   const submissionPageCount = bodyPages.length - 2;
   const submissionPageCountValid = isSubmissionPageCount(submissionPageCount);
+  const actualWorkBodyPageCount = workPageData.reduce((total, item) => total + item.pages.length, 0);
 
   /* =======================================================
      表示
@@ -1139,6 +905,11 @@ export default function FinalPage() {
       >
         <section className="print-controls mb-6 w-full max-w-3xl rounded-xl bg-white p-6 text-stone-800 shadow" aria-label="PDF出力">
           <h1 className="text-xl font-bold">完成した本</h1>
+          {canPrint && (
+            <p className="mt-2 text-sm text-stone-600" role="status">
+              実組版結果：作品本文合計 {actualWorkBodyPageCount} ページ／本文PDF {submissionPageCount} ページ（目次・作品タイトル・奥付・末尾白紙を含む）
+            </p>
+          )}
           {works.some((work) => work.error) && (
             <div role="alert" className="print-errors mt-4 rounded-lg border border-red-200 bg-red-50 p-4 text-red-900">
               <p>本文を取得できなかった作品があります。全作品の本文を取得するまでPDFを保存できません。</p>

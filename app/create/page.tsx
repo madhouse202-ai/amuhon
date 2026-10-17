@@ -1,11 +1,89 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { saveBookData } from "@/lib/book";
 import type { BookWork } from "@/lib/book";
 
 type Work = BookWork;
+type PageEstimate = { status: "idle" | "loading" | "ready" | "error"; pages?: number };
+
+const pageEstimateCache = new Map<string, number>();
+const pageEstimateRequests = new Map<string, Promise<number>>();
+let pageEstimateQueue = Promise.resolve();
+
+function getPageEstimate(work: Work): Promise<number> {
+  const cached = pageEstimateCache.get(work.xhtmlUrl);
+  if (cached !== undefined) return Promise.resolve(cached);
+  const pending = pageEstimateRequests.get(work.xhtmlUrl);
+  if (pending) return pending;
+
+  const request = pageEstimateQueue.then(async () => {
+    const response = await fetch(
+      `/api/aozora?url=${encodeURIComponent(work.xhtmlUrl)}&ruby=1&estimate=1`,
+      { cache: "no-store" },
+    );
+    const result = await response.json();
+    if (!response.ok || !Number.isInteger(result.pageCount) || result.pageCount < 1) {
+      throw new Error(result.error ?? "ページ数を計算できませんでした。");
+    }
+    pageEstimateCache.set(work.xhtmlUrl, result.pageCount);
+    return result.pageCount as number;
+  });
+  pageEstimateRequests.set(work.xhtmlUrl, request);
+  pageEstimateQueue = request.then(() => undefined, () => undefined);
+  void request.then(
+    () => pageEstimateRequests.delete(work.xhtmlUrl),
+    () => pageEstimateRequests.delete(work.xhtmlUrl),
+  );
+  return request;
+}
+
+function PageEstimateLabel({ estimate, onRetry }: { estimate: PageEstimate; onRetry: () => void }) {
+  if (estimate.status === "loading") return <p className="mt-2 text-sm text-stone-500" role="status">ページ数を計算中…</p>;
+  if (estimate.status === "ready") return <p className="mt-2 text-sm text-stone-600">本文：約{estimate.pages}ページ</p>;
+  if (estimate.status === "error") {
+    return <p className="mt-2 text-sm text-amber-800" role="status">ページ数を取得できませんでした。<button type="button" className="ml-2 underline" onClick={onRetry}>再試行</button></p>;
+  }
+  return <p className="mt-2 text-sm text-stone-400" role="status">ページ数：未計算</p>;
+}
+
+function EstimateWhenVisible({
+  work,
+  estimate,
+  onRequest,
+  onRetry,
+}: {
+  work: Work;
+  estimate: PageEstimate;
+  onRequest: (work: Work) => void;
+  onRetry: (work: Work) => void;
+}) {
+  const targetRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (estimate.status !== "idle") return;
+    const target = targetRef.current;
+    if (!target) return;
+    if (typeof IntersectionObserver === "undefined") {
+      onRequest(work);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        observer.disconnect();
+        onRequest(work);
+      }
+    }, { rootMargin: "160px" });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [estimate.status, onRequest, work]);
+
+  return (
+    <div ref={targetRef}>
+      <PageEstimateLabel estimate={estimate} onRetry={() => onRetry(work)} />
+    </div>
+  );
+}
 
 export default function CreatePage() {
   const router = useRouter();
@@ -16,6 +94,24 @@ export default function CreatePage() {
   const [isSearching, setIsSearching] = useState(false);
   const [searched, setSearched] = useState(false);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [pageEstimates, setPageEstimates] = useState<Record<string, PageEstimate>>({});
+
+  const requestEstimate = useCallback((work: Work) => {
+    setPageEstimates((current) => {
+      const previous = current[work.id];
+      if (previous?.status === "loading" || previous?.status === "ready") return current;
+      return { ...current, [work.id]: { status: "loading" } };
+    });
+    void getPageEstimate(work).then(
+      (pages) => setPageEstimates((current) => ({ ...current, [work.id]: { status: "ready", pages } })),
+      () => setPageEstimates((current) => ({ ...current, [work.id]: { status: "error" } })),
+    );
+  }, []);
+
+  const retryEstimate = useCallback((work: Work) => {
+    setPageEstimates((current) => ({ ...current, [work.id]: { status: "idle" } }));
+    requestEstimate(work);
+  }, [requestEstimate]);
 
   const searchWorks = async () => {
     const trimmedQuery = query.trim();
@@ -243,6 +339,12 @@ export default function CreatePage() {
                     <p className="mt-1 text-xs text-stone-400">
                       青空文庫
                     </p>
+                    <EstimateWhenVisible
+                      work={work}
+                      estimate={pageEstimates[work.id] ?? { status: "idle" }}
+                      onRequest={requestEstimate}
+                      onRetry={retryEstimate}
+                    />
                   </div>
 
                   <button
@@ -307,6 +409,15 @@ export default function CreatePage() {
                       <span className="ml-3 text-sm text-stone-500">
                         {work.author}
                       </span>
+                      <span className="ml-3 text-sm text-stone-500">
+                        {pageEstimates[work.id]?.status === "ready"
+                          ? `本文：約${pageEstimates[work.id].pages}ページ`
+                          : pageEstimates[work.id]?.status === "error"
+                            ? "ページ数：取得失敗"
+                            : pageEstimates[work.id]?.status === "loading"
+                              ? "ページ数：計算中"
+                              : "ページ数：未計算"}
+                      </span>
                     </div>
 
                     <div className="flex gap-2">
@@ -360,6 +471,15 @@ export default function CreatePage() {
 
             </ol>
           )}
+          {selectedWorks.length > 0 && (() => {
+            const estimates = selectedWorks.map((work) => pageEstimates[work.id]);
+            const complete = estimates.every((estimate) => estimate?.status === "ready");
+            const unresolved = estimates.filter((estimate) => estimate?.status !== "ready").length;
+            const total = estimates.reduce((sum, estimate) => sum + (estimate?.pages ?? 0), 0);
+            return complete
+              ? <p className="mt-5 font-medium text-stone-700" role="status">選択作品の推定本文合計：約{total}ページ</p>
+              : <p className="mt-5 text-sm text-stone-500" role="status">選択作品の推定本文合計：未確定（{unresolved}作品のページ数が未計算または取得失敗）</p>;
+          })()}
         </section>
 
         {/* 本を編む */}

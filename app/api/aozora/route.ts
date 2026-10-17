@@ -1,5 +1,6 @@
 
 import { NextResponse } from "next/server";
+import { estimateBodyPageCount } from "@/lib/book-layout";
 
 type TextPart = {
   type: "text";
@@ -258,6 +259,10 @@ export async function GET(request: Request) {
         { error: "本文を抽出できませんでした。" },
         { status: 422 }
       );
+    }
+
+    if (new URL(request.url).searchParams.get("estimate") === "1") {
+      return NextResponse.json({ pageCount: estimateBodyPageCount(text), sourceUrl });
     }
 
     return NextResponse.json({
