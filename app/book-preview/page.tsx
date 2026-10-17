@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   BookData,
   defaultBookData,
@@ -576,16 +577,12 @@ export default function BookPreviewPage() {
               </div>
 
               <div className="mt-10 text-center">
-                <button
-                  onClick={() => {
-                    alert(
-                      "注文画面は次のステップで作ります！"
-                    );
-                  }}
+                <Link
+                  href="/order"
                   className="rounded-xl bg-stone-800 px-10 py-4 font-bold text-white shadow-lg transition hover:bg-stone-700"
                 >
                   この本を注文する　→
-                </button>
+                </Link>
 
                 <p className="mt-3 text-xs text-stone-400">
                   ※ 現在はプレビュー段階です

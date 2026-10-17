@@ -648,6 +648,15 @@ export default function FinalPage() {
     router.push("/cover");
   };
 
+  const openOrder = () => {
+    if (!canPrint || !data || !submissionPageCountValid) return;
+    sessionStorage.setItem(COVER_PAGE_COUNT_SESSION_KEY, JSON.stringify({
+      bodyPdfPageCount: submissionPageCount,
+      worksKey: bookLayoutKey(data),
+    }));
+    router.push("/order");
+  };
+
   /* =======================================================
      ローディング
   ======================================================= */
@@ -933,6 +942,9 @@ export default function FinalPage() {
               </button>
               <button className="rounded border border-stone-500 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={openSpreadCover} disabled={isPrinting || !submissionPageCountValid}>
                 見開きカバーを作成
+              </button>
+              <button className="rounded border border-emerald-800 px-5 py-3 font-bold text-emerald-900 disabled:opacity-50" type="button" onClick={openOrder} disabled={isPrinting || !submissionPageCountValid}>
+                注文手続きへ
               </button>
             </div>
           ) : (
