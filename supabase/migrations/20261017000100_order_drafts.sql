@@ -27,7 +27,7 @@ create table if not exists public.amuhon_orders (
     (shipping_minor is null or shipping_minor >= 0)
   ),
   constraint ready_order_has_verified_assets check (
-    status <> 'ready_for_payment' or (
+    status not in ('ready_for_payment', 'paid') or (
       body_pdf_page_count is not null and body_pdf_storage_path is not null and
       cover_png_storage_path is not null and files_validated_at is not null and
       amount_minor is not null and currency is not null
@@ -43,7 +43,7 @@ create index if not exists amuhon_orders_expiry_idx
 create or replace function public.guard_amuhon_order_update()
 returns trigger
 language plpgsql
-set search_path = public, pg_temp
+set search_path = pg_catalog, pg_temp
 as $$
 begin
   if old.status <> new.status and not (
@@ -70,8 +70,11 @@ drop trigger if exists guard_amuhon_order_update on public.amuhon_orders;
 create trigger guard_amuhon_order_update before update on public.amuhon_orders
 for each row execute function public.guard_amuhon_order_update();
 
+revoke all on function public.guard_amuhon_order_update() from public, anon, authenticated, service_role;
+
 alter table public.amuhon_orders enable row level security;
-revoke all on public.amuhon_orders from anon, authenticated;
+revoke all on public.amuhon_orders from public, anon, authenticated, service_role;
+drop policy if exists amuhon_order_executor_access on public.amuhon_orders;
 
 -- Rate-limit buckets contain only an HMAC of the server-trusted client address.
 create table if not exists public.amuhon_order_rate_limits (
@@ -81,7 +84,19 @@ create table if not exists public.amuhon_order_rate_limits (
   updated_at timestamptz not null default now()
 );
 alter table public.amuhon_order_rate_limits enable row level security;
-revoke all on public.amuhon_order_rate_limits from anon, authenticated;
+revoke all on public.amuhon_order_rate_limits from public, anon, authenticated, service_role;
+drop policy if exists amuhon_order_rate_limit_executor_access on public.amuhon_order_rate_limits;
+
+-- Remove any object privileges left by a partial run of the former executor-role design.
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'amuhon_order_executor') then
+    execute 'revoke all on public.amuhon_orders, public.amuhon_order_rate_limits from amuhon_order_executor';
+    execute 'revoke all on function public.guard_amuhon_order_update() from amuhon_order_executor';
+    execute 'revoke create, usage on schema public from amuhon_order_executor';
+  end if;
+end;
+$$;
 
 create or replace function public.create_amuhon_order_draft(
   p_order_id uuid,
@@ -94,7 +109,7 @@ create or replace function public.create_amuhon_order_draft(
 ) returns jsonb
 language plpgsql
 security definer
-set search_path = public, pg_temp
+set search_path = pg_catalog, pg_temp
 as $$
 declare
   existing_order public.amuhon_orders%rowtype;
@@ -124,16 +139,16 @@ begin
   delete from public.amuhon_order_rate_limits
     where updated_at < now() - interval '24 hours';
 
-  insert into public.amuhon_order_rate_limits (key_hash, window_started_at, request_count)
+  insert into public.amuhon_order_rate_limits as limits (key_hash, window_started_at, request_count)
   values (p_rate_limit_key_hash, now(), 1)
   on conflict (key_hash) do update set
     request_count = case
-      when public.amuhon_order_rate_limits.window_started_at <= now() - interval '15 minutes' then 1
-      else public.amuhon_order_rate_limits.request_count + 1
+      when limits.window_started_at <= now() - interval '15 minutes' then 1
+      else limits.request_count + 1
     end,
     window_started_at = case
-      when public.amuhon_order_rate_limits.window_started_at <= now() - interval '15 minutes' then now()
-      else public.amuhon_order_rate_limits.window_started_at
+      when limits.window_started_at <= now() - interval '15 minutes' then now()
+      else limits.window_started_at
     end,
     updated_at = now()
   returning request_count into bucket_count;
@@ -159,6 +174,8 @@ begin
 end;
 $$;
 
+-- Supabase SQL Editor executes as postgres. Keep SECURITY DEFINER ownership on
+-- this managed admin role; do not create or alter custom roles here.
 revoke all on function public.create_amuhon_order_draft(uuid, uuid, jsonb, jsonb, integer, text, integer) from public, anon, authenticated;
 grant execute on function public.create_amuhon_order_draft(uuid, uuid, jsonb, jsonb, integer, text, integer) to service_role;
 
@@ -166,7 +183,7 @@ create or replace function public.purge_expired_amuhon_order_drafts()
 returns integer
 language plpgsql
 security definer
-set search_path = public, pg_temp
+set search_path = pg_catalog, pg_temp
 as $$
 declare removed_count integer;
 begin
@@ -179,11 +196,28 @@ $$;
 revoke all on function public.purge_expired_amuhon_order_drafts() from public, anon, authenticated;
 grant execute on function public.purge_expired_amuhon_order_drafts() to service_role;
 
--- The bucket is private. No browser policies are created; uploads/downloads must use authorized server code.
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'amuhon_order_executor') then
+    execute 'revoke all on function public.create_amuhon_order_draft(uuid, uuid, jsonb, jsonb, integer, text, integer) from amuhon_order_executor';
+    execute 'revoke all on function public.purge_expired_amuhon_order_drafts() from amuhon_order_executor';
+  end if;
+end;
+$$;
+
+-- The bucket is private; a restrictive browser deny policy is added below.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('amuhon-order-files', 'amuhon-order-files', false, 62914560, array['application/pdf', 'image/png'])
 on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit,
   allowed_mime_types = excluded.allowed_mime_types;
+
+-- A private bucket plus a bucket-scoped restrictive policy prevents any permissive
+-- storage.objects policy elsewhere in a Supabase project from exposing these files.
+drop policy if exists amuhon_order_files_deny_public_access on storage.objects;
+create policy amuhon_order_files_deny_public_access
+  on storage.objects as restrictive for all to public
+  using (bucket_id <> 'amuhon-order-files')
+  with check (bucket_id <> 'amuhon-order-files');
 
 comment on column public.amuhon_orders.draft_expires_at is
   'Configurable draft retention deadline; purge expired drafts and related private objects with a scheduled server-side job.';
