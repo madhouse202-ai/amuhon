@@ -12,6 +12,7 @@ import {
 } from "@/lib/order";
 
 const COVER_PAGE_COUNT_SESSION_KEY = "amuhon-cover-page-count";
+const ORDER_IDEMPOTENCY_SESSION_KEY = "amuhon-order-idempotency-key";
 
 const emptyCustomer: OrderCustomer = {
   name: "",
@@ -23,7 +24,7 @@ const emptyCustomer: OrderCustomer = {
   email: "",
 };
 
-type SavedDraft = { id: string; status: "draft"; createdAt: string };
+type SavedDraft = { id: string; status: "draft" | "preparing"; createdAt: string; uploadToken: string };
 
 export default function OrderPage() {
   const [book, setBook] = useState<BookData | null>(null);
@@ -33,8 +34,12 @@ export default function OrderPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<SavedDraft | null>(null);
+  const [bodyPdfFile, setBodyPdfFile] = useState<File | null>(null);
+  const [coverPngFile, setCoverPngFile] = useState<File | null>(null);
+  const [filesSaved, setFilesSaved] = useState(false);
   const [declaredPageCount, setDeclaredPageCount] = useState<number | null>(null);
   const idempotencyKeyRef = useRef<string | null>(null);
+  const actionInProgressRef = useRef(false);
 
   useEffect(() => {
     const currentBook = loadBookData();
@@ -42,6 +47,10 @@ export default function OrderPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setBook(currentBook);
     try {
+      const savedIdempotencyKey = sessionStorage.getItem(ORDER_IDEMPOTENCY_SESSION_KEY);
+      if (savedIdempotencyKey && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(savedIdempotencyKey)) {
+        idempotencyKeyRef.current = savedIdempotencyKey;
+      }
       const saved = sessionStorage.getItem(COVER_PAGE_COUNT_SESSION_KEY);
       if (saved) {
         const parsed = JSON.parse(saved) as { bodyPdfPageCount?: unknown; pageCount?: unknown; worksKey?: unknown };
@@ -70,43 +79,86 @@ export default function OrderPage() {
     setStep("confirm");
   }
 
+  async function uploadOrderFiles(target: SavedDraft) {
+    if (!bodyPdfFile || !coverPngFile) {
+      setError("本文PDFとカバーPNGの両方を選択してください。");
+      return;
+    }
+    const form = new FormData();
+    form.append("bodyPdf", bodyPdfFile);
+    form.append("coverPng", coverPngFile);
+    const response = await fetch(`/api/orders/${encodeURIComponent(target.id)}/files`, {
+      method: "POST",
+      headers: { "x-order-upload-token": target.uploadToken },
+      body: form,
+    });
+    const result = await response.json() as { error?: string; order?: { status: string; bodyPdfPageCount: number } };
+    if (!response.ok || !result.order || result.order.status !== "preparing") {
+      throw new Error(result.error ?? "入稿ファイルを保存できませんでした。同じファイルで再試行してください。");
+    }
+    setFilesSaved(true);
+    setError("");
+    try {
+      sessionStorage.removeItem(ORDER_IDEMPOTENCY_SESSION_KEY);
+    } catch {
+      // Session storage is optional; no address or contact data is stored there.
+    }
+  }
+
   async function submitDraft() {
-    if (!book || saving || draft) return;
+    if (!book || actionInProgressRef.current) return;
+    if (!bodyPdfFile || !coverPngFile) {
+      setError("本文PDFとカバーPNGを選択してから送信してください。");
+      return;
+    }
+    actionInProgressRef.current = true;
     setSaving(true);
     setError("");
-    idempotencyKeyRef.current ??= crypto.randomUUID();
 
     try {
-      const response = await fetch("/api/orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          idempotencyKey: idempotencyKeyRef.current,
-          customer,
-          book: {
-            title: book.title,
-            editor: book.editor,
-            coverStyle: book.coverStyle,
-            coverColor: book.coverColor,
-            works: book.works,
-          },
-          declaredBodyPdfPageCount: declaredPageCount,
-        }),
-      });
-      const result = await response.json() as {
-        error?: string;
-        order?: SavedDraft;
-        fields?: OrderFieldErrors;
-      };
-      if (!response.ok || !result.order) {
-        if (result.fields) setFieldErrors(result.fields);
-        setError(result.error ?? "注文を保存できませんでした。入力内容は保存されていません。");
-        return;
+      let targetDraft = draft;
+      if (!targetDraft) {
+        idempotencyKeyRef.current ??= crypto.randomUUID();
+        try {
+          sessionStorage.setItem(ORDER_IDEMPOTENCY_SESSION_KEY, idempotencyKeyRef.current);
+        } catch {
+          // The in-memory key still protects retries until this page is closed.
+        }
+        const response = await fetch("/api/orders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            idempotencyKey: idempotencyKeyRef.current,
+            customer,
+            book: {
+              title: book.title,
+              editor: book.editor,
+              coverStyle: book.coverStyle,
+              coverColor: book.coverColor,
+              works: book.works,
+            },
+            declaredBodyPdfPageCount: declaredPageCount,
+          }),
+        });
+        const result = await response.json() as {
+          error?: string;
+          order?: SavedDraft;
+          fields?: OrderFieldErrors;
+        };
+        if (!response.ok || !result.order || !result.order.uploadToken) {
+          if (result.fields) setFieldErrors(result.fields);
+          throw new Error(result.error ?? "注文下書きを作成できませんでした。");
+        }
+        targetDraft = result.order;
+        setDraft(targetDraft);
       }
-      setDraft(result.order);
-    } catch {
-      setError("注文保存サービスに接続できませんでした。入力内容は保存されていません。同じ画面から再試行できます。");
+      await uploadOrderFiles(targetDraft);
+    } catch (submitError) {
+      setError(submitError instanceof Error
+        ? submitError.message
+        : "注文または入稿ファイルを保存できませんでした。表示された内容を確認し、同じ画面から再試行してください。");
     } finally {
+      actionInProgressRef.current = false;
       setSaving(false);
     }
   }
@@ -128,11 +180,27 @@ export default function OrderPage() {
   if (draft) {
     return (
       <main className="mx-auto max-w-3xl px-6 py-12 text-stone-800">
-        <h1 className="text-3xl font-bold">注文情報を仮保存しました</h1>
+        <h1 className="text-3xl font-bold">{filesSaved ? "注文下書きと入稿ファイルを保存しました" : "注文下書きを作成しました"}</h1>
         <p className="mt-5">注文ID：<span className="font-mono">{draft.id}</span></p>
-        <p className="mt-3 rounded-lg bg-amber-50 p-4">ステータス：下書き。本文PDF・カバーPNGはサーバー側で検証・保存されていないため、決済には進めません。</p>
+        <p className="mt-3 rounded-lg bg-amber-50 p-4">状態：{filesSaved ? "preparing（ファイル検証済み）" : "ファイル未検証"}。価格は未確定のため、決済には進めません。</p>
         <p className="mt-3">価格：価格確認中</p>
-        <p className="mt-3 text-sm text-stone-600">配送先情報は注文管理者だけが参照できるサーバー側データとして保存されました。</p>
+        {!filesSaved && (
+          <section className="mt-6 rounded-xl border border-stone-200 p-5">
+            <h2 className="text-lg font-bold">入稿ファイルを送信</h2>
+            <p className="mt-2 text-sm text-stone-600">PDFの実ページ数・A6寸法と、PNGの実寸・350dpiメタデータをサーバーで確認します。ファイル名とブラウザー申告のMIMEタイプは判定に使用しません。</p>
+            <label className="mt-4 block font-medium">本文PDF（表紙なし）
+              <input className="mt-1 block w-full" type="file" accept="application/pdf,.pdf" onChange={(event) => setBodyPdfFile(event.target.files?.[0] ?? null)} disabled={saving} />
+            </label>
+            <label className="mt-4 block font-medium">見開きカバーPNG
+              <input className="mt-1 block w-full" type="file" accept="image/png,.png" onChange={(event) => setCoverPngFile(event.target.files?.[0] ?? null)} disabled={saving} />
+            </label>
+            {error && <p role="alert" className="mt-4 text-red-700">{error}</p>}
+            <button className="mt-5 rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => void submitDraft()} disabled={saving || !bodyPdfFile || !coverPngFile}>
+              {saving ? "検証・アップロード中……" : "2ファイルを検証して保存"}
+            </button>
+          </section>
+        )}
+        {filesSaved && <p className="mt-3 text-sm text-stone-600">配送先情報と非公開の入稿ファイルはサーバー側の注文IDに紐付けて保存されました。決済機能は未実装です。</p>}
       </main>
     );
   }
@@ -215,11 +283,23 @@ export default function OrderPage() {
             <dt>メールアドレス</dt><dd>{customer.email}</dd>
           </dl>
           <p className="mt-4 rounded-lg bg-amber-50 p-4">価格確認中です。今回は注文下書きの保存のみ行い、決済・製本発注には進みません。</p>
+          <section className="mt-5 rounded-xl border border-stone-200 p-5" aria-label="入稿ファイル選択">
+            <h3 className="font-bold">先に出力した入稿ファイルを選択してください</h3>
+            <p className="mt-2 text-sm text-stone-600">/final で本文PDF（表紙なし）を保存し、見開きカバー作成画面でPNGを保存してから、この画面に戻って選択してください。各ファイル60MiB以下、2ファイル合計約120MiB以下です。</p>
+            <label className="mt-4 block font-medium">本文PDF（表紙なし）
+              <input className="mt-1 block w-full" type="file" accept="application/pdf,.pdf" onChange={(event) => setBodyPdfFile(event.target.files?.[0] ?? null)} disabled={saving} />
+            </label>
+            <label className="mt-4 block font-medium">見開きカバーPNG
+              <input className="mt-1 block w-full" type="file" accept="image/png,.png" onChange={(event) => setCoverPngFile(event.target.files?.[0] ?? null)} disabled={saving} />
+            </label>
+            {bodyPdfFile && <p className="mt-2 text-sm">本文PDF選択済み（{Math.ceil(bodyPdfFile.size / 1024 / 1024)}MiB）</p>}
+            {coverPngFile && <p className="mt-1 text-sm">カバーPNG選択済み（{Math.ceil(coverPngFile.size / 1024 / 1024)}MiB）</p>}
+          </section>
           {error && <p role="alert" className="mt-4 text-red-700">{error}</p>}
           <div className="mt-5 flex flex-wrap gap-3">
             <button className="rounded-lg border border-stone-400 px-5 py-3" type="button" onClick={() => { setError(""); setStep("form"); }} disabled={saving}>戻って修正する</button>
-            <button className="rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => void submitDraft()} disabled={saving}>
-              {saving ? "下書きを保存しています……" : "注文下書きを保存する"}
+            <button className="rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => void submitDraft()} disabled={saving || !bodyPdfFile || !coverPngFile}>
+              {saving ? "下書き作成・検証・アップロード中……" : "下書きを作成してファイルを送信する"}
             </button>
           </div>
         </section>

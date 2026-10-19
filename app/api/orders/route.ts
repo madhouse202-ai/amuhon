@@ -1,8 +1,8 @@
-import { createHmac, randomUUID } from "node:crypto";
-import { NextResponse } from "next/server";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 
-import { validateOrderCustomer, type OrderBookSnapshot, type OrderDraftRequest } from "@/lib/order";
-import type { BookWork } from "@/lib/book";
+import { validateOrderCustomer, type OrderBookSnapshot, type OrderDraftRequest } from "../../../lib/order.ts";
+import { hashOrderUploadToken } from "../../../lib/order-upload-token.ts";
+import type { BookWork } from "../../../lib/book.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,7 +11,7 @@ const MAX_REQUEST_BYTES = 256 * 1024;
 const MAX_WORKS = 100;
 
 function errorResponse(message: string, status: number) {
-  return NextResponse.json({ error: message }, { status, headers: { "Cache-Control": "no-store" } });
+  return Response.json({ error: message }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
 async function readLimitedJson(request: Request): Promise<unknown | null> {
@@ -139,7 +139,7 @@ export async function POST(request: Request) {
   const book = parseBookSnapshot(raw.book);
   const declaredBodyPdfPageCount = safePageCount(raw.declaredBodyPdfPageCount);
   if (!idempotencyKey || !customer || !book || declaredBodyPdfPageCount === undefined) {
-    return NextResponse.json({
+    return Response.json({
       error: "入力内容または本の情報を確認してください。",
       fields: errors,
     }, { status: 400, headers: { "Cache-Control": "no-store" } });
@@ -157,6 +157,7 @@ export async function POST(request: Request) {
   if (!clientIp) return errorResponse("注文保存サービスの接続情報が不足しています。入力内容は保存されていません。", 503);
 
   const rateLimitKeyHash = createHmac("sha256", rateLimitSecret).update(clientIp).digest("hex");
+  const uploadToken = randomBytes(32).toString("base64url");
   const requestPayload: OrderDraftRequest = { idempotencyKey, customer, book, declaredBodyPdfPageCount };
   const args = {
     p_order_id: randomUUID(),
@@ -165,6 +166,7 @@ export async function POST(request: Request) {
     p_book_snapshot: requestPayload.book,
     p_declared_body_pdf_page_count: requestPayload.declaredBodyPdfPageCount,
     p_rate_limit_key_hash: rateLimitKeyHash,
+    p_upload_token_hash: hashOrderUploadToken(uploadToken),
     p_draft_retention_days: retentionDays,
   };
 
@@ -179,7 +181,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const response = await fetch(`${databaseUrl.origin}/rest/v1/rpc/create_amuhon_order_draft`, {
+    const response = await fetch(`${databaseUrl.origin}/rest/v1/rpc/create_amuhon_order_draft_with_upload_token`, {
       method: "POST",
       headers: {
         apikey: serviceRoleKey,
@@ -195,14 +197,19 @@ export async function POST(request: Request) {
     if (!response.ok) {
       const detail = result && typeof result.message === "string" ? result.message : "";
       if (detail === "ORDER_RATE_LIMITED") return errorResponse("送信回数が上限に達しました。15分ほど待ってからお試しください。", 429);
+      if (detail === "ORDER_FILE_UPLOAD_IN_PROGRESS") return errorResponse("この注文のファイル処理が進行中です。完了後に画面を確認してください。", 409);
+      if (detail === "IDEMPOTENCY_KEY_REUSE_MISMATCH") return errorResponse("同じ送信キーで異なる注文情報が送信されました。画面を再読み込みしてやり直してください。", 409);
       return errorResponse("注文を保存できませんでした。入力内容は保存されていません。時間をおいて再試行してください。", 502);
     }
 
-    if (!result || typeof result.id !== "string" || result.status !== "draft" || typeof result.createdAt !== "string") {
+    if (!result || typeof result.id !== "string" || !["draft", "preparing"].includes(String(result.status)) || typeof result.createdAt !== "string") {
       return errorResponse("注文保存結果を確認できませんでした。時間をおいて同じ画面から再試行してください。", 502);
     }
-    return NextResponse.json({
-      order: { id: result.id, status: result.status, createdAt: result.createdAt },
+    if (result.uploadTokenAccepted !== true) {
+      return errorResponse("この注文はすでにファイル処理済みです。注文状況を確認してください。", 409);
+    }
+    return Response.json({
+      order: { id: result.id, status: result.status, createdAt: result.createdAt, uploadToken },
       duplicate: result.created === false,
       priceStatus: "pending",
     }, { status: result.created === false ? 200 : 201, headers: { "Cache-Control": "no-store" } });
