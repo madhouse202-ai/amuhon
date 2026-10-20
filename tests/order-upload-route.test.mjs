@@ -37,7 +37,7 @@ function uploadRequest({ token = TOKEN, bodyPdf, coverPng }) {
   form.append("coverPng", new File([coverPng], "cover.png", { type: "application/octet-stream" }));
   return new Request(`https://app.test/api/orders/${ORDER_ID}/files`, {
     method: "POST",
-    headers: { Origin: "https://app.test", "x-order-upload-token": token, "x-real-ip": "192.0.2.10" },
+    headers: { Origin: "https://app.test", Cookie: `amuhon_order_upload_${ORDER_ID}=${token}`, "x-real-ip": "192.0.2.10" },
     body: form,
   });
 }

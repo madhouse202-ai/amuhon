@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "validate:order-assets": "node --experimental-strip-types scripts/validate-order-assets.mjs",
+    "test:order-assets": "node --experimental-strip-types --test tests/order-assets.test.mjs tests/order-validation-worker.test.mjs",
+    "generate:order-fixtures": "node --experimental-strip-types scripts/generate-order-validation-fixtures.mjs",
+    "benchmark:order-assets": "node --experimental-strip-types scripts/benchmark-order-assets.mjs"
   },
   "dependencies": {
     "jszip": "^3.10.2",
@@ -14,7 +18,8 @@
     "pdf-lib": "^1.17.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "sharp": "^0.35.5"
+    "sharp": "^0.35.5",
+    "tus-js-client": "^4.3.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

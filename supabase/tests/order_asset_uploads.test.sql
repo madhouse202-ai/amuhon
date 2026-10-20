@@ -89,8 +89,9 @@ begin
     )
   ) then raise exception '[RPC SECURITY/PRIVILEGES] owner, SECURITY DEFINER, search_path, or EXECUTE grants are incorrect'; end if;
   if (select "public" from storage.buckets where id = 'amuhon-order-files') is distinct from false or
+     (select file_size_limit from storage.buckets where id = 'amuhon-order-files') is distinct from 40000000 or
      coalesce((select rolbypassrls from pg_roles where rolname = 'service_role'), false) is not true then
-    raise exception '[STORAGE] bucket is not private or service_role bypass is unavailable';
+    raise exception '[STORAGE] bucket must be private with a 40,000,000-byte limit and service_role bypass available';
   end if;
   if not exists (
     select 1 from pg_policies

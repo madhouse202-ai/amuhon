@@ -2,6 +2,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 
 import { validateOrderCustomer, type OrderBookSnapshot, type OrderDraftRequest } from "../../../lib/order.ts";
 import { hashOrderUploadToken } from "../../../lib/order-upload-token.ts";
+import { serializeOrderUploadCookie } from "../../../lib/order-upload-cookie.ts";
 import type { BookWork } from "../../../lib/book.ts";
 
 export const runtime = "nodejs";
@@ -181,7 +182,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const response = await fetch(`${databaseUrl.origin}/rest/v1/rpc/create_amuhon_order_draft_with_upload_token`, {
+    const rpcResponse = await fetch(`${databaseUrl.origin}/rest/v1/rpc/create_amuhon_order_draft_with_upload_token`, {
       method: "POST",
       headers: {
         apikey: serviceRoleKey,
@@ -193,8 +194,8 @@ export async function POST(request: Request) {
       cache: "no-store",
       signal: AbortSignal.timeout(10_000),
     });
-    const result = await response.json().catch(() => null) as Record<string, unknown> | null;
-    if (!response.ok) {
+    const result = await rpcResponse.json().catch(() => null) as Record<string, unknown> | null;
+    if (!rpcResponse.ok) {
       const detail = result && typeof result.message === "string" ? result.message : "";
       if (detail === "ORDER_RATE_LIMITED") return errorResponse("送信回数が上限に達しました。15分ほど待ってからお試しください。", 429);
       if (detail === "ORDER_FILE_UPLOAD_IN_PROGRESS") return errorResponse("この注文のファイル処理が進行中です。完了後に画面を確認してください。", 409);
@@ -208,11 +209,13 @@ export async function POST(request: Request) {
     if (result.uploadTokenAccepted !== true) {
       return errorResponse("この注文はすでにファイル処理済みです。注文状況を確認してください。", 409);
     }
-    return Response.json({
-      order: { id: result.id, status: result.status, createdAt: result.createdAt, uploadToken },
+    const response = Response.json({
+      order: { id: result.id, status: result.status, createdAt: result.createdAt },
       duplicate: result.created === false,
       priceStatus: "pending",
     }, { status: result.created === false ? 200 : 201, headers: { "Cache-Control": "no-store" } });
+    response.headers.append("Set-Cookie", serializeOrderUploadCookie(result.id, uploadToken, retentionDays * 24 * 60 * 60));
+    return response;
   } catch {
     return errorResponse("注文保存サービスに接続できませんでした。入力内容は保存されていません。時間をおいて再試行してください。", 502);
   }

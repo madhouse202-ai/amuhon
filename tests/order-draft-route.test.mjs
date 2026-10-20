@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { POST } from "../app/api/orders/route.ts";
+import { hashOrderUploadToken } from "../lib/order-upload-token.ts";
 
 const originalEnv = {
   SUPABASE_URL: process.env.SUPABASE_URL,
@@ -43,7 +44,7 @@ async function invoke(mockFetch) {
   }
 }
 
-test("order draft RPC stores only upload-token hash and returns the capability once", async () => {
+test("order draft RPC stores only upload-token hash and returns the capability in an HttpOnly cookie", async () => {
   let rpcArgs;
   let rpcUrl;
   const response = await invoke(async (url, init) => {
@@ -61,8 +62,15 @@ test("order draft RPC stores only upload-token hash and returns the capability o
   assert.equal(response.status, 201);
   assert.match(rpcUrl, /create_amuhon_order_draft_with_upload_token$/);
   assert.match(rpcArgs.p_upload_token_hash, /^[a-f0-9]{64}$/);
-  assert.equal(JSON.stringify(rpcArgs).includes(result.order.uploadToken), false);
-  assert.match(result.order.uploadToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal("uploadToken" in result.order, false);
+  const setCookie = response.headers.get("set-cookie") ?? "";
+  const cookie = setCookie.split(";")[0];
+  const token = cookie.split("=")[1];
+  assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(hashOrderUploadToken(token), rpcArgs.p_upload_token_hash);
+  assert.match(setCookie, /Path=\/api\/orders\/d9d71ea0-115c-4b26-8c1d-86bead2aecc4/);
+  assert.match(setCookie, /HttpOnly/);
+  assert.match(setCookie, /SameSite=Strict/);
   assert.equal(result.order.status, "draft");
 });
 
@@ -78,7 +86,8 @@ test("same idempotency key can receive a fresh capability on safe draft retry", 
   assert.equal(response.status, 200);
   assert.equal(result.duplicate, true);
   assert.equal(result.order.status, "draft");
-  assert.match(result.order.uploadToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal("uploadToken" in result.order, false);
+  assert.match(response.headers.get("set-cookie") ?? "", /HttpOnly/);
 });
 
 test("service-side idempotency mismatch is rejected without leaking database details", async () => {

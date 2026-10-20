@@ -2,11 +2,13 @@ import { createHmac, randomUUID } from "node:crypto";
 
 import {
   assertDeclaredPdfPageCount,
+  MAX_ORDER_ASSET_BYTES,
   MAX_ORDER_UPLOAD_BODY_BYTES,
   validateBodyPdf,
   validateCoverPng,
 } from "../../../../../lib/order-assets.ts";
-import { equalHexDigest, hashOrderUploadToken, isValidOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
+import { equalHexDigest, hashOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
+import { readOrderUploadCookie } from "../../../../../lib/order-upload-cookie.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -133,7 +135,7 @@ async function parseUploadForm(request: Request): Promise<{ bodyPdf: Uint8Array;
   const body = form.get("bodyPdf");
   const cover = form.get("coverPng");
   if (!(body instanceof File) || !(cover instanceof File)) throw new Error("missing_files");
-  if (body.size < 8 || cover.size < 33 || body.size > 60 * 1024 * 1024 || cover.size > 60 * 1024 * 1024) {
+  if (body.size < 8 || cover.size < 33 || body.size > MAX_ORDER_ASSET_BYTES || cover.size > MAX_ORDER_ASSET_BYTES) {
     throw new Error("file_size");
   }
   return {
@@ -201,8 +203,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!UUID_PATTERN.test(orderId)) return fail("注文情報を確認できません。", 404);
   const config = getSupabaseConfig();
   if (!config) return fail("注文保存サービスが未設定です。ファイルは保存されていません。", 503);
-  const token = request.headers.get("x-order-upload-token") ?? "";
-  if (!isValidOrderUploadToken(token)) return fail("アップロード権限を確認できません。", 403);
+  const token = readOrderUploadCookie(request, orderId);
+  if (!token) return fail("アップロード権限を確認できません。", 403);
   const clientIp = getTrustedIp(request);
   if (!clientIp) return fail("安全な送信元情報を確認できません。", 503);
 
@@ -248,12 +250,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const status = ["too_large", "file_size"].includes(message) ? 413 : message === "timeout" ? 408 : 400;
     if (["invalid_multipart", "invalid_fields", "missing_files", "bad_length", "invalid_body", "timeout"].includes(message)) {
       return fail(message === "too_large"
-        ? "送信サイズが上限を超えています（各ファイル60MiBまで）。"
+        ? "送信サイズが上限を超えています（各ファイル40,000,000バイト／40MBまで）。"
         : message === "timeout"
           ? "ファイル送信がタイムアウトしました。"
-          : "本文PDFとカバーPNGの2ファイルを選択してください。各ファイルは60MiB以下です。", message === "too_large" ? 413 : 400);
+          : "本文PDFとカバーPNGの2ファイルを選択してください。各ファイルは40,000,000バイト／40MB以下です。", message === "too_large" ? 413 : 400);
     }
-    if (message === "file_size") return fail("各ファイルは60MiB以下である必要があります。", 413);
+    if (message === "file_size") return fail("各ファイルは40,000,000バイト／40MB以下である必要があります。", 413);
     return fail(message, status);
   }
 

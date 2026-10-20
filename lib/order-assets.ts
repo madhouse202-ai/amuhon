@@ -4,7 +4,8 @@ import sharp from "sharp";
 
 import { calculateCoverLayout, isSubmissionPageCount } from "./production.ts";
 
-export const MAX_ORDER_ASSET_BYTES = 60 * 1024 * 1024;
+// Decimal 40 MB, kept below the Supabase Free project-wide 50 MB file cap.
+export const MAX_ORDER_ASSET_BYTES = 40_000_000;
 export const MAX_ORDER_UPLOAD_BODY_BYTES = MAX_ORDER_ASSET_BYTES * 2 + 128 * 1024;
 export const ORDER_UPLOAD_TOKEN_BYTES = 32;
 const A6_WIDTH_PT = 105 / 25.4 * 72;
@@ -22,6 +23,12 @@ for (let index = 0; index < CRC32_TABLE.length; index += 1) {
 
 export type ValidatedBodyPdf = { pageCount: number; sha256: string };
 export type ValidatedCoverPng = { width: number; height: number; sha256: string };
+
+export function assertOrderAssetSize(byteLength: number, assetName: "本文PDF" | "カバーPNG"): void {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength > MAX_ORDER_ASSET_BYTES) {
+    throw new Error(`${assetName}のファイルサイズが上限を超えています（40,000,000バイト／40MB）。`);
+  }
+}
 
 export function assertDeclaredPdfPageCount(actualPageCount: number, declaredPageCount: unknown): void {
   if (declaredPageCount !== null && declaredPageCount !== undefined && declaredPageCount !== actualPageCount) {
@@ -102,9 +109,9 @@ function isA6PageBox(box: { width: number; height: number }): boolean {
 
 /** Parse the actual PDF structure; never use the browser-declared page count as truth. */
 export async function validateBodyPdf(bytes: Uint8Array): Promise<ValidatedBodyPdf> {
-  if (bytes.byteLength < 8 || bytes.byteLength > MAX_ORDER_ASSET_BYTES ||
-      Buffer.from(bytes.subarray(0, 5)).toString("ascii") !== "%PDF-") {
-    throw new Error("本文PDFの形式またはファイルサイズを確認してください（上限60MiB）。");
+  assertOrderAssetSize(bytes.byteLength, "本文PDF");
+  if (bytes.byteLength < 8 || Buffer.from(bytes.subarray(0, 5)).toString("ascii") !== "%PDF-") {
+    throw new Error("本文PDFの形式を確認してください。");
   }
 
   let document: PDFDocument;
@@ -130,9 +137,8 @@ export async function validateBodyPdf(bytes: Uint8Array): Promise<ValidatedBodyP
 
 /** Decode the whole PNG and verify print pixels, RGB color model, and pHYs density. */
 export async function validateCoverPng(bytes: Uint8Array, bodyPdfPageCount: number): Promise<ValidatedCoverPng> {
-  if (bytes.byteLength < 33 || bytes.byteLength > MAX_ORDER_ASSET_BYTES) {
-    throw new Error("カバーPNGのファイルサイズが上限を超えています（60MiB）。");
-  }
+  assertOrderAssetSize(bytes.byteLength, "カバーPNG");
+  if (bytes.byteLength < 33) throw new Error("カバーPNGのファイルサイズまたは形式を確認してください。");
   const layout = calculateCoverLayout(bodyPdfPageCount);
   if (!layout) throw new Error("本文ページ数からカバー寸法を計算できません。");
 

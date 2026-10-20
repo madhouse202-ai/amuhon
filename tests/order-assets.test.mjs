@@ -4,10 +4,22 @@ import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import {
   assertDeclaredPdfPageCount,
+  assertOrderAssetSize,
+  MAX_ORDER_ASSET_BYTES,
+  MAX_ORDER_UPLOAD_BODY_BYTES,
   validateBodyPdf,
   validateCoverPng,
 } from "../lib/order-assets.ts";
 import { calculateCoverLayout } from "../lib/production.ts";
+
+test("both order assets use the exact decimal 40,000,000-byte cap", () => {
+  assert.equal(MAX_ORDER_ASSET_BYTES, 40_000_000);
+  assert.equal(MAX_ORDER_UPLOAD_BODY_BYTES, 80_131_072);
+  assert.doesNotThrow(() => assertOrderAssetSize(40_000_000, "本文PDF"));
+  assert.doesNotThrow(() => assertOrderAssetSize(40_000_000, "カバーPNG"));
+  assert.throws(() => assertOrderAssetSize(40_000_001, "本文PDF"), /40,000,000バイト／40MB/);
+  assert.throws(() => assertOrderAssetSize(40_000_001, "カバーPNG"), /40,000,000バイト／40MB/);
+});
 
 async function makePdf(pageCount, widthPt = 105 / 25.4 * 72, heightPt = 148 / 25.4 * 72) {
   const pdf = await PDFDocument.create();
