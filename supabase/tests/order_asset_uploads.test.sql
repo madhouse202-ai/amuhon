@@ -1,6 +1,7 @@
 -- Verify the selected Dashboard project is amuhon-staging before running.
--- Requires empty order/rate-limit tables. All test writes are rolled back.
-begin;
+-- Uses only fresh synthetic UUIDs/keys; test writes are rolled back.
+-- Stop if RPC-internal global cleanup could touch any pre-existing rows.
+begin isolation level repeatable read;
 do $asset_tests$
 declare
   target_confirmation constant text := 'amuhon-staging';
@@ -18,6 +19,7 @@ declare
   claimed uuid[];
   rejected boolean;
   attempt integer;
+  test_rate_key text;
 begin
   if target_confirmation <> 'amuhon-staging' then raise exception 'STOP: wrong Supabase project'; end if;
   if to_regclass('public.amuhon_order_asset_rate_limits') is null or
@@ -29,9 +31,35 @@ begin
      to_regprocedure('public.release_stale_amuhon_order_asset_cleanup(uuid,uuid[])') is null then
     raise exception '[SCHEMA] apply the order asset upload migration first';
   end if;
-  if exists (select 1 from public.amuhon_orders) or exists (select 1 from public.amuhon_order_rate_limits)
-     or exists (select 1 from public.amuhon_order_asset_rate_limits) then
-    raise exception 'STOP: test requires empty order and rate-limit tables';
+  -- Draft creation and upload start prune old rate-limit rows globally. Do not
+  -- invoke those RPCs if any existing rate-limit row could be deleted.
+  if exists (
+    select 1 from public.amuhon_order_rate_limits where updated_at < now() - interval '24 hours'
+  ) or exists (
+    select 1 from public.amuhon_order_asset_rate_limits where updated_at < now() - interval '24 hours'
+  ) then
+    raise exception 'STOP: a production RPC would prune an existing rate-limit row; wait for approved cleanup or review the row first';
+  end if;
+
+  -- The cleanup-claim RPC leases every eligible stale preparing order, not a
+  -- caller-selected order. Run this integration test only when none pre-exist.
+  if exists (
+    select 1 from public.amuhon_orders
+    where status = 'preparing' and files_validated_at is null
+      and (upload_lease_id is null or upload_lease_expires_at <= now())
+  ) then
+    raise exception 'STOP: cleanup RPC could lease a pre-existing stale preparing order';
+  end if;
+
+  -- Guard the random identifiers against existing data before any write.
+  if exists (
+    select 1 from public.amuhon_orders where id = order_id or idempotency_key = idem
+  ) or exists (
+    select 1 from public.amuhon_order_rate_limits where key_hash = rate_key
+  ) or exists (
+    select 1 from public.amuhon_order_asset_rate_limits where key_hash in (asset_rate_key, limited_rate_key)
+  ) then
+    raise exception 'STOP: a generated test identifier collided with existing data';
   end if;
   if not (select relrowsecurity from pg_class where oid = 'public.amuhon_order_asset_rate_limits'::regclass) or
      has_table_privilege('anon', 'public.amuhon_order_asset_rate_limits', 'SELECT') or
@@ -118,9 +146,14 @@ begin
   end;
   if not rejected then raise exception '[PAYMENT GATE] paid order without verified assets and price was accepted'; end if;
 
+  order_id := gen_random_uuid();
+  idem := gen_random_uuid();
+  if exists (select 1 from public.amuhon_orders where id = order_id or idempotency_key = idem) then
+    raise exception 'STOP: cleanup test identifier collided with existing order data';
+  end if;
   insert into public.amuhon_orders (
     id, idempotency_key, status, customer, book_snapshot, declared_body_pdf_page_count, upload_token_hash
-  ) values (gen_random_uuid(), gen_random_uuid(), 'draft', '{}'::jsonb, '{}'::jsonb, 24, token_hash)
+  ) values (order_id, idem, 'draft', '{}'::jsonb, '{}'::jsonb, 24, token_hash)
   returning id into order_id;
   lease_id := gen_random_uuid();
   perform public.begin_amuhon_order_asset_upload(order_id, token_hash, asset_rate_key, lease_id);
@@ -133,9 +166,15 @@ begin
 
   for attempt in 1..6 loop
     order_id := gen_random_uuid();
+    idem := gen_random_uuid();
+    test_rate_key := md5(gen_random_uuid()::text) || md5(gen_random_uuid()::text);
+    if exists (select 1 from public.amuhon_orders where id = order_id or idempotency_key = idem) or
+       exists (select 1 from public.amuhon_order_rate_limits where key_hash = test_rate_key) then
+      raise exception 'STOP: rate-limit test identifier collided with existing data';
+    end if;
     perform public.create_amuhon_order_draft_with_upload_token(
-      order_id, gen_random_uuid(), '{}'::jsonb, '{"title":"rate test"}'::jsonb,
-      24, md5(gen_random_uuid()::text) || md5(gen_random_uuid()::text), token_hash, 30
+      order_id, idem, '{}'::jsonb, '{"title":"rate test"}'::jsonb,
+      24, test_rate_key, token_hash, 30
     );
     rejected := false;
     begin

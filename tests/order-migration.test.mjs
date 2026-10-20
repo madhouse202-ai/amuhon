@@ -51,10 +51,15 @@ test("asset migration stores only upload-token hashes and exposes RPCs to servic
 
 test("asset SQL integration test is staging-guarded, uses synthetic records, and rolls back", () => {
   assert.match(assetIntegrationSql, /target_confirmation constant text := 'amuhon-staging'/i);
-  assert.match(assetIntegrationSql, /requires empty order\/rate-limit tables/i);
+  assert.match(assetIntegrationSql, /begin isolation level repeatable read;/i);
+  assert.doesNotMatch(assetIntegrationSql, /requires empty order\/rate-limit tables/i);
+  assert.match(assetIntegrationSql, /updated_at < now\(\) - interval '24 hours'/i);
+  assert.match(assetIntegrationSql, /cleanup RPC could lease a pre-existing stale preparing order/i);
+  assert.match(assetIntegrationSql, /order_id := gen_random_uuid\(\)/i);
+  assert.match(assetIntegrationSql, /test_rate_key := md5\(gen_random_uuid\(\)::text\)/i);
   assert.match(assetIntegrationSql, /synthetic/i);
   assert.match(assetIntegrationSql, /select 'ALL TESTS PASSED' as result;\s*rollback;\s*$/i);
-  assert.match(assetIntegrationSql, /\bbegin;[\s\S]*\brollback;\s*$/i);
+  assert.match(assetIntegrationSql, /\bbegin(?:\s+isolation\s+level\s+repeatable\s+read)?;[\s\S]*\brollback;\s*$/i);
 });
 
 test("integration test requires explicit staging confirmation and rolls back its test data", () => {
