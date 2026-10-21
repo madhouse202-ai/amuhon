@@ -2,7 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 
 import { hashOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
 import { readOrderUploadCookie } from "../../../../../lib/order-upload-cookie.ts";
-import { isOrderTusProjectMatch } from "../../../../../lib/order-tus.ts";
+import { isOrderTusProjectMatch, tusEndpoint } from "../../../../../lib/order-tus.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -195,14 +195,6 @@ async function createSignedUploadToken(url: URL, key: string, objectKey: string)
     throw new Error("signed_upload_unavailable");
   }
   return token;
-}
-
-export function tusEndpoint(projectUrl: URL): string {
-  if (projectUrl.hostname.endsWith(".supabase.co")) {
-    const projectRef = projectUrl.hostname.slice(0, -".supabase.co".length);
-    return `https://${projectRef}.storage.supabase.co/storage/v1/upload/resumable/sign`;
-  }
-  return `${projectUrl.origin}/storage/v1/upload/resumable/sign`;
 }
 
 async function abortLease(url: URL, key: string, orderId: string, tokenHash: string, leaseId: string) {

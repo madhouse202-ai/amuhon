@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { POST, tusEndpoint } from "../app/api/orders/[id]/uploads/route.ts";
-import { createOrderTusHeaders, inspectOrderTusCredentials, isOrderTusProjectMatch } from "../lib/order-tus.ts";
+import { POST } from "../app/api/orders/[id]/uploads/route.ts";
+import { createOrderTusHeaders, inspectOrderTusCredentials, isOrderTusProjectMatch, tusEndpoint } from "../lib/order-tus.ts";
 
 const ORDER_ID = "d9d71ea0-115c-4b26-8c1d-86bead2aecc4";
 const ATTEMPT_ID = "a9d71ea0-115c-4b26-8c1d-86bead2aecc4";

@@ -52,7 +52,7 @@ test("cleanup-owned and failed attempts are never reused, and historical attempt
 
 test("manual staging SQL test rolls back and reports an explicit success marker", () => {
   assert.match(testSql, /confirmed_project constant text := 'amuhon-staging'/);
-  assert.match(testSql, /begin isolation level repeatable read/i);
+  assert.match(testSql, /begin isolation level read committed/i);
   assert.match(testSql, /select 'ALL TESTS PASSED'/);
   assert.match(testSql, /rollback\s*;\s*$/i);
   assert.match(testSql, /wrong token registered a temp upload/i);

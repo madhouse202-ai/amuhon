@@ -42,3 +42,26 @@ The database rate limiter allows five new draft submissions per hashed client ad
 Files must still be generated and downloaded in the browser, then selected in `/order`; the application does not yet produce a server-side PDF or automatically prove that all text in a supplied PDF came from the selected works. In the direct-upload experiment, files are temporary and unverified, so the UI explicitly does not show “verified” completion. `declared_body_pdf_page_count` remains an untrusted review hint; the legacy server-derived PDF count is authoritative and must match the hint when present. Database constraints prevent a row from entering `ready_for_payment` without server-verified paths, a validation timestamp, final page count, and finalized price. No customer-information read/list route exists.
 
 Before real orders, configure the cleanup scheduler, implement authorized administrative access, price calculation, a secure customer-data retention/deletion job, and operational monitoring. Apply and test both migrations and RPCs only against a non-production Supabase project before deployment.
+
+## Validation-job SQL tests
+
+The SQL tests are split by scope:
+
+- `supabase/tests/order_validation_jobs.test.sql` is the staging-safe job-state test. It never calls the global cleanup RPC, `create_amuhon_order_draft_with_upload_token`, or `begin_amuhon_order_asset_upload`; those RPCs can prune old rate-limit rows globally. Instead it directly inserts one random synthetic order with the upload lease fields required by the attempt-registration RPC, then exercises the validation-job RPCs. It stops if it finds an existing queued or expired `validating` job because `claim_amuhon_order_validation_job` is global and could claim that job. This precheck cannot eliminate a race with concurrent enqueue/worker activity. Before running it in `amuhon-staging`, pause validation workers and other processes that enqueue jobs, then run the whole file in the SQL Editor as `postgres` using `READ COMMITTED`. Confirm the Dashboard project is `amuhon-staging`; the SQL literal is not an automatic project-identity check. If it errors before the final `ROLLBACK`, issue `ROLLBACK` in that SQL Editor session before closing it.
+- `supabase/tests/order_validation_jobs_cleanup.isolated.sql` exercises the global temp-file cleanup RPC. It is **only for a dedicated empty isolated database**, never shared staging or production. Its empty-table precondition is intended to fail closed, but does not identify the Supabase project or prevent concurrent writes. Do not run it while any application, worker, or cleanup scheduler can create or claim attempts. It invokes only database RPCs and does not delete Storage objects; it simulates cleanup outcomes by updating synthetic rows inside a transaction that is rolled back.
+
+The staging status may include expired `issued` attempts. Those are not modified or locked by the staging-safe job test because that file does not call the cleanup RPC. Do not bypass the isolated cleanup test's empty-database guard to test cleanup on shared staging.
+
+## Validation-job staging verification (2026-10-21)
+
+The following results were reported by the project owner after checking the `amuhon-staging` Supabase Dashboard and running the SQL test. They are **user-reported observations; Codex did not connect to Supabase or independently verify the staging database**:
+
+- `supabase/tests/order_validation_jobs.test.sql` returned `ALL TESTS PASSED`.
+- The validation-job table contained 0 rows after the test.
+- `public.amuhon_order_validation_jobs` had RLS enabled (`enabled=true`, `forced=false`).
+- `anon`, `authenticated`, and `service_role` had no direct `SELECT`, `INSERT`, `UPDATE`, or `DELETE` privileges on the job table.
+- For `enqueue_amuhon_order_validation_job`, `claim_amuhon_order_validation_job`, `complete_amuhon_order_validation_job`, `fail_amuhon_order_validation_job`, and `retry_amuhon_order_validation_job`, `anon` and `authenticated` lacked `EXECUTE`, while `service_role` had `EXECUTE`.
+- Six table constraints were observed. Their full definitions have not yet been compared with the local migration.
+- The SQL applied in staging has not been compared in full with `supabase/migrations/20261021000100_order_validation_jobs.sql`; exact parity is unconfirmed.
+
+Before relying on this record for a production rollout, compare the complete constraint definitions and retrieve the applied function/table definitions from staging for a full review against the migration. This documentation records reported staging checks; it is not evidence of independent verification or full migration parity.

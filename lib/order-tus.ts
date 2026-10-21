@@ -2,6 +2,14 @@
  * Keep Supabase's signed-upload capability opaque and pass it unchanged to
  * tus-js-client. The public project key is a separate gateway header.
  */
+export function tusEndpoint(projectUrl: URL): string {
+  if (projectUrl.hostname.endsWith(".supabase.co")) {
+    const projectRef = projectUrl.hostname.slice(0, -".supabase.co".length);
+    return `https://${projectRef}.storage.supabase.co/storage/v1/upload/resumable/sign`;
+  }
+  return `${projectUrl.origin}/storage/v1/upload/resumable/sign`;
+}
+
 export function createOrderTusHeaders(publicApiKey: string, signedUploadToken: string) {
   if (!publicApiKey || !signedUploadToken) {
     throw new Error("TUS upload credentials are missing.");

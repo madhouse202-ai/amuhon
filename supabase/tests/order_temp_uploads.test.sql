@@ -1,6 +1,6 @@
 -- Run manually only in the amuhon-staging SQL Editor after applying migrations
 -- through 20261020000300_order_temp_uploads.sql. All writes are rolled back.
-begin isolation level repeatable read;
+begin isolation level read committed;
 do $temp_upload_tests$
 <<test_block>>
 declare
