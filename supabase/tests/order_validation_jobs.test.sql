@@ -149,20 +149,21 @@ begin
   rejected := false;
   begin
     perform public.complete_amuhon_order_validation_job(attempt_success_id, first_claim_lease);
-  exception when others then rejected := sqlerrm = 'VALIDATION_LEASE_STALE';
+  exception when others then rejected := sqlerrm = 'ATOMIC_ASSET_FINALIZATION_REQUIRED';
   end;
-  if not rejected then raise exception '[STALE LEASE] old lease completed a reclaimed job'; end if;
-  if not public.complete_amuhon_order_validation_job(attempt_success_id, reclaimed_lease) then
-    raise exception '[COMPLETE] current lease did not complete';
-  end if;
+  if not rejected then raise exception '[COMPLETE GUARD] old lease bypassed atomic asset finalization'; end if;
   rejected := false;
   begin
     perform public.complete_amuhon_order_validation_job(attempt_success_id, reclaimed_lease);
-  exception when others then rejected := sqlerrm = 'VALIDATION_LEASE_STALE';
+  exception when others then rejected := sqlerrm = 'ATOMIC_ASSET_FINALIZATION_REQUIRED';
   end;
-  if not rejected then raise exception '[DOUBLE COMPLETE] terminal job accepted a duplicate completion'; end if;
-  if (public.enqueue_amuhon_order_validation_job(order_id, token_hash, attempt_success_id)->>'state') <> 'succeeded' then
-    raise exception '[IDEMPOTENCY] enqueue did not preserve terminal success';
+  if not rejected then raise exception '[COMPLETE GUARD] active lease completed without committed assets'; end if;
+  if (select state from public.amuhon_order_validation_jobs where attempt_id = attempt_success_id) <> 'validating' or
+     (select lease_id from public.amuhon_order_validation_jobs where attempt_id = attempt_success_id) is distinct from reclaimed_lease then
+    raise exception '[COMPLETE GUARD] rejected standalone completion changed the job';
+  end if;
+  if (public.enqueue_amuhon_order_validation_job(order_id, token_hash, attempt_success_id)->>'state') <> 'validating' then
+    raise exception '[IDEMPOTENCY] enqueue did not preserve in-flight validation state';
   end if;
   update public.amuhon_order_temp_upload_attempts set expires_at = clock_timestamp() - interval '1 second'
   where id = attempt_success_id;

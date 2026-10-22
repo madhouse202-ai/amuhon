@@ -79,8 +79,8 @@ test("staging job SQL uses synthetic identifiers, avoids the global cleanup RPC,
   assert.doesNotMatch(integrationSql, /claim_expired_amuhon_order_temp_upload_attempts/i);
   assert.match(integrationSql, /EXCLUSIVE CLAIM/i);
   assert.match(integrationSql, /LEASE RECLAIM/i);
-  assert.match(integrationSql, /STALE LEASE/i);
-  assert.match(integrationSql, /DOUBLE COMPLETE/i);
+  assert.match(integrationSql, /COMPLETE GUARD/i);
+  assert.match(integrationSql, /ATOMIC_ASSET_FINALIZATION_REQUIRED/i);
   assert.match(integrationSql, /RETRY POLICY/i);
   assert.match(integrationSql, /ALL TESTS PASSED/i);
   assert.match(integrationSql, /rollback\s*;\s*$/i);

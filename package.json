@@ -9,6 +9,7 @@
     "lint": "eslint",
     "validate:order-assets": "node --experimental-strip-types scripts/validate-order-assets.mjs",
     "test:order-assets": "node --experimental-strip-types --test tests/order-assets.test.mjs tests/order-validation-worker.test.mjs",
+    "test:order-validation-sql": "node --test tests/order-validation-jobs-migration.test.mjs tests/order-validation-asset-commit-migration.test.mjs",
     "generate:order-fixtures": "node --experimental-strip-types scripts/generate-order-validation-fixtures.mjs",
     "benchmark:order-assets": "node --experimental-strip-types scripts/benchmark-order-assets.mjs"
   },
