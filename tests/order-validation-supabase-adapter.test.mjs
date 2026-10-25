@@ -70,7 +70,7 @@ test("claim uses exact RPC contract, validates keys, and never calls legacy comp
       return rpcResponse(claimPayload());
     },
   });
-  const result = await rpc.claim({ leaseSeconds: 300 });
+  const result = await rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 });
   assert.deepEqual(result, {
     orderId,
     attemptId,
@@ -80,8 +80,12 @@ test("claim uses exact RPC contract, validates keys, and never calls legacy comp
     bodyObjectKey: bodyKey,
     coverObjectKey: coverKey,
   });
-  assert.equal(calls[0].url, `${baseUrl}/rest/v1/rpc/claim_amuhon_order_validation_job`);
-  assert.deepEqual(JSON.parse(calls[0].init.body), { p_lease_seconds: 300 });
+  assert.equal(calls[0].url, `${baseUrl}/rest/v1/rpc/claim_amuhon_order_validation_job_for_attempt`);
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    p_order_id: orderId,
+    p_attempt_id: attemptId,
+    p_lease_seconds: 300,
+  });
   assert.equal(calls[0].init.headers.get("apikey"), "mock-only-service-role-key");
   assert.equal(calls[0].init.headers.get("authorization"), "Bearer mock-only-service-role-key");
   assert.equal(calls.some((call) => call.url.includes("complete_amuhon_order_validation_job")), false);
@@ -94,7 +98,7 @@ test("claim requires an explicit valid declaredPageCount contract", async (t) =>
   const nullDeclaration = createSupabaseOrderValidationAdapters({
     fetchImpl: async () => rpcResponse({ ...claimPayload(), declaredPageCount: null }),
   });
-  assert.equal((await nullDeclaration.rpc.claim({ leaseSeconds: 300 }))?.declaredPageCount, null);
+  assert.equal((await nullDeclaration.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 }))?.declaredPageCount, null);
 
   const missingField = createSupabaseOrderValidationAdapters({
     fetchImpl: async () => {
@@ -104,7 +108,7 @@ test("claim requires an explicit valid declaredPageCount contract", async (t) =>
     },
   });
   await assert.rejects(
-    missingField.rpc.claim({ leaseSeconds: 300 }),
+    missingField.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 }),
     ValidationClaimContractError,
   );
 
@@ -113,7 +117,7 @@ test("claim requires an explicit valid declaredPageCount contract", async (t) =>
       fetchImpl: async () => rpcResponse({ ...claimPayload(), declaredPageCount }),
     });
     await assert.rejects(
-      invalidField.rpc.claim({ leaseSeconds: 300 }),
+      invalidField.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 }),
       ValidationClaimContractError,
     );
   }
@@ -123,9 +127,66 @@ test("null claim is idle and malformed claim is rejected", async (t) => {
   const env = setup();
   t.after(env.restore);
   const idle = createSupabaseOrderValidationAdapters({ fetchImpl: async () => rpcResponse(null) });
-  assert.equal(await idle.rpc.claim({ leaseSeconds: 300 }), null);
+  assert.equal(await idle.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 }), null);
   const malformed = createSupabaseOrderValidationAdapters({ fetchImpl: async () => rpcResponse({ ...claimPayload(), bodyObjectKey: "other/body.pdf" }) });
-  await assert.rejects(malformed.rpc.claim({ leaseSeconds: 300 }));
+  await assert.rejects(malformed.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 }));
+});
+
+test("targeted claim rejects mismatched IDs, auth failure, and invalid targets without global fallback", async (t) => {
+  const env = setup();
+  t.after(env.restore);
+  const urls = [];
+  const otherOrderId = "55555555-5555-4555-8555-555555555555";
+  const mismatched = createSupabaseOrderValidationAdapters({ fetchImpl: async (url) => {
+    urls.push(String(url));
+    return rpcResponse({
+      ...claimPayload(),
+      orderId: otherOrderId,
+      bodyObjectKey: `${otherOrderId}/${attemptId}/body.pdf`,
+      coverObjectKey: `${otherOrderId}/${attemptId}/cover.png`,
+    });
+  } });
+  await assert.rejects(
+    mismatched.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 }),
+    ValidationClaimContractError,
+  );
+
+  const unauthorized = createSupabaseOrderValidationAdapters({ fetchImpl: async (url) => {
+    urls.push(String(url));
+    return rpcResponse({ message: "permission denied" }, 401);
+  } });
+  await assert.rejects(unauthorized.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 }));
+
+  let invalidTargetFetches = 0;
+  const invalidTarget = createSupabaseOrderValidationAdapters({ fetchImpl: async () => {
+    invalidTargetFetches += 1;
+    return rpcResponse(null);
+  } });
+  await assert.rejects(invalidTarget.rpc.claimForAttempt({ orderId: "not-a-uuid", attemptId, leaseSeconds: 300 }));
+  assert.equal(invalidTargetFetches, 0);
+  assert.deepEqual(urls, [
+    `${baseUrl}/rest/v1/rpc/claim_amuhon_order_validation_job_for_attempt`,
+    `${baseUrl}/rest/v1/rpc/claim_amuhon_order_validation_job_for_attempt`,
+  ]);
+  assert.equal(urls.some((url) => url.endsWith("/claim_amuhon_order_validation_job")), false);
+});
+
+test("repeated targeted claim is confined to the same target and accepts no second active job", async (t) => {
+  const env = setup();
+  t.after(env.restore);
+  const requests = [];
+  let claims = 0;
+  const adapters = createSupabaseOrderValidationAdapters({ fetchImpl: async (url, init) => {
+    requests.push({ url: String(url), body: JSON.parse(init.body) });
+    claims += 1;
+    return rpcResponse(claims === 1 ? claimPayload() : null);
+  } });
+  assert.equal((await adapters.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 }))?.attemptId, attemptId);
+  assert.equal(await adapters.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 }), null);
+  assert.deepEqual(requests, [1, 2].map(() => ({
+    url: `${baseUrl}/rest/v1/rpc/claim_amuhon_order_validation_job_for_attempt`,
+    body: { p_order_id: orderId, p_attempt_id: attemptId, p_lease_seconds: 300 },
+  })));
 });
 
 test("fail RPC sends exact arguments and maps stale lease to false", async (t) => {
@@ -263,7 +324,7 @@ test("404, network interruption, and malformed keys fail without cleanup or dele
   await assert.rejects(missing.storage.downloadTemporaryObject({ bucket: "amuhon-order-temp-files", key: bodyKey }));
   const interrupted = createSupabaseOrderValidationAdapters({ fetchImpl: async () => { throw new Error("network down"); } });
   await assert.rejects(interrupted.storage.downloadTemporaryObject({ bucket: "amuhon-order-temp-files", key: bodyKey }));
-  await assert.rejects(interrupted.rpc.claim({ leaseSeconds: 300 }));
+  await assert.rejects(interrupted.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 }));
   await assert.rejects(missing.storage.downloadTemporaryObject({ bucket: "amuhon-order-temp-files", key: "../body.pdf" }));
 });
 

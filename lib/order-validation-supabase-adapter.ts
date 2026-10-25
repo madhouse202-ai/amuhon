@@ -302,13 +302,21 @@ export function createSupabaseOrderValidationAdapters(options: AdapterOptions = 
   }
 
   const workerRpc: ValidationWorkerRpc = {
-    async claim({ leaseSeconds }) {
+    async claimForAttempt({ orderId, attemptId, leaseSeconds }) {
+      if (!UUID_PATTERN.test(orderId) || !UUID_PATTERN.test(attemptId)) throw new SupabaseAdapterError();
       if (!Number.isInteger(leaseSeconds) || leaseSeconds < 30 || leaseSeconds > 900) {
         throw new SupabaseAdapterError();
       }
-      return claimedJob(await rpc("claim_amuhon_order_validation_job", {
+      const job = claimedJob(await rpc("claim_amuhon_order_validation_job_for_attempt", {
+        p_order_id: orderId,
+        p_attempt_id: attemptId,
         p_lease_seconds: leaseSeconds,
       }));
+      if (job && (job.orderId.toLowerCase() !== orderId.toLowerCase() ||
+          job.attemptId.toLowerCase() !== attemptId.toLowerCase())) {
+        throw new ValidationClaimContractError();
+      }
+      return job;
     },
     async fail({ attemptId, leaseId, errorCode }) {
       if (!UUID_PATTERN.test(attemptId) || !UUID_PATTERN.test(leaseId)) throw new SupabaseAdapterError();

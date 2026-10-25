@@ -50,6 +50,7 @@ async function withFixtureFiles(fn, { pdf = createPdf(24), png = createPng(24) }
 
 const TEST_ORDER_ID = "11111111-1111-4111-8111-111111111111";
 const TEST_ATTEMPT_ID = "22222222-2222-4222-8222-222222222222";
+const WORKER_TARGET = { orderId: TEST_ORDER_ID, attemptId: TEST_ATTEMPT_ID };
 const TEST_LEASE_ID = "33333333-3333-4333-8333-333333333333";
 const NEXT_LEASE_ID = "44444444-4444-4444-8444-444444444444";
 const FIXED_NOW = Date.parse("2026-10-22T00:00:00.000Z");
@@ -78,7 +79,7 @@ function createWorkerHarness({
   fail,
 } = {}) {
   const events = [];
-  const calls = { claim: 0, fail: [], downloads: [], saves: [], commits: [], reads: 0 };
+  const calls = { claim: 0, claimInputs: [], fail: [], downloads: [], saves: [], commits: [], reads: 0 };
   const finalDigests = new Map();
   const assets = new Map([
     [TEST_JOB.bodyObjectKey, body],
@@ -86,8 +87,9 @@ function createWorkerHarness({
   ]);
 
   const rpc = {
-    async claim(input) {
+    async claimForAttempt(input) {
       calls.claim += 1;
+      calls.claimInputs.push(input);
       calls.leaseSeconds = input.leaseSeconds;
       events.push("claim");
       return jobs.shift() ?? null;
@@ -197,9 +199,10 @@ test("CLI usage failure does not expose paths or environment values", async () =
 
 test("mock worker validates both assets before saving and commits only after both final saves", async () => {
   const harness = createWorkerHarness();
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "succeeded" });
   assert.equal(harness.calls.claim, 1);
+  assert.deepEqual(harness.calls.claimInputs[0], { ...WORKER_TARGET, leaseSeconds: 300 });
   assert.equal(harness.calls.leaseSeconds, 300);
   assert.deepEqual(harness.events, ["claim", "download:body", "download:cover", "save:body", "save:cover", "commit"]);
   assert.equal(harness.calls.downloads[0].bucket, TEMP_ORDER_FILES_BUCKET);
@@ -212,7 +215,7 @@ test("mock worker validates both assets before saving and commits only after bot
 
 test("mock worker rejects a declared page-count mismatch before cover download or final saves", async () => {
   const harness = createWorkerHarness({ jobs: [{ ...TEST_JOB, declaredPageCount: 32 }] });
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "validation_failed", errorCode: "page_count_mismatch" });
   assert.deepEqual(harness.events, ["claim", "download:body", "fail:page_count_mismatch"]);
   assert.deepEqual(harness.calls.fail.map((call) => call.errorCode), ["page_count_mismatch"]);
@@ -222,14 +225,14 @@ test("mock worker rejects a declared page-count mismatch before cover download o
 
 test("mock worker accepts a null declared page count and continues with actual PDF count", async () => {
   const harness = createWorkerHarness({ jobs: [{ ...TEST_JOB, declaredPageCount: null }] });
-  assert.deepEqual(await harness.worker.runOnce(), { status: "succeeded" });
+  assert.deepEqual(await harness.worker.runOnce(WORKER_TARGET), { status: "succeeded" });
   assert.equal(harness.calls.commits[0].bodyPdfPageCount, 24);
   assert.equal(harness.calls.saves.length, 2);
 });
 
 test("mock worker surfaces claim contract mismatch without touching Storage", async () => {
   const worker = createOrderValidationWorker({
-    claim: async () => { throw new ValidationClaimContractError(); },
+    claimForAttempt: async () => { throw new ValidationClaimContractError(); },
     fail: async () => true,
     commitValidatedAssets: async () => {},
     readAssetCommitState: async () => "unknown",
@@ -237,13 +240,30 @@ test("mock worker surfaces claim contract mismatch without touching Storage", as
     downloadTemporaryObject: async () => { throw new Error("must not download"); },
     saveFinalObjectIfAbsent: async () => { throw new Error("must not save"); },
   });
-  assert.deepEqual(await worker.runOnce(), { status: "claim_contract_mismatch" });
+  assert.deepEqual(await worker.runOnce(WORKER_TARGET), { status: "claim_contract_mismatch" });
+});
+
+test("worker refuses missing or invalid target before claiming", async () => {
+  const harness = createWorkerHarness();
+  assert.deepEqual(await harness.worker.runOnce(), { status: "invalid_target" });
+  assert.deepEqual(await harness.worker.runOnce({ orderId: "not-a-uuid", attemptId: TEST_ATTEMPT_ID }), { status: "invalid_target" });
+  assert.equal(harness.calls.claim, 0);
+  assert.equal(harness.calls.downloads.length, 0);
+});
+
+test("worker rejects a claim for another target before fail or Storage", async () => {
+  const otherOrderId = "55555555-5555-4555-8555-555555555555";
+  const harness = createWorkerHarness({ jobs: [{ ...TEST_JOB, orderId: otherOrderId }] });
+  assert.deepEqual(await harness.worker.runOnce(WORKER_TARGET), { status: "claim_contract_mismatch" });
+  assert.equal(harness.calls.downloads.length, 0);
+  assert.equal(harness.calls.saves.length, 0);
+  assert.equal(harness.calls.fail.length, 0);
 });
 
 test("mock worker rejects invalid declared page counts before downloading files", async () => {
   for (const declaredPageCount of [0, -1, 1.5, "24", undefined]) {
     const harness = createWorkerHarness({ jobs: [{ ...TEST_JOB, declaredPageCount }] });
-    const result = await harness.worker.runOnce();
+    const result = await harness.worker.runOnce(WORKER_TARGET);
     assert.deepEqual(result, { status: "retryable_failure", errorCode: "internal_error" });
     assert.deepEqual(harness.calls.fail.map((call) => call.errorCode), ["internal_error"]);
     assert.equal(harness.calls.downloads.length, 0);
@@ -254,7 +274,7 @@ test("mock worker rejects invalid declared page counts before downloading files"
 
 test("mock worker rejects invalid PDF without downloading the cover or saving files", async () => {
   const harness = createWorkerHarness({ body: new TextEncoder().encode("invalid-pdf") });
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "validation_failed", errorCode: "invalid_pdf" });
   assert.deepEqual(harness.calls.fail.map((call) => call.errorCode), ["invalid_pdf"]);
   assert.equal(harness.calls.downloads.length, 1);
@@ -264,7 +284,7 @@ test("mock worker rejects invalid PDF without downloading the cover or saving fi
 
 test("mock worker rejects invalid PNG after validating PDF and before any final save", async () => {
   const harness = createWorkerHarness({ cover: new TextEncoder().encode("invalid-png") });
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "validation_failed", errorCode: "invalid_cover" });
   assert.deepEqual(harness.calls.fail.map((call) => call.errorCode), ["invalid_cover"]);
   assert.equal(harness.calls.downloads.length, 2);
@@ -275,7 +295,7 @@ test("mock worker treats a temporary Storage 404 as retryable and never promotes
   const harness = createWorkerHarness({
     download: async () => { throw new Error("storage 404"); },
   });
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "retryable_failure", errorCode: "storage_unavailable" });
   assert.deepEqual(harness.calls.fail.map((call) => call.errorCode), ["storage_unavailable"]);
   assert.equal(harness.calls.saves.length, 0);
@@ -285,7 +305,7 @@ test("mock worker rejects an over-limit object before parsing its bytes", async 
   const harness = createWorkerHarness({
     download: async () => ({ sizeBytes: MAX_ORDER_ASSET_BYTES + 1, bytes: new Uint8Array(0) }),
   });
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "validation_failed", errorCode: "file_too_large" });
   assert.deepEqual(harness.calls.fail.map((call) => call.errorCode), ["file_too_large"]);
   assert.equal(harness.calls.saves.length, 0);
@@ -299,7 +319,7 @@ test("mock worker classifies a network disconnect during download as retryable",
       return { sizeBytes: bytes.byteLength, bytes };
     },
   });
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "retryable_failure", errorCode: "storage_unavailable" });
   assert.equal(harness.calls.downloads.length, 2);
   assert.equal(harness.calls.saves.length, 0);
@@ -315,7 +335,7 @@ test("mock worker stops before promotion when the lease expires during validatio
       return { sizeBytes: bytes.byteLength, bytes };
     },
   });
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "lease_expired" });
   assert.equal(harness.calls.saves.length, 0);
   assert.equal(harness.calls.commits.length, 0);
@@ -329,7 +349,7 @@ test("mock worker leaves an already-saved body object for safe retry if cover sa
       finalDigests.set(input.key, input.sha256);
     },
   });
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "retryable_failure", errorCode: "storage_unavailable" });
   assert.deepEqual(harness.events.slice(-3), ["save:body", "save:cover", "fail:storage_unavailable"]);
   assert.equal(harness.calls.saves.length, 2);
@@ -343,7 +363,7 @@ test("mock worker resolves an uncertain DB commit by querying state and never de
     commitValidatedAssets: async () => { throw new Error("database response timeout"); },
     readAssetCommitState: async () => "unknown",
   });
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "finalization_unknown" });
   assert.equal(harness.calls.saves.length, 2);
   assert.equal(harness.calls.reads, 1);
@@ -362,9 +382,9 @@ test("mock worker retry reuses same-digest final objects and can finish idempote
     },
     readAssetCommitState: async () => "not_committed",
   });
-  assert.deepEqual(await harness.worker.runOnce(), { status: "finalization_pending" });
+  assert.deepEqual(await harness.worker.runOnce(WORKER_TARGET), { status: "finalization_pending" });
   const firstSaveKeys = harness.calls.saves.map((entry) => entry.key);
-  assert.deepEqual(await harness.worker.runOnce(), { status: "succeeded" });
+  assert.deepEqual(await harness.worker.runOnce(WORKER_TARGET), { status: "succeeded" });
   const secondSaveKeys = harness.calls.saves.slice(2).map((entry) => entry.key);
   assert.deepEqual(secondSaveKeys, firstSaveKeys);
   assert.equal(harness.calls.claim, 2);
@@ -378,7 +398,7 @@ test("mock worker does not accept an expired/stale lease for DB finalization", a
   const harness = createWorkerHarness({
     commitValidatedAssets: async () => { throw new ValidationLeaseLostError(); },
   });
-  const result = await harness.worker.runOnce();
+  const result = await harness.worker.runOnce(WORKER_TARGET);
   assert.deepEqual(result, { status: "lease_lost" });
   assert.equal(harness.calls.commits.length, 1);
   assert.equal(harness.calls.reads, 0);
@@ -390,7 +410,7 @@ test("mock worker instance admits only one in-flight runOnce call", async () => 
   let releaseClaim;
   let claimCount = 0;
   const rpc = {
-    claim: () => {
+    claimForAttempt: () => {
       claimCount += 1;
       return new Promise((resolve) => { releaseClaim = resolve; });
     },
@@ -403,8 +423,8 @@ test("mock worker instance admits only one in-flight runOnce call", async () => 
     saveFinalObjectIfAbsent: async () => {},
   };
   const worker = createOrderValidationWorker(rpc, storage);
-  const first = worker.runOnce();
-  const second = await worker.runOnce();
+  const first = worker.runOnce(WORKER_TARGET);
+  const second = await worker.runOnce(WORKER_TARGET);
   assert.deepEqual(second, { status: "busy" });
   assert.equal(claimCount, 1);
   releaseClaim(null);

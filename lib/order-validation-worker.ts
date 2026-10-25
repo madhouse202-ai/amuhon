@@ -70,7 +70,11 @@ export type ValidatedAssetCommit = {
 export type AssetCommitState = "committed" | "not_committed" | "unknown";
 
 export interface ValidationWorkerRpc {
-  claim(input: { leaseSeconds: number }): Promise<ClaimedValidationJob | null>;
+  claimForAttempt(input: {
+    orderId: string;
+    attemptId: string;
+    leaseSeconds: number;
+  }): Promise<ClaimedValidationJob | null>;
   fail(input: {
     attemptId: string;
     leaseId: string;
@@ -106,6 +110,7 @@ export interface ValidationWorkerStorage {
 
 export type ValidationWorkerResult =
   | { status: "idle" | "busy" | "succeeded" }
+  | { status: "invalid_target" }
   | { status: "validation_failed" | "retryable_failure"; errorCode: SafeValidationErrorCode }
   | { status: "failure_recording_pending"; errorCode: SafeValidationErrorCode }
   | { status: "lease_expired" | "lease_lost" | "finalization_pending" | "finalization_unknown" }
@@ -117,7 +122,8 @@ export type ValidationWorkerOptions = {
   now?: () => number;
 };
 
-export type ValidationWorker = { runOnce(): Promise<ValidationWorkerResult> };
+export type ValidationWorkerTarget = { orderId: string; attemptId: string };
+export type ValidationWorker = { runOnce(target: ValidationWorkerTarget): Promise<ValidationWorkerResult> };
 
 /** Thrown by the future finalization adapter when the DB rejects a stale lease. */
 export class ValidationLeaseLostError extends Error {
@@ -203,18 +209,32 @@ export function createOrderValidationWorker(
     return asset;
   }
 
-  async function runOnce(): Promise<ValidationWorkerResult> {
+  async function runOnce(target: ValidationWorkerTarget): Promise<ValidationWorkerResult> {
+    if (!target || !isUuid(target.orderId) || !isUuid(target.attemptId)) {
+      return { status: "invalid_target" };
+    }
     if (running) return { status: "busy" };
     running = true;
     try {
       let job: ClaimedValidationJob | null;
       try {
-        job = await rpc.claim({ leaseSeconds });
+        job = await rpc.claimForAttempt({
+          orderId: target.orderId,
+          attemptId: target.attemptId,
+          leaseSeconds,
+        });
       } catch (error) {
         if (error instanceof ValidationClaimContractError) return { status: "claim_contract_mismatch" };
         return { status: "retryable_failure", errorCode: "worker_unavailable" };
       }
       if (!job) return { status: "idle" };
+
+      // A claim adapter must never widen a targeted claim. Stop before failure
+      // reporting or any Storage operation if the RPC returns another target.
+      if (job.orderId.toLowerCase() !== target.orderId.toLowerCase() ||
+          job.attemptId.toLowerCase() !== target.attemptId.toLowerCase()) {
+        return { status: "claim_contract_mismatch" };
+      }
 
       if (!isUuid(job.orderId) || !isUuid(job.attemptId) || !isUuid(job.leaseId) ||
           !isDeclaredPageCount(job.declaredPageCount) || !matchesClaimedObjectKeys(job)) {
