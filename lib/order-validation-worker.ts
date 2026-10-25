@@ -127,7 +127,13 @@ export class ValidationLeaseLostError extends Error {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-class FileTooLargeError extends Error {}
+/** Shared adapter signal so bounded Storage reads are recorded as invalid files, not transient outages. */
+export class OrderAssetTooLargeError extends Error {
+  constructor() {
+    super("order_asset_too_large");
+    this.name = "OrderAssetTooLargeError";
+  }
+}
 
 function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
@@ -178,7 +184,7 @@ export function createOrderValidationWorker(
     if (!Number.isSafeInteger(asset.sizeBytes) || asset.sizeBytes < 0) {
       throw new Error("storage_unavailable");
     }
-    if (asset.sizeBytes > MAX_ORDER_ASSET_BYTES) throw new FileTooLargeError();
+    if (asset.sizeBytes > MAX_ORDER_ASSET_BYTES) throw new OrderAssetTooLargeError();
     if (asset.sizeBytes !== asset.bytes.byteLength) throw new Error("storage_unavailable");
     return asset;
   }
@@ -204,7 +210,7 @@ export function createOrderValidationWorker(
       try {
         body = await download(job.bodyObjectKey);
       } catch (error) {
-        const code = error instanceof FileTooLargeError
+        const code = error instanceof OrderAssetTooLargeError
           ? "file_too_large"
           : "storage_unavailable";
         return recordFailure(job, code, code === "file_too_large" ? "validation" : "system");
@@ -221,7 +227,7 @@ export function createOrderValidationWorker(
       try {
         cover = await download(job.coverObjectKey);
       } catch (error) {
-        const code = error instanceof FileTooLargeError
+        const code = error instanceof OrderAssetTooLargeError
           ? "file_too_large"
           : "storage_unavailable";
         return recordFailure(job, code, code === "file_too_large" ? "validation" : "system");
