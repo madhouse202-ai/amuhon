@@ -106,7 +106,7 @@ test("staging integration test is synthetic, rolled back, and avoids global clai
   assert.match(sqlTest, /synthetic reclaim/i);
   assert.match(sqlTest, /legacy finalizer must not overwrite/i);
   assert.match(sqlTest, /uncommitted validating attempt was claimable/i);
-  assert.match(sqlTest, /committed expired attempt was not claimable/i);
+  assert.match(sqlTest, /\[CLEANUP\] uncommitted validating attempt was claimable/i);
   assert.match(sqlTest, /finish_amuhon_order_temp_upload_cleanup/i);
   assert.match(sqlTest, /only simulates a Storage deletion/i);
 });
