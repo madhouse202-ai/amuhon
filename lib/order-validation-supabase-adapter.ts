@@ -4,6 +4,7 @@ import {
   FINAL_ORDER_FILES_BUCKET,
   OrderAssetTooLargeError,
   TEMP_ORDER_FILES_BUCKET,
+  ValidationClaimContractError,
   ValidationLeaseLostError,
   type AssetCommitState,
   type ClaimedValidationJob,
@@ -142,6 +143,14 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function claimedJob(value: unknown): ClaimedValidationJob | null {
   if (value === null) return null;
   const record = asRecord(value);
+  if (!record || !Object.prototype.hasOwnProperty.call(record, "declaredPageCount")) {
+    throw new ValidationClaimContractError();
+  }
+  const declaredPageCount = record.declaredPageCount;
+  if (declaredPageCount !== null &&
+      (typeof declaredPageCount !== "number" || !Number.isSafeInteger(declaredPageCount) || declaredPageCount <= 0)) {
+    throw new ValidationClaimContractError();
+  }
   if (!record ||
       typeof record.orderId !== "string" || !UUID_PATTERN.test(record.orderId) ||
       typeof record.attemptId !== "string" || !UUID_PATTERN.test(record.attemptId) ||
@@ -156,6 +165,7 @@ function claimedJob(value: unknown): ClaimedValidationJob | null {
     attemptId: record.attemptId,
     leaseId: record.leaseId,
     leaseExpiresAt: record.leaseExpiresAt,
+    declaredPageCount,
     bodyObjectKey: record.bodyObjectKey,
     coverObjectKey: record.coverObjectKey,
   };

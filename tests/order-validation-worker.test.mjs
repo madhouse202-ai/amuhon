@@ -11,6 +11,7 @@ import {
   createOrderValidationWorker,
   FINAL_ORDER_FILES_BUCKET,
   TEMP_ORDER_FILES_BUCKET,
+  ValidationClaimContractError,
   ValidationLeaseLostError,
 } from "../lib/order-validation-worker.ts";
 import { MAX_ORDER_ASSET_BYTES } from "../lib/order-assets.ts";
@@ -57,6 +58,7 @@ const TEST_JOB = {
   attemptId: TEST_ATTEMPT_ID,
   leaseId: TEST_LEASE_ID,
   leaseExpiresAt: new Date(FIXED_NOW + 60_000).toISOString(),
+  declaredPageCount: 24,
   bodyObjectKey: `${TEST_ORDER_ID}/${TEST_ATTEMPT_ID}/body.pdf`,
   coverObjectKey: `${TEST_ORDER_ID}/${TEST_ATTEMPT_ID}/cover.png`,
 };
@@ -206,6 +208,48 @@ test("mock worker validates both assets before saving and commits only after bot
   assert.equal(harness.calls.commits[0].bodyObjectKey, `${TEST_ORDER_ID}/${TEST_ATTEMPT_ID}/body.pdf`);
   assert.equal(harness.calls.commits[0].coverObjectKey, `${TEST_ORDER_ID}/${TEST_ATTEMPT_ID}/cover.png`);
   assert.equal(harness.calls.fail.length, 0);
+});
+
+test("mock worker rejects a declared page-count mismatch before cover download or final saves", async () => {
+  const harness = createWorkerHarness({ jobs: [{ ...TEST_JOB, declaredPageCount: 32 }] });
+  const result = await harness.worker.runOnce();
+  assert.deepEqual(result, { status: "validation_failed", errorCode: "page_count_mismatch" });
+  assert.deepEqual(harness.events, ["claim", "download:body", "fail:page_count_mismatch"]);
+  assert.deepEqual(harness.calls.fail.map((call) => call.errorCode), ["page_count_mismatch"]);
+  assert.equal(harness.calls.saves.length, 0);
+  assert.equal(harness.calls.commits.length, 0);
+});
+
+test("mock worker accepts a null declared page count and continues with actual PDF count", async () => {
+  const harness = createWorkerHarness({ jobs: [{ ...TEST_JOB, declaredPageCount: null }] });
+  assert.deepEqual(await harness.worker.runOnce(), { status: "succeeded" });
+  assert.equal(harness.calls.commits[0].bodyPdfPageCount, 24);
+  assert.equal(harness.calls.saves.length, 2);
+});
+
+test("mock worker surfaces claim contract mismatch without touching Storage", async () => {
+  const worker = createOrderValidationWorker({
+    claim: async () => { throw new ValidationClaimContractError(); },
+    fail: async () => true,
+    commitValidatedAssets: async () => {},
+    readAssetCommitState: async () => "unknown",
+  }, {
+    downloadTemporaryObject: async () => { throw new Error("must not download"); },
+    saveFinalObjectIfAbsent: async () => { throw new Error("must not save"); },
+  });
+  assert.deepEqual(await worker.runOnce(), { status: "claim_contract_mismatch" });
+});
+
+test("mock worker rejects invalid declared page counts before downloading files", async () => {
+  for (const declaredPageCount of [0, -1, 1.5, "24", undefined]) {
+    const harness = createWorkerHarness({ jobs: [{ ...TEST_JOB, declaredPageCount }] });
+    const result = await harness.worker.runOnce();
+    assert.deepEqual(result, { status: "retryable_failure", errorCode: "internal_error" });
+    assert.deepEqual(harness.calls.fail.map((call) => call.errorCode), ["internal_error"]);
+    assert.equal(harness.calls.downloads.length, 0);
+    assert.equal(harness.calls.saves.length, 0);
+    assert.equal(harness.calls.commits.length, 0);
+  }
 });
 
 test("mock worker rejects invalid PDF without downloading the cover or saving files", async () => {

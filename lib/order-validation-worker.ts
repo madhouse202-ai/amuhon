@@ -23,6 +23,7 @@ export const DEFAULT_VALIDATION_LEASE_SECONDS = 300;
 export type SafeValidationErrorCode =
   | "invalid_pdf"
   | "invalid_cover"
+  | "page_count_mismatch"
   | "file_too_large"
   | "storage_unavailable"
   | "worker_unavailable"
@@ -33,6 +34,7 @@ export type ClaimedValidationJob = {
   attemptId: string;
   leaseId: string;
   leaseExpiresAt: string;
+  declaredPageCount: number | null;
   bodyObjectKey: string;
   coverObjectKey: string;
 };
@@ -107,7 +109,7 @@ export type ValidationWorkerResult =
   | { status: "validation_failed" | "retryable_failure"; errorCode: SafeValidationErrorCode }
   | { status: "failure_recording_pending"; errorCode: SafeValidationErrorCode }
   | { status: "lease_expired" | "lease_lost" | "finalization_pending" | "finalization_unknown" }
-  | { status: "internal_failure" };
+  | { status: "claim_contract_mismatch" | "internal_failure" };
 
 export type ValidationWorkerOptions = {
   leaseSeconds?: number;
@@ -125,6 +127,14 @@ export class ValidationLeaseLostError extends Error {
   }
 }
 
+/** The deployed claim RPC must return declaredPageCount before a worker can safely proceed. */
+export class ValidationClaimContractError extends Error {
+  constructor() {
+    super("validation_claim_contract_mismatch");
+    this.name = "ValidationClaimContractError";
+  }
+}
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Shared adapter signal so bounded Storage reads are recorded as invalid files, not transient outages. */
@@ -137,6 +147,10 @@ export class OrderAssetTooLargeError extends Error {
 
 function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
+}
+
+function isDeclaredPageCount(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
 }
 
 function finalKey(orderId: string, attemptId: string, asset: "body.pdf" | "cover.png"): string {
@@ -196,12 +210,14 @@ export function createOrderValidationWorker(
       let job: ClaimedValidationJob | null;
       try {
         job = await rpc.claim({ leaseSeconds });
-      } catch {
+      } catch (error) {
+        if (error instanceof ValidationClaimContractError) return { status: "claim_contract_mismatch" };
         return { status: "retryable_failure", errorCode: "worker_unavailable" };
       }
       if (!job) return { status: "idle" };
 
-      if (!isUuid(job.orderId) || !isUuid(job.attemptId) || !isUuid(job.leaseId) || !matchesClaimedObjectKeys(job)) {
+      if (!isUuid(job.orderId) || !isUuid(job.attemptId) || !isUuid(job.leaseId) ||
+          !isDeclaredPageCount(job.declaredPageCount) || !matchesClaimedObjectKeys(job)) {
         return recordFailure(job, "internal_error", "system");
       }
       if (leaseHasExpired(job, now)) return { status: "lease_expired" };
@@ -221,6 +237,10 @@ export function createOrderValidationWorker(
         validatedBody = await validateBodyPdf(body.bytes);
       } catch {
         return recordFailure(job, "invalid_pdf", "validation");
+      }
+
+      if (job.declaredPageCount !== null && job.declaredPageCount !== validatedBody.pageCount) {
+        return recordFailure(job, "page_count_mismatch", "validation");
       }
 
       let cover: DownloadedAsset;

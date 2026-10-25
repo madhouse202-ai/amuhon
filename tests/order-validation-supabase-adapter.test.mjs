@@ -3,7 +3,11 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { createSupabaseOrderValidationAdapters } from "../lib/order-validation-supabase-adapter.ts";
-import { OrderAssetTooLargeError, ValidationLeaseLostError } from "../lib/order-validation-worker.ts";
+import {
+  OrderAssetTooLargeError,
+  ValidationClaimContractError,
+  ValidationLeaseLostError,
+} from "../lib/order-validation-worker.ts";
 
 const orderId = "11111111-1111-4111-8111-111111111111";
 const attemptId = "22222222-2222-4222-8222-222222222222";
@@ -35,6 +39,7 @@ function claimPayload() {
     attemptId,
     leaseId,
     leaseExpiresAt: "2026-10-25T12:05:00.000Z",
+    declaredPageCount: 24,
     attemptCount: 1,
     state: "validating",
     bodyObjectKey: bodyKey,
@@ -71,6 +76,7 @@ test("claim uses exact RPC contract, validates keys, and never calls legacy comp
     attemptId,
     leaseId,
     leaseExpiresAt: "2026-10-25T12:05:00.000Z",
+    declaredPageCount: 24,
     bodyObjectKey: bodyKey,
     coverObjectKey: coverKey,
   });
@@ -79,6 +85,38 @@ test("claim uses exact RPC contract, validates keys, and never calls legacy comp
   assert.equal(calls[0].init.headers.get("apikey"), "mock-only-service-role-key");
   assert.equal(calls[0].init.headers.get("authorization"), "Bearer mock-only-service-role-key");
   assert.equal(calls.some((call) => call.url.includes("complete_amuhon_order_validation_job")), false);
+});
+
+test("claim requires an explicit valid declaredPageCount contract", async (t) => {
+  const env = setup();
+  t.after(env.restore);
+
+  const nullDeclaration = createSupabaseOrderValidationAdapters({
+    fetchImpl: async () => rpcResponse({ ...claimPayload(), declaredPageCount: null }),
+  });
+  assert.equal((await nullDeclaration.rpc.claim({ leaseSeconds: 300 }))?.declaredPageCount, null);
+
+  const missingField = createSupabaseOrderValidationAdapters({
+    fetchImpl: async () => {
+      const payload = claimPayload();
+      delete payload.declaredPageCount;
+      return rpcResponse(payload);
+    },
+  });
+  await assert.rejects(
+    missingField.rpc.claim({ leaseSeconds: 300 }),
+    ValidationClaimContractError,
+  );
+
+  for (const declaredPageCount of [0, -1, 1.5, "24"]) {
+    const invalidField = createSupabaseOrderValidationAdapters({
+      fetchImpl: async () => rpcResponse({ ...claimPayload(), declaredPageCount }),
+    });
+    await assert.rejects(
+      invalidField.rpc.claim({ leaseSeconds: 300 }),
+      ValidationClaimContractError,
+    );
+  }
 });
 
 test("null claim is idle and malformed claim is rejected", async (t) => {
