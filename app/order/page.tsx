@@ -45,6 +45,15 @@ type DirectUploadIntent = {
   verified: false;
   diagnostics?: { signerAndTusProjectMatch: boolean };
 };
+type ValidationJobState = "not_registered" | "registering" | "queued" | "validating" | "succeeded" | "registration_failed";
+const VALIDATION_JOB_LABELS: Record<ValidationJobState, string> = {
+  not_registered: "未登録",
+  registering: "登録中……",
+  queued: "登録済み・検証待ち",
+  validating: "検証中",
+  succeeded: "検証・正式ファイル確定済み",
+  registration_failed: "未登録（再試行が必要）",
+};
 type TusDiagnostic = {
   asset: "本文PDF" | "カバーPNG";
   signatureMatches: boolean;
@@ -65,6 +74,7 @@ export default function OrderPage() {
   const [bodyPdfFile, setBodyPdfFile] = useState<File | null>(null);
   const [coverPngFile, setCoverPngFile] = useState<File | null>(null);
   const [filesSaved, setFilesSaved] = useState(false);
+  const [validationJobState, setValidationJobState] = useState<ValidationJobState>("not_registered");
   const [uploadProgress, setUploadProgress] = useState<{ bodyPdf: number; coverPng: number } | null>(null);
   const [directUploadExpiresAt, setDirectUploadExpiresAt] = useState<string | null>(null);
   const [tusDiagnostics, setTusDiagnostics] = useState<TusDiagnostic[]>([]);
@@ -94,13 +104,22 @@ export default function OrderPage() {
       if (DIRECT_UPLOAD_EXPERIMENT) {
         const directState = sessionStorage.getItem(DIRECT_UPLOAD_SESSION_KEY);
         if (directState) {
-          const parsed = JSON.parse(directState) as { id?: unknown; status?: unknown; createdAt?: unknown; attemptId?: unknown; uploaded?: unknown };
+          const parsed = JSON.parse(directState) as {
+            id?: unknown; status?: unknown; createdAt?: unknown; attemptId?: unknown; uploaded?: unknown;
+            validationJobState?: unknown;
+          };
           if (typeof parsed.id === "string" && /^[0-9a-f-]{36}$/i.test(parsed.id) &&
               (parsed.status === "draft" || parsed.status === "preparing") && typeof parsed.createdAt === "string" &&
               typeof parsed.attemptId === "string" && /^[0-9a-f-]{36}$/i.test(parsed.attemptId)) {
             directAttemptIdRef.current = parsed.attemptId;
             setDraft({ id: parsed.id, status: parsed.status, createdAt: parsed.createdAt });
             if (parsed.uploaded === true) setFilesSaved(true);
+            if (parsed.validationJobState === "queued" || parsed.validationJobState === "validating" ||
+                parsed.validationJobState === "succeeded" || parsed.validationJobState === "registration_failed") {
+              setValidationJobState(parsed.validationJobState);
+            } else if (parsed.uploaded === true) {
+              setValidationJobState("not_registered");
+            }
           }
         }
       }
@@ -153,7 +172,12 @@ export default function OrderPage() {
     }
   }
 
-  function persistDirectUploadState(target: SavedDraft, attemptId: string, uploaded: boolean) {
+  function persistDirectUploadState(
+    target: SavedDraft,
+    attemptId: string,
+    uploaded: boolean,
+    jobState: ValidationJobState = "not_registered",
+  ) {
     try {
       sessionStorage.setItem(DIRECT_UPLOAD_SESSION_KEY, JSON.stringify({
         id: target.id,
@@ -161,6 +185,7 @@ export default function OrderPage() {
         createdAt: target.createdAt,
         attemptId,
         uploaded,
+        validationJobState: jobState,
       }));
     } catch {
       // The cookie and in-memory state remain authoritative for this open page.
@@ -228,6 +253,20 @@ export default function OrderPage() {
     });
   }
 
+  async function registerValidationJob(target: SavedDraft, attemptId: string): Promise<Exclude<ValidationJobState, "not_registered" | "registering" | "registration_failed">> {
+    const response = await fetch(`/api/orders/${encodeURIComponent(target.id)}/validation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attemptId }),
+      credentials: "same-origin",
+    });
+    const result = await response.json() as { error?: string; state?: unknown };
+    if (!response.ok || (result.state !== "queued" && result.state !== "validating" && result.state !== "succeeded")) {
+      throw new Error(result.error ?? "検証ジョブを登録できませんでした。");
+    }
+    return result.state;
+  }
+
   async function uploadOrderFilesDirect(target: SavedDraft) {
     if (!bodyPdfFile || !coverPngFile) {
       setError("本文PDFとカバーPNGの両方を選択してください。");
@@ -262,12 +301,47 @@ export default function OrderPage() {
       setUploadProgress((current) => ({ bodyPdf: current?.bodyPdf ?? 100, coverPng: percent }));
     });
     setFilesSaved(true);
-    setError("");
-    persistDirectUploadState(target, intent.attemptId, true);
+    setValidationJobState("registering");
+    persistDirectUploadState(target, intent.attemptId, true, "registering");
     try {
-      sessionStorage.removeItem(ORDER_IDEMPOTENCY_SESSION_KEY);
+      const state = await registerValidationJob(target, intent.attemptId);
+      setValidationJobState(state);
+      setError("");
+      persistDirectUploadState(target, intent.attemptId, true, state);
+      try {
+        sessionStorage.removeItem(ORDER_IDEMPOTENCY_SESSION_KEY);
+      } catch {
+        // Session storage is optional; no customer information is stored there.
+      }
     } catch {
-      // Session storage is optional; no customer information is stored there.
+      setValidationJobState("registration_failed");
+      setError("2ファイルの一時アップロードは完了しましたが、検証ジョブを登録できませんでした。下のボタンから登録を再試行してください。");
+      persistDirectUploadState(target, intent.attemptId, true, "registration_failed");
+    }
+  }
+
+  async function retryValidationJobRegistration() {
+    if (!draft || !directAttemptIdRef.current || actionInProgressRef.current) return;
+    actionInProgressRef.current = true;
+    setSaving(true);
+    setError("");
+    setValidationJobState("registering");
+    try {
+      const state = await registerValidationJob(draft, directAttemptIdRef.current);
+      setValidationJobState(state);
+      persistDirectUploadState(draft, directAttemptIdRef.current, true, state);
+      try {
+        sessionStorage.removeItem(ORDER_IDEMPOTENCY_SESSION_KEY);
+      } catch {
+        // Session storage is optional; no customer information is stored there.
+      }
+    } catch {
+      setValidationJobState("registration_failed");
+      setError("検証ジョブを登録できませんでした。時間をおいて再試行してください。");
+      persistDirectUploadState(draft, directAttemptIdRef.current, true, "registration_failed");
+    } finally {
+      actionInProgressRef.current = false;
+      setSaving(false);
     }
   }
 
@@ -355,7 +429,9 @@ export default function OrderPage() {
           : "注文下書きを作成しました"}</h1>
         <p className="mt-5">注文ID：<span className="font-mono">{draft.id}</span></p>
         <p className="mt-3 rounded-lg bg-amber-50 p-4">状態：{filesSaved
-          ? DIRECT_UPLOAD_EXPERIMENT ? "preparing（一時保存済み・未検証）" : "preparing（ファイル検証済み）"
+          ? DIRECT_UPLOAD_EXPERIMENT
+            ? validationJobState === "succeeded" ? "preparing（検証・正式ファイル確定済み）" : "preparing（一時保存済み・検証未完了）"
+            : "preparing（ファイル検証済み）"
           : "ファイル未検証"}。価格は未確定のため、決済には進めません。</p>
         <p className="mt-3">価格：価格確認中</p>
         {!filesSaved && (
@@ -407,8 +483,20 @@ export default function OrderPage() {
           </section>
         )}
         {filesSaved && <p className="mt-3 text-sm text-stone-600">{DIRECT_UPLOAD_EXPERIMENT
-          ? "非公開の一時領域への送信は完了しました。本文検証・本番保存・決済可能化は行っていません。"
+          ? `非公開の一時領域への送信は完了しました。検証ジョブ（登録API応答時点）：${VALIDATION_JOB_LABELS[validationJobState]}。この表示は自動更新されません。ジョブ登録だけでは検証完了・製本可能を意味しません。決済・製本発注も未実装です。`
           : "配送先情報と非公開の入稿ファイルはサーバー側の注文IDに紐付けて保存されました。決済機能は未実装です。"}</p>}
+        {filesSaved && DIRECT_UPLOAD_EXPERIMENT && error && <p role="alert" className="mt-3 text-red-700">{error}</p>}
+        {filesSaved && DIRECT_UPLOAD_EXPERIMENT &&
+          (validationJobState === "not_registered" || validationJobState === "registration_failed") && (
+            <button
+              className="mt-4 rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50"
+              type="button"
+              onClick={() => void retryValidationJobRegistration()}
+              disabled={saving}
+            >
+              {saving ? "検証ジョブを登録中……" : "検証ジョブ登録を再試行"}
+            </button>
+          )}
       </main>
     );
   }
