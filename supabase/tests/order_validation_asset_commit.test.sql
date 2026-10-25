@@ -27,13 +27,14 @@ declare
   other_upload_lease uuid := gen_random_uuid();
   other_attempt_id uuid := gen_random_uuid();
   other_validation_lease uuid := gen_random_uuid();
-  cleanup_lease_id uuid := gen_random_uuid();
+  test_cleanup_lease_id uuid := gen_random_uuid();
   token_hash text := repeat('a', 64);
   body_hash text := repeat('b', 64);
   cover_hash text := repeat('c', 64);
   body_path text;
   cover_path text;
   result jsonb;
+  cleanup_finished boolean;
   rejected boolean;
   proc regprocedure;
   target_table regclass;
@@ -215,14 +216,33 @@ begin
   -- Once the committed attempt expires, the scoped cleaner may claim it.
   update public.amuhon_order_temp_upload_attempts
     set expires_at = clock_timestamp() - interval '1 second' where id = attempt_id;
-  result := public.claim_amuhon_order_temp_upload_attempt_cleanup(attempt_id, cleanup_lease_id);
-  if result->>'attemptId' <> attempt_id::text then raise exception '[CLEANUP] committed expired attempt was not claimable'; end if;
+  result := public.claim_amuhon_order_temp_upload_attempt_cleanup(attempt_id, test_cleanup_lease_id);
+  if result is null then
+    raise exception '[CLEANUP CLAIM NULL] scoped cleanup claim returned NULL';
+  end if;
+  if jsonb_typeof(result) is distinct from 'object' then
+    raise exception '[CLEANUP CLAIM TYPE] scoped cleanup claim did not return a JSON object';
+  end if;
+  if result->>'attemptId' is distinct from attempt_id::text then
+    raise exception '[CLEANUP CLAIM ATTEMPT] claim returned a missing or mismatched attemptId';
+  end if;
+  if not exists (
+    select 1 from public.amuhon_order_temp_upload_attempts as attempts
+    where attempts.id = attempt_id
+      and attempts.state = 'cleaning'
+      and attempts.cleanup_lease_id = test_cleanup_lease_id
+  ) then
+    raise exception '[CLEANUP CLAIM STATE] synthetic attempt is not cleaning under the expected lease';
+  end if;
   -- This only simulates a Storage deletion having succeeded. The SQL test does
   -- not access Storage; the synthetic DB state is rolled back below.
-  if not public.finish_amuhon_order_temp_upload_cleanup(cleanup_lease_id, attempt_id, true) or
-     (select attempts.state from public.amuhon_order_temp_upload_attempts as attempts
-       where attempts.id = test_block.attempt_id) <> 'cleaned' then
-    raise exception '[CLEANUP] successful post-commit cleanup state was not recorded';
+  cleanup_finished := public.finish_amuhon_order_temp_upload_cleanup(test_cleanup_lease_id, attempt_id, true);
+  if cleanup_finished is distinct from true then
+    raise exception '[CLEANUP FINISH RESULT] finish RPC did not return true';
+  end if;
+  if (select attempts.state from public.amuhon_order_temp_upload_attempts as attempts
+      where attempts.id = test_block.attempt_id) is distinct from 'cleaned' then
+    raise exception '[CLEANUP FINISH STATE] attempt state is not cleaned after successful finish';
   end if;
 
   -- In-flight validation never becomes cleanup eligible, including when the
@@ -254,10 +274,10 @@ begin
       body_hash, cover_hash, 1000, 1000);
   exception when others then rejected := sqlerrm = 'VALIDATION_LEASE_STALE'; end;
   if not rejected then raise exception '[EXPIRED LEASE] expired validation-worker lease was accepted'; end if;
-  update public.amuhon_order_validation_jobs set
+  update public.amuhon_order_validation_jobs as jobs set
     lease_id = current_worker_lease,
     lease_expires_at = clock_timestamp() + interval '30 minutes'
-  where attempt_id = stale_attempt_id;
+  where jobs.attempt_id = stale_attempt_id;
   rejected := false;
   begin
     perform public.commit_amuhon_order_validation_assets(stale_order_id, stale_attempt_id, stale_worker_lease,
