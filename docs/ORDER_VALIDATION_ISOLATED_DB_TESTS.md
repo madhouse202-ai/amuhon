@@ -117,12 +117,27 @@ Supabase公式はローカル開発をクラウドのクォータを消費しな
 - [ ] 並行試験は単一トランザクションのROLLBACKテストとは分離し、合成fixtureのみを使う。
 - [ ] エラー時に共有stagingへ切り替えて続行しない。ローカル接続先を再確認し、必要ならローカルDB全体を使い捨てとして再構築する。
 
+## STEP 4-D: ローカル専用SQLテスト実装
+
+追加したローカル専用テストはstaging用SQLの実行時コピーや文字列置換ではありません。`supabase/tests/local/` に独立したテストSQLを置き、staging用テストファイルには変更を加えません。
+
+- `supabase/tests/local/order_validation_targeted_claim.local.sql` は合成UUIDで注文・attempt・jobを作成し、指定claim RPCだけを呼び出します。全体claim、Storage、清掃RPC、レート制限RPCは呼びません。
+- `supabase/tests/local/order_validation_asset_commit.local.sql` は合成データのcommit正常系・異常系、状態照会、旧complete拒否を確認します。清掃RPCとStorageは呼びません。
+- どちらも `BEGIN ISOLATION LEVEL READ COMMITTED` から始まり `ROLLBACK` で終わります。DB上のfixture変更だけが対象で、外部副作用を作りません。
+- SQL内のガードはDB名 `postgres`、実行ロール `postgres`、TCP接続（server/client addressがNULLでないこと）、Docker内Postgresポート5432、`application_name` とローカル専用GUCを確認します。Unixソケット接続は拒否します。これらのSQL側値は補助ガードであり、単独でローカル接続を証明するものではありません。
+- `scripts/test-order-validation-local.ps1` はDB URLを引数に取らず、hostを `127.0.0.1`、host portを54322、DB/roleをpostgresに固定します。Supabase CLIのローカルstatus、専用project_id、正確なDocker DBコンテナ名・Supabase Postgres image・composeの `db` service label、5432/tcpのloopbackポートマップ、Windows listen socketの所有プロセスを照合します。ポートマップが0.0.0.0等に公開、Docker所有者を識別不能、CLI statusが不一致、リンク済みproject-refが存在、確認コマンドが失敗した場合は実行を拒否します。statusのキー出力はメモリ内だけで扱い、表示・保存しません。
+- psqlには `-X -v ON_ERROR_STOP=1` と接続/statement/lock timeoutを設定します。テストエラー時はpsqlプロセスが終了しDB接続が切れることで未完了トランザクションがロールバックされます。エラー出力や接続文字列をPowerShell側で捕捉して再表示しません。
+- 実行例（ローカルSupabaseを別途準備した後）：`.\scripts\test-order-validation-local.ps1 -SupabaseWorkdir 'C:\amuhon-local-isolated' -Test both`。指定先はリポジトリ外で `supabase/config.toml` を持ち、project_id が `amuhon-local` で始まる使い捨て環境に限ります。スクリプトはスタック起動、migration適用、reset、リンク、清掃をしません。ローカルDBパスワードはpsqlの対話プロンプトで入力します。
+- 静的チェックは `node --test tests/order-validation-local-runner.test.mjs` です。これはSQLソースのガード・禁止RPC・rollback構造を検査するだけで、PowerShellの接続検査やPostgreSQL実行を証明しません。
+
+本実行環境では引き続きSupabase CLI、Docker、psqlが未確認/未導入のため、ラッパーは動かしていません。実DBテストは未実施です。WindowsのDockerポート転送プロセス名が許可リストにない環境では、ラッパーは安全側に拒否します。実行前にDocker Desktopの実プロセス名とloopback port mappingを確認し、未確認なら許可リストを安易に広げず停止してください。
+
 ## 未確認事項
 
 - Docker Desktopのインストール有無、利用可能なRAM/CPU/ディスク、ライセンス適用条件。
 - PostgreSQL Windows Serviceの状態（サービス一覧の確認は権限エラー）。
 - Supabaseアカウントのプロジェクト枠、請求設定、独立プロジェクトの実際の料金。
-- 既存SQLテストのローカル専用sentinel対応。現状のままではローカルDB向けガードを通らない。
+- staging専用SQLテストは今後もローカル用ではない。ローカル実行には `supabase/tests/local/` の独立テストだけを使う。
 - ローカルSupabase CLIが本プロジェクトの全migrationを追加互換スキーマなしで適用できるか。CLI設定がなく、実行もしていないため未確認。
 - 複数セッションでのclaim競合結果。今回はSQLもワーカーも実行していない。
 - この調査ではSupabase接続、SQL実行、ソフトウェア導入、外部プロジェクト作成、Git操作を一切行っていません。
