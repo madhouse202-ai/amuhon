@@ -142,6 +142,10 @@ test('native runner pins target and does not manage PostgreSQL lifecycle', async
   assert.match(pathModule, /if \(\$currentPath\.Equals\(\$rootPath[\s\S]*?break/);
   assert.match(pathModule, /UNC and device paths are not accepted/);
   assert.match(pathModule, /Test-PathIsInside[\s\S]*OrdinalIgnoreCase/);
+  assert.ok(pathModule.includes("return Join-Path $canonicalRoot 'pgsql\\bin'"));
+  assert.match(pathModule, /Export-ModuleMember[^\r\n]*Get-NativeBinaryDirectory/);
+  assert.match(runner, /Get-NativeBinaryDirectory \$rootPath/);
+  assert.doesNotMatch(runner, /Join-Path \$rootPath 'bin'/);
 });
 
 test('migration runner is fixed, gated, ordered, atomic, and refuses partial reapplication', async () => {
@@ -158,6 +162,8 @@ test('migration runner is fixed, gated, ordered, atomic, and refuses partial rea
   ];
   const declared = [...runner.matchAll(/^\s*'((?:2026)[0-9]+_[a-z0-9_]+)'\s*,?\s*$/gm)].map((match) => match[1]);
   assert.deepEqual(declared, versions);
+  assert.match(runner, /Get-NativeBinaryDirectory \$rootPath/);
+  assert.doesNotMatch(runner, /Join-Path \$rootPath 'bin'/);
   assert.match(runner, /test-order-validation-native\.ps1'\s*\n\s*if[\s\S]*?-PreflightOnly/);
   assert.match(runner, /'-1'/);
   assert.match(runner, /'-h', '127\.0\.0\.1'/);
@@ -200,6 +206,8 @@ test('migration runner is fixed, gated, ordered, atomic, and refuses partial rea
 test('bootstrap wrapper requires shared live preflight and a fixed local target', async () => {
   const runner = await read('../scripts/native-postgres/apply-order-validation-native-bootstrap.ps1');
   assert.match(runner, /test-order-validation-native\.ps1'[\s\S]*?-PreflightOnly/);
+  assert.match(runner, /Get-NativeBinaryDirectory \$rootPath/);
+  assert.doesNotMatch(runner, /Join-Path \$rootPath 'bin'/);
   assert.match(runner, /Assert-NativeLocalDrivePath \$NativeRoot/);
   assert.match(runner, /'-h', '127\.0\.0\.1'/);
   assert.match(runner, /'-p', '55432'/);
@@ -239,6 +247,27 @@ test('native PowerShell path unit test covers drive roots and rejects UNC/relati
   assert.match(psTest, /\\\\server\\share\\native/);
   assert.match(psTest, /relative\\native/);
   assert.match(psTest, /C:native\\cluster/);
+  assert.match(psTest, /Get-NativeBinaryDirectory \$nativeRoot/);
+  assert.ok(psTest.includes("'C:\\amuhon-native-pg\\pgsql\\bin'"));
+  assert.ok(psTest.includes('legacy NativeRoot\\bin'));
+  const pathModule = await read('../scripts/native-postgres/native-postgres-path-safety.psm1');
+  assert.ok(pathModule.includes("return Join-Path $canonicalRoot 'pgsql\\bin'"));
+});
+
+test('all native wrappers use only the reviewed pgsql\\bin layout', async () => {
+  const files = [
+    '../scripts/native-postgres/test-order-validation-native.ps1',
+    '../scripts/native-postgres/apply-order-validation-native-bootstrap.ps1',
+    '../scripts/native-postgres/apply-order-validation-native.ps1',
+  ];
+  for (const file of files) {
+    const source = await read(file);
+    assert.match(source, /Get-NativeBinaryDirectory \$rootPath/, file);
+    assert.doesNotMatch(source, /Join-Path \$rootPath 'bin'/, file);
+  }
+  const docs = await read('../docs/ORDER_VALIDATION_NATIVE_POSTGRES_TESTS.md');
+  assert.ok(docs.includes('pgsql\\bin'));
+  assert.match(docs, /do not fall back to the former `NativeRoot\\bin` layout/i);
 });
 
 test('native bootstrap is guarded, isolated, and explicitly mocks Storage only', async () => {

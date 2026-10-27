@@ -94,7 +94,7 @@ try {
   }
   Assert-NoReparsePath $rootPath
 
-  $binaryDirectory = Join-Path $rootPath 'bin'
+  $binaryDirectory = Get-NativeBinaryDirectory $rootPath
   $dataDirectory = Join-Path $rootPath 'cluster'
   $logDirectory = Join-Path $rootPath 'logs'
   $identityFile = Join-Path $rootPath 'identity\native-cluster.json'

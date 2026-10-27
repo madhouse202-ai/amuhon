@@ -85,7 +85,7 @@ try {
   }
   $identityPath = Join-Path $rootPath 'identity\native-cluster.json'
   $dataDirectory = Join-Path $rootPath 'cluster'
-  $binaryDirectory = Join-Path $rootPath 'bin'
+  $binaryDirectory = Get-NativeBinaryDirectory $rootPath
   $logDirectory = Join-Path $rootPath 'logs'
   $identity = Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
   if ($identity.schemaVersion -ne 1 -or

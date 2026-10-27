@@ -31,7 +31,9 @@ reviewing and obtaining PostgreSQL binaries:
 
 ```text
 C:\amuhon-native-pg\
-  bin\                 # trusted EDB ZIP's PostgreSQL executables
+  pgsql\               # trusted EDB ZIP directory; keep its internal layout intact
+    bin\               # PostgreSQL executables used by the guarded wrappers
+    share\             # other ZIP contents remain alongside bin as provided
   cluster\             # disposable PGDATA
   logs\
   identity\
@@ -40,6 +42,9 @@ C:\amuhon-native-pg\
 
 The project repository contains only the SQL fixtures, PowerShell inspection
 runner and static tests. Do not place `PGDATA` or logs in the repository.
+All three guarded wrappers resolve executables only from `NativeRoot\pgsql\bin`;
+they do not fall back to the former `NativeRoot\bin` layout. Keep the ZIP tree
+in place and do not move the running binaries or the `cluster` directory.
 
 ## Manual provisioning (not performed by the runner)
 

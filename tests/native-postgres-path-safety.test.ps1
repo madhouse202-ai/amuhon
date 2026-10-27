@@ -45,4 +45,13 @@ if (-not $driveRelativeRejected) {
   throw 'Drive-relative paths were not rejected.'
 }
 
+$nativeRoot = 'C:\amuhon-native-pg'
+$expectedBinaryDirectory = 'C:\amuhon-native-pg\pgsql\bin'
+if (-not (Test-CanonicalPathEqual (Get-NativeBinaryDirectory $nativeRoot) $expectedBinaryDirectory)) {
+  throw 'Native PostgreSQL binary directory did not resolve to NativeRoot\pgsql\bin.'
+}
+if ((Get-NativeBinaryDirectory $nativeRoot) -eq (Join-Path $nativeRoot 'bin')) {
+  throw 'Native PostgreSQL binary resolver fell back to the legacy NativeRoot\bin layout.'
+}
+
 Write-Output 'Native path-safety PowerShell tests passed.'

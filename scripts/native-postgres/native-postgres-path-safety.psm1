@@ -41,6 +41,11 @@ function Assert-NativeLocalDrivePath([string]$Path) {
   return $canonicalPath
 }
 
+function Get-NativeBinaryDirectory([string]$NativeRoot) {
+  $canonicalRoot = Assert-NativeLocalDrivePath $NativeRoot
+  return Join-Path $canonicalRoot 'pgsql\bin'
+}
+
 function Test-CanonicalPathEqual([string]$Left, [string]$Right) {
   return (Get-CanonicalPath $Left).Equals(
     (Get-CanonicalPath $Right),
@@ -88,4 +93,4 @@ function Assert-NoReparsePath([string]$Path) {
   }
 }
 
-Export-ModuleMember -Function Get-CanonicalPath, Assert-NativeLocalDrivePath, Test-CanonicalPathEqual, Test-PathIsInside, Assert-NoReparsePath
+Export-ModuleMember -Function Get-CanonicalPath, Assert-NativeLocalDrivePath, Get-NativeBinaryDirectory, Test-CanonicalPathEqual, Test-PathIsInside, Assert-NoReparsePath
