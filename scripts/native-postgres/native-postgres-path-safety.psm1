@@ -46,6 +46,31 @@ function Get-NativeBinaryDirectory([string]$NativeRoot) {
   return Join-Path $canonicalRoot 'pgsql\bin'
 }
 
+function Test-NativePgHbaRules([string[]]$Lines) {
+  $expectedRules = @(
+    'host postgres postgres 127.0.0.1/32 scram-sha-256',
+    'host amuhon_validation_native postgres 127.0.0.1/32 scram-sha-256',
+    'host all all 127.0.0.1/32 reject',
+    'host all all ::1/128 reject'
+  )
+  $activeRules = @(
+    foreach ($line in $Lines) {
+      if ($null -eq $line) { continue }
+      $normalized = ($line -replace '#.*$', '').Trim()
+      if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+        ($normalized -split '\s+') -join ' '
+      }
+    }
+  )
+  if ($activeRules.Count -ne $expectedRules.Count) { return $false }
+  for ($i = 0; $i -lt $expectedRules.Count; $i++) {
+    if (-not [string]::Equals($activeRules[$i], $expectedRules[$i], [StringComparison]::Ordinal)) {
+      return $false
+    }
+  }
+  return $true
+}
+
 function Test-CanonicalPathEqual([string]$Left, [string]$Right) {
   return (Get-CanonicalPath $Left).Equals(
     (Get-CanonicalPath $Right),
@@ -93,4 +118,4 @@ function Assert-NoReparsePath([string]$Path) {
   }
 }
 
-Export-ModuleMember -Function Get-CanonicalPath, Assert-NativeLocalDrivePath, Get-NativeBinaryDirectory, Test-CanonicalPathEqual, Test-PathIsInside, Assert-NoReparsePath
+Export-ModuleMember -Function Get-CanonicalPath, Assert-NativeLocalDrivePath, Get-NativeBinaryDirectory, Test-NativePgHbaRules, Test-CanonicalPathEqual, Test-PathIsInside, Assert-NoReparsePath

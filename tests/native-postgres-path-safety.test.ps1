@@ -54,4 +54,29 @@ if ((Get-NativeBinaryDirectory $nativeRoot) -eq (Join-Path $nativeRoot 'bin')) {
   throw 'Native PostgreSQL binary resolver fell back to the legacy NativeRoot\bin layout.'
 }
 
+$expectedHbaRules = @(
+  'host postgres postgres 127.0.0.1/32 scram-sha-256',
+  'host amuhon_validation_native postgres 127.0.0.1/32 scram-sha-256',
+  'host all all 127.0.0.1/32 reject',
+  'host all all ::1/128 reject'
+)
+if (-not (Test-NativePgHbaRules $expectedHbaRules)) {
+  throw 'The exact reviewed pg_hba.conf rule set was not accepted.'
+}
+if (Test-NativePgHbaRules @($expectedHbaRules[1], $expectedHbaRules[0], $expectedHbaRules[2], $expectedHbaRules[3])) {
+  throw 'Reordered pg_hba.conf rules were accepted.'
+}
+if (Test-NativePgHbaRules @($expectedHbaRules + 'host all all 0.0.0.0/0 trust')) {
+  throw 'An extra permissive pg_hba.conf rule was accepted.'
+}
+if (Test-NativePgHbaRules @($expectedHbaRules[0], 'include ''extra.conf''', $expectedHbaRules[1], $expectedHbaRules[2], $expectedHbaRules[3])) {
+  throw 'A pg_hba.conf include directive was accepted.'
+}
+if (Test-NativePgHbaRules @($expectedHbaRules[0], $expectedHbaRules[1], $expectedHbaRules[2], $expectedHbaRules[3], 'local all all trust')) {
+  throw 'An extra local-socket authentication rule was accepted.'
+}
+if (-not (Test-NativePgHbaRules @('# approved config', '', ($expectedHbaRules[0] + ' # bootstrap database'), $expectedHbaRules[1], $expectedHbaRules[2], $expectedHbaRules[3]))) {
+  throw 'Comments or blank lines changed the active pg_hba.conf rules unexpectedly.'
+}
+
 Write-Output 'Native path-safety PowerShell tests passed.'

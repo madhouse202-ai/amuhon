@@ -163,14 +163,8 @@ try {
     Stop-NativeTest 'pg_hba.conf is missing from the dedicated data directory.'
   }
   Assert-NoReparsePath $hbaFile
-  $hbaRules = @(
-    Get-Content -LiteralPath $hbaFile |
-      ForEach-Object { ($_ -replace '#.*$', '').Trim() } |
-      Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-      ForEach-Object { ($_ -split '\s+') -join ' ' }
-  )
-  if ($hbaRules.Count -ne 1 -or $hbaRules[0] -cne 'host all postgres 127.0.0.1/32 scram-sha-256') {
-    Stop-NativeTest 'pg_hba.conf must contain only the reviewed IPv4-loopback SCRAM rule for postgres.'
+  if (-not (Test-NativePgHbaRules (Get-Content -LiteralPath $hbaFile))) {
+    Stop-NativeTest 'pg_hba.conf must contain only the four reviewed rules in the exact required order; include directives and any extra rules are refused.'
   }
 
   $controlLines = Invoke-Captured $pgControlDataExe @('-D', $dataDirectory) 'pg_controldata could not inspect the expected cluster.'

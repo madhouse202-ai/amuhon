@@ -60,16 +60,22 @@ in place and do not move the running binaries or the `cluster` directory.
    environment variable, or log. Do not register a Windows service.
 3. Configure the cluster with `listen_addresses = '127.0.0.1'`, `port = 55432`,
    and `cluster_name = 'amuhon-native-order-validation-v1'`. Configure
-   `pg_hba.conf` to have exactly one active rule:
+   `pg_hba.conf` to contain exactly these four active rules, in this order:
 
    ```text
-   host all postgres 127.0.0.1/32 scram-sha-256
+   host postgres postgres 127.0.0.1/32 scram-sha-256
+   host amuhon_validation_native postgres 127.0.0.1/32 scram-sha-256
+   host all all 127.0.0.1/32 reject
+   host all all ::1/128 reject
    ```
 
-   There must be no active `trust`, wildcard, IPv6, remote-host, or other
-   authentication rules. The runner intentionally refuses anything except
-   that exact active-rule set. This may mean removing/commenting the default
-   local-socket rule; the runner does not use Unix sockets.
+   The first two rules permit SCRAM only for the named local databases and
+   `postgres` role; the final rules reject every other IPv4-loopback and IPv6
+   host connection. There must be no additional active authentication rule,
+   `include`, `include_if_exists`, or `include_dir` directive. The shared
+   preflight checks the normalized active lines and their order exactly, so
+   unexpected rules, include-based paths, and Unix-socket `local` rules are
+   refused. The runner itself connects only to IPv4 loopback.
 4. Manually start this cluster only after checking its data path and config.
    Create the dedicated database `amuhon_validation_native` yourself over the
    fixed loopback TCP connection. No runner action performs these steps.
