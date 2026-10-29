@@ -200,8 +200,7 @@ try {
     $serverProcess = $processMatches[0]
     $processCommandLine = [string]$serverProcess.CommandLine
     if (-not (Test-CanonicalPathEqual ([string]$serverProcess.ExecutablePath) $postgresExe) -or
-        [string]::IsNullOrWhiteSpace($processCommandLine) -or
-        $processCommandLine.IndexOf($dataDirectory, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        -not (Test-NativePostgresCommandLine $processCommandLine $postgresExe $dataDirectory)) {
       Stop-NativeTest 'the running PID executable or command line does not match this cluster.'
     }
     $ownerResult = Invoke-CimMethod -InputObject $serverProcess -MethodName GetOwner -ErrorAction Stop

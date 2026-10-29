@@ -324,6 +324,17 @@ test('native SQL tests reject executable content outside the rollback transactio
   assert.throws(() => assertRollbackOnly("\\set ON_ERROR_STOP on\nbegin isolation level read committed; select E'\\\\\\\''; rollback;"), /backslash in SQL string/);
 });
 
+test('native PostgreSQL process identity parses argv and matches executable and one exact -D path', async () => {
+  const helper = await read('../scripts/native-postgres/native-postgres-path-safety.psm1');
+  const runner = await read('../scripts/native-postgres/test-order-validation-native.ps1');
+  assert.match(helper, /CommandLineToArgvW/);
+  assert.match(helper, /arguments\[0\]/);
+  assert.match(helper, /dataOptionIndexes\.Count\s+-ne\s+1/);
+  assert.match(helper, /Test-CanonicalPathEqual\s+\(\[string\]\$arguments\[\$dataIndex \+ 1\]\)\s+\$ExpectedDataDirectory/);
+  assert.match(runner, /Test-NativePostgresCommandLine\s+\$processCommandLine\s+\$postgresExe\s+\$dataDirectory/);
+  assert.doesNotMatch(runner, /processCommandLine\.IndexOf\(/);
+});
+
 test('asset commit test disambiguates PL/pgSQL variables from column names', async () => {
   const sql = await read('../supabase/tests/native/order_validation_asset_commit.native.sql');
   assert.match(sql, /where j\.attempt_id = v_attempt_id/);

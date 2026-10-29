@@ -2,6 +2,34 @@ $ErrorActionPreference = 'Stop'
 $module = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\native-postgres\native-postgres-path-safety.psm1'
 Import-Module -Name $module -Force -ErrorAction Stop
 
+$expectedExecutable = 'C:\amuhon-native-pg\pgsql\bin\postgres.exe'
+$expectedDataDirectory = 'C:\amuhon-native-pg\cluster'
+$forwardSlashCommandLine = '"C:/amuhon-native-pg/pgsql/bin/postgres.exe" -D "C:/amuhon-native-pg/cluster"'
+if (-not (Test-NativePostgresCommandLine $forwardSlashCommandLine $expectedExecutable $expectedDataDirectory)) {
+  throw 'A valid command line with forward-slash paths was rejected.'
+}
+if (-not (Test-NativePostgresCommandLine '"c:\AMUHON-NATIVE-PG\pgsql\bin\postgres.exe" -D "C:\amuhon-native-pg\cluster"' $expectedExecutable $expectedDataDirectory)) {
+  throw 'A valid command line with case variants was rejected.'
+}
+
+$invalidCommandLines = @(
+  @{ Value = '"C:\other\postgres.exe" -D "C:\amuhon-native-pg\cluster"'; Name = 'wrong executable' },
+  @{ Value = '"C:\amuhon-native-pg\pgsql\bin\postgres.exe.old" -D "C:\amuhon-native-pg\cluster"'; Name = 'executable path prefix' },
+  @{ Value = '"C:\amuhon-native-pg\pgsql\bin\postgres.exe" -D "C:\amuhon-native-pg\cluster-old"'; Name = 'data directory path prefix' },
+  @{ Value = '"C:\amuhon-native-pg\pgsql\bin\postgres.exe"'; Name = 'missing data option' },
+  @{ Value = '"C:\amuhon-native-pg\pgsql\bin\postgres.exe" -D'; Name = 'missing data option value' },
+  @{ Value = '"C:\amuhon-native-pg\pgsql\bin\postgres.exe" -D "C:\amuhon-native-pg\cluster" -D "C:\other"'; Name = 'duplicate data option' },
+  @{ Value = '"C:\amuhon-native-pg\pgsql\bin\postgres.exe" -DC:\amuhon-native-pg\cluster'; Name = 'attached data option' },
+  @{ Value = '"C:\amuhon-native-pg\pgsql\bin\postgres.exe" --pgdata="C:\amuhon-native-pg\cluster"'; Name = 'alternate data option' },
+  @{ Value = '"C:\amuhon-native-pg\pgsql\bin\postgres.exe" -- -D "C:\amuhon-native-pg\cluster"'; Name = 'option terminator' },
+  @{ Value = '"C:\amuhon-native-pg\pgsql\bin\postgres.exe" -D "\\server\share\cluster"'; Name = 'UNC data directory' }
+)
+foreach ($case in $invalidCommandLines) {
+  if (Test-NativePostgresCommandLine $case.Value $expectedExecutable $expectedDataDirectory) {
+    throw "The invalid process command line was accepted: $($case.Name)."
+  }
+}
+
 $driveRoot = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath((Get-Location).Path))
 $canonicalRoot = Get-CanonicalPath $driveRoot
 if (-not $canonicalRoot.Equals($driveRoot, [StringComparison]::OrdinalIgnoreCase)) {

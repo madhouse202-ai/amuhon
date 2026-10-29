@@ -108,6 +108,60 @@ function Test-CanonicalPathEqual([string]$Left, [string]$Right) {
   )
 }
 
+function Test-NativePostgresCommandLine([string]$CommandLine, [string]$ExpectedExecutable, [string]$ExpectedDataDirectory) {
+  if ([string]::IsNullOrWhiteSpace($CommandLine) -or
+      [string]::IsNullOrWhiteSpace($ExpectedExecutable) -or
+      [string]::IsNullOrWhiteSpace($ExpectedDataDirectory)) { return $false }
+
+  # Parse native Windows arguments with the OS parser; never search the raw
+  # command line or rewrite its separators globally.
+  if (-not ('Amuhon.NativePostgres.Win32CommandLineParser' -as [type])) {
+    $parserSource = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+namespace Amuhon.NativePostgres {
+  public static class Win32CommandLineParser {
+    [DllImport("shell32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CommandLineToArgvW(string commandLine, out int argumentCount);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr LocalFree(IntPtr memory);
+    public static string[] Parse(string commandLine) {
+      int count;
+      IntPtr argv = CommandLineToArgvW(commandLine, out count);
+      if (argv == IntPtr.Zero || count <= 0) throw new InvalidOperationException("Windows argument parsing failed.");
+      try {
+        var result = new List<string>(count);
+        for (int i = 0; i < count; i++) result.Add(Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv, i * IntPtr.Size)));
+        return result.ToArray();
+      } finally { LocalFree(argv); }
+    }
+  }
+}
+'@
+    try { Add-Type -TypeDefinition $parserSource -Language CSharp -ErrorAction Stop | Out-Null } catch { return $false }
+  }
+
+  try {
+    $arguments = @([Amuhon.NativePostgres.Win32CommandLineParser]::Parse($CommandLine))
+    if ($arguments.Count -lt 3 -or
+        -not (Test-CanonicalPathEqual ([string]$arguments[0]) $ExpectedExecutable)) { return $false }
+    $dataOptionIndexes = @()
+    for ($i = 1; $i -lt $arguments.Count; $i++) {
+      $argument = [string]$arguments[$i]
+      if ([string]::Equals($argument, '-D', [StringComparison]::Ordinal)) {
+        $dataOptionIndexes += $i
+      } elseif ($argument -match '^(?i:-D.+|--pgdata(?:=.*)?)$' -or $argument -eq '--') {
+        return $false
+      }
+    }
+    if ($dataOptionIndexes.Count -ne 1) { return $false }
+    $dataIndex = [int]$dataOptionIndexes[0]
+    if (($dataIndex + 1) -ge $arguments.Count) { return $false }
+    return Test-CanonicalPathEqual ([string]$arguments[$dataIndex + 1]) $ExpectedDataDirectory
+  } catch { return $false }
+}
+
 function Test-PathIsInside([string]$Path, [string]$Parent) {
   $canonicalPath = Get-CanonicalPath $Path
   $canonicalParent = Get-CanonicalPath $Parent
@@ -148,4 +202,4 @@ function Assert-NoReparsePath([string]$Path) {
   }
 }
 
-Export-ModuleMember -Function Get-CanonicalPath, Assert-NativeLocalDrivePath, Get-NativeBinaryDirectory, Test-NativePgHbaRules, Assert-NativeSystemIdentifier, Test-CanonicalPathEqual, Test-PathIsInside, Assert-NoReparsePath
+Export-ModuleMember -Function Get-CanonicalPath, Assert-NativeLocalDrivePath, Get-NativeBinaryDirectory, Test-NativePgHbaRules, Assert-NativeSystemIdentifier, Test-CanonicalPathEqual, Test-NativePostgresCommandLine, Test-PathIsInside, Assert-NoReparsePath

@@ -203,6 +203,13 @@ label, preflight fails closed. It refuses to proceed if any check is unknown
 or mismatched. PostgreSQL identity variables are scoped to the child process
 and restored afterward. The password is prompted by `psql -W`.
 
+The process command line is parsed using Windows `CommandLineToArgvW` rules.
+The runner requires argv[0] to resolve exactly to the expected `postgres.exe`
+and exactly one standalone `-D` whose following argument resolves exactly to
+the expected data directory. Canonical path comparison handles `/` versus `\\`
+and case differences. Substring matches, `-Dpath`, `--pgdata`, duplicate `-D`,
+UNC paths, and ambiguous command lines are rejected.
+
 The runner uses `psql -X` and `ON_ERROR_STOP=1`; it does not pass a connection
 URL, `PGPASSWORD`, or credentials as arguments. A SQL failure exits the psql
 process, closing its connection so PostgreSQL rolls back the open test
