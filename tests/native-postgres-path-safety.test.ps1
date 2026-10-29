@@ -79,4 +79,34 @@ if (-not (Test-NativePgHbaRules @('# approved config', '', ($expectedHbaRules[0]
   throw 'Comments or blank lines changed the active pg_hba.conf rules unexpectedly.'
 }
 
+$expectedSystemIdentifier = '7701314913455684496'
+$japaneseIdentifierLabel = -join @([char]0x30C7, [char]0x30FC, [char]0x30BF, [char]0x30D9, [char]0x30FC, [char]0x30B9, [char]0x30B7, [char]0x30B9, [char]0x30C6, [char]0x30E0, [char]0x8B58, [char]0x5225, [char]0x5B50)
+$japaneseIdentifierLine = $japaneseIdentifierLabel + ': ' + $expectedSystemIdentifier
+$englishIdentifierLine = 'Database system identifier: ' + $expectedSystemIdentifier
+if ((Assert-NativeSystemIdentifier @($japaneseIdentifierLine) $expectedSystemIdentifier) -cne $expectedSystemIdentifier) {
+  throw 'The Japanese pg_controldata system-identifier line was not recognized.'
+}
+if ((Assert-NativeSystemIdentifier @($englishIdentifierLine) $expectedSystemIdentifier) -cne $expectedSystemIdentifier) {
+  throw 'The English pg_controldata system-identifier line was not recognized.'
+}
+
+$invalidIdentifierCases = @(
+  @{ Lines = @('Database system identifier: 7701314913455684496'); Expected = '7701314913455684497'; Name = 'mismatch' },
+  @{ Lines = @($japaneseIdentifierLine, $englishIdentifierLine); Expected = $expectedSystemIdentifier; Name = 'duplicate recognized labels' },
+  @{ Lines = @('garbled-label: 7701314913455684496'); Expected = $expectedSystemIdentifier; Name = 'unrecognized or garbled label' },
+  @{ Lines = @($japaneseIdentifierLabel + ': 7701314913455684496 extra'); Expected = $expectedSystemIdentifier; Name = 'malformed value line' },
+  @{ Lines = @(); Expected = $expectedSystemIdentifier; Name = 'missing label' }
+)
+foreach ($case in $invalidIdentifierCases) {
+  $rejected = $false
+  try {
+    $null = Assert-NativeSystemIdentifier $case.Lines $case.Expected
+  } catch {
+    $rejected = $true
+  }
+  if (-not $rejected) {
+    throw "The invalid system-identifier case was accepted: $($case.Name)."
+  }
+}
+
 Write-Output 'Native path-safety PowerShell tests passed.'

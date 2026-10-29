@@ -123,6 +123,8 @@ test('native runner pins target and does not manage PostgreSQL lifecycle', async
   assert.match(runner, /'-W'/);
   assert.ok(runner.includes("SetEnvironmentVariable('PGPASSFILE', 'NUL'"));
   assert.match(runner, /pg_controldata/);
+  assert.match(runner, /Assert-NativeSystemIdentifier \$controlLines \(\[string\]\$identity\.systemIdentifier\)/);
+  assert.doesNotMatch(runner, /Database system identifier:\\s\*/);
   assert.match(runner, /pg_control_system\(\)/);
   assert.match(runner, /Get-NetTCPConnection/);
   assert.match(runner, /Get-CimInstance -ClassName Win32_Process/);
@@ -131,6 +133,7 @@ test('native runner pins target and does not manage PostgreSQL lifecycle', async
   assert.match(runner, /pg_hba\.conf must contain only the four reviewed rules in the exact required order/);
   assert.match(pathModule, /function Test-NativePgHbaRules[\s\S]*?host postgres postgres 127\.0\.0\.1\/32 scram-sha-256[\s\S]*?host amuhon_validation_native postgres 127\.0\.0\.1\/32 scram-sha-256[\s\S]*?host all all 127\.0\.0\.1\/32 reject[\s\S]*?host all all ::1\/128 reject/);
   assert.match(pathModule, /activeRules\[\$i\][\s\S]*?Ordinal/);
+  assert.match(pathModule, /function Assert-NativeSystemIdentifier[\s\S]*?Database system identifier\|\\u30C7[\s\S]*?identifierLines\.Count -ne 1[\s\S]*?StringComparison\]::Ordinal/);
   assert.match(runner, /app\.amuhon_native_test_environment/);
   assert.match(runner, /app\.amuhon_native_system_identifier/);
   assert.match(runner, /Test-PathIsInside \$rootPath \$repoRoot/);

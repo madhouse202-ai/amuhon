@@ -71,6 +71,36 @@ function Test-NativePgHbaRules([string[]]$Lines) {
   return $true
 }
 
+function Assert-NativeSystemIdentifier([string[]]$Lines, [string]$Expected) {
+  if ([string]::IsNullOrWhiteSpace($Expected) -or $Expected -notmatch '^[0-9]+$') {
+    throw [IO.InvalidDataException]::new('The expected PostgreSQL system identifier is malformed.')
+  }
+
+  # Keep this source ASCII-only for Windows PowerShell 5.1. The second label is
+  # the Unicode spelling emitted by Japanese pg_controldata installations.
+  $labelPattern = '^[ \t]*(?:Database system identifier|\u30C7\u30FC\u30BF\u30D9\u30FC\u30B9\u30B7\u30B9\u30C6\u30E0\u8B58\u5225\u5B50)[ \t]*:'
+  $valuePattern = '^[ \t]*(?:Database system identifier|\u30C7\u30FC\u30BF\u30D9\u30FC\u30B9\u30B7\u30B9\u30C6\u30E0\u8B58\u5225\u5B50)[ \t]*:[ \t]*([0-9]+)[ \t]*\r?$'
+  $identifierLines = @(
+    foreach ($line in $Lines) {
+      if ($null -ne $line -and [regex]::IsMatch([string]$line, $labelPattern, [Text.RegularExpressions.RegexOptions]::CultureInvariant)) {
+        [string]$line
+      }
+    }
+  )
+  if ($identifierLines.Count -ne 1) {
+    throw [IO.InvalidDataException]::new('pg_controldata must contain exactly one recognized system-identifier line.')
+  }
+
+  $valueMatch = [regex]::Match($identifierLines[0], $valuePattern, [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+  if (-not $valueMatch.Success) {
+    throw [IO.InvalidDataException]::new('The pg_controldata system-identifier line is malformed.')
+  }
+  if (-not [string]::Equals($valueMatch.Groups[1].Value, $Expected, [StringComparison]::Ordinal)) {
+    throw [IO.InvalidDataException]::new('The pg_controldata system identifier does not match the expected value.')
+  }
+  return $valueMatch.Groups[1].Value
+}
+
 function Test-CanonicalPathEqual([string]$Left, [string]$Right) {
   return (Get-CanonicalPath $Left).Equals(
     (Get-CanonicalPath $Right),
@@ -118,4 +148,4 @@ function Assert-NoReparsePath([string]$Path) {
   }
 }
 
-Export-ModuleMember -Function Get-CanonicalPath, Assert-NativeLocalDrivePath, Get-NativeBinaryDirectory, Test-NativePgHbaRules, Test-CanonicalPathEqual, Test-PathIsInside, Assert-NoReparsePath
+Export-ModuleMember -Function Get-CanonicalPath, Assert-NativeLocalDrivePath, Get-NativeBinaryDirectory, Test-NativePgHbaRules, Assert-NativeSystemIdentifier, Test-CanonicalPathEqual, Test-PathIsInside, Assert-NoReparsePath

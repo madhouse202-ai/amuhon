@@ -168,10 +168,10 @@ try {
   }
 
   $controlLines = Invoke-Captured $pgControlDataExe @('-D', $dataDirectory) 'pg_controldata could not inspect the expected cluster.'
-  $controlText = $controlLines -join "`n"
-  $systemIdMatch = [regex]::Match($controlText, '(?m)^Database system identifier:\s*(\d+)\s*$')
-  if (-not $systemIdMatch.Success -or $systemIdMatch.Groups[1].Value -ne [string]$identity.systemIdentifier) {
-    Stop-NativeTest 'pg_controldata system identifier does not match the reviewed cluster identity.'
+  try {
+    $null = Assert-NativeSystemIdentifier $controlLines ([string]$identity.systemIdentifier)
+  } catch {
+    Stop-NativeTest 'pg_controldata system identifier was missing, duplicated, malformed, unreadable, or did not match the reviewed cluster identity.'
   }
 
   $pidFile = Join-Path $dataDirectory 'postmaster.pid'

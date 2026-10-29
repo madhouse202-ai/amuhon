@@ -193,9 +193,15 @@ database URL argument. It checks canonical paths and reparse points, identity
 JSON, PG_VERSION, `pg_controldata` system identifier, `pg_ctl status`, PID file,
 process executable/command line/Windows owner, absence of Windows service
 ownership, the sole IPv4-loopback listener on port 55432, and live database
-reported identity/config/system ID. It refuses to proceed if any check is
-unknown or mismatched. PostgreSQL identity variables are scoped to the child
-process and restored afterward. The password is prompted by `psql -W`.
+reported identity/config/system ID. `pg_controldata` output is accepted only
+when exactly one English or Japanese system-identifier label is decoded and
+its decimal value matches the identity file; missing, duplicated, malformed,
+or garbled output is rejected. The source uses ASCII regex escapes for the
+Japanese label so Windows PowerShell 5.1 does not depend on script-file Unicode
+decoding. If PowerShell cannot decode the executable's output into the known
+label, preflight fails closed. It refuses to proceed if any check is unknown
+or mismatched. PostgreSQL identity variables are scoped to the child process
+and restored afterward. The password is prompted by `psql -W`.
 
 The runner uses `psql -X` and `ON_ERROR_STOP=1`; it does not pass a connection
 URL, `PGPASSWORD`, or credentials as arguments. A SQL failure exits the psql
