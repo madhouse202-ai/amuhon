@@ -242,8 +242,8 @@ try {
 
   Set-NativeClientEnvironment ([string]$identity.systemIdentifier)
   $probeSql = @"
-select current_database(), current_user, coalesce(inet_server_addr()::text, ''),
-       coalesce(inet_client_addr()::text, ''), inet_server_port(),
+select current_database(), current_user, coalesce(host(inet_server_addr()), ''),
+       coalesce(host(inet_client_addr()), ''), inet_server_port(),
        current_setting('data_directory'),
        (select system_identifier::text from pg_catalog.pg_control_system()),
        current_setting('cluster_name'), current_setting('application_name'),

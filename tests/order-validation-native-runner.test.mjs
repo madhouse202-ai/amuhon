@@ -335,6 +335,15 @@ test('native PostgreSQL process identity parses argv and matches executable and 
   assert.doesNotMatch(runner, /processCommandLine\.IndexOf\(/);
 });
 
+test('database identity probe compares the IPv4 host portion without weakening the exact loopback check', async () => {
+  const runner = await read('../scripts/native-postgres/test-order-validation-native.ps1');
+  assert.match(runner, /coalesce\(host\(inet_server_addr\(\)\), ''\)/);
+  assert.match(runner, /coalesce\(host\(inet_client_addr\(\)\), ''\)/);
+  assert.match(runner, /\$probeFields\[2\] -cne '127\.0\.0\.1'/);
+  assert.match(runner, /\$probeFields\[3\] -cne '127\.0\.0\.1'/);
+  assert.doesNotMatch(runner, /inet_(?:server|client)_addr\(\)::text/);
+});
+
 test('asset commit test disambiguates PL/pgSQL variables from column names', async () => {
   const sql = await read('../supabase/tests/native/order_validation_asset_commit.native.sql');
   assert.match(sql, /where j\.attempt_id = v_attempt_id/);
