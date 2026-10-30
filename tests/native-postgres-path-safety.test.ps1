@@ -11,6 +11,44 @@ if (-not [string]::Equals($ownerLower, $ownerUpper, [StringComparison]::OrdinalI
   throw 'OrdinalIgnoreCase did not accept a Windows account name differing only by case.'
 }
 
+$bootstrapSqlPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'supabase\tests\native\bootstrap.sql'
+$bootstrapSql = Get-Content -LiteralPath $bootstrapSqlPath -Raw
+if (-not (Test-NativeBootstrapTransactionStructure $bootstrapSql)) {
+  throw 'The checked-in bootstrap transaction structure was rejected.'
+}
+$safeTransactionWithLiterals = @(
+  '\set ON_ERROR_STOP on',
+  '-- COMMIT; in this comment is not a transaction command.',
+  'BEGIN;',
+  "select 'commit; rollback;';",
+  '/* nested comment /* ROLLBACK; */ still a comment */',
+  'do $body$ begin perform ''COMMIT;''; end $body$;',
+  'COMMIT;'
+) -join "`n"
+if (-not (Test-NativeBootstrapTransactionStructure $safeTransactionWithLiterals)) {
+  throw 'A valid transaction with transaction words in comments, strings, or a dollar body was rejected.'
+}
+
+$invalidBootstrapTransactions = @(
+  @{ Sql = "begin;`ncommit;`nselect 1;`ncommit;"; Name = 'early commit' },
+  @{ Sql = 'begin; select 1; commit; commit;'; Name = 'multiple commits' },
+  @{ Sql = 'begin; select 1; rollback;'; Name = 'rollback' },
+  @{ Sql = 'select 1; commit;'; Name = 'missing begin' },
+  @{ Sql = 'begin; select 1;'; Name = 'missing final commit' },
+  @{ Sql = 'start transaction; select 1; commit;'; Name = 'alternate begin form' },
+  @{ Sql = 'begin; select 1; end;'; Name = 'alternate commit form' },
+  @{ Sql = "begin; select 'unterminated; commit;"; Name = 'unterminated string' },
+  @{ Sql = 'begin; /* unterminated; commit;'; Name = 'unterminated comment' },
+  @{ Sql = 'begin; do $body$ select 1; commit;'; Name = 'unterminated dollar quote' },
+  @{ Sql = 'begin; select x$body$; commit; select $body$; commit;'; Name = 'dollar tag adjacent to identifier' },
+  @{ Sql = "begin; select E'escaped\\'commit'; commit;"; Name = 'ambiguous escaped string' }
+)
+foreach ($case in $invalidBootstrapTransactions) {
+  if (Test-NativeBootstrapTransactionStructure $case.Sql) {
+    throw "The invalid bootstrap transaction was accepted: $($case.Name)."
+  }
+}
+
 $expectedExecutable = 'C:\amuhon-native-pg\pgsql\bin\postgres.exe'
 $expectedDataDirectory = 'C:\amuhon-native-pg\cluster'
 $forwardSlashCommandLine = '"C:/amuhon-native-pg/pgsql/bin/postgres.exe" -D "C:/amuhon-native-pg/cluster"'

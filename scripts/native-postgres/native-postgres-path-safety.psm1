@@ -162,6 +162,151 @@ namespace Amuhon.NativePostgres {
   } catch { return $false }
 }
 
+function Test-NativeBootstrapTransactionStructure([string]$Sql) {
+  if ([string]::IsNullOrWhiteSpace($Sql)) { return $false }
+  # The wrapper separately rejects every psql command except this exact
+  # setting. Remove it before lexing SQL statement boundaries.
+  $sqlText = [regex]::Replace($Sql, '(?im)^\s*\\set\s+ON_ERROR_STOP\s+on\s*$', '')
+  $statements = New-Object 'System.Collections.Generic.List[string]'
+  $statement = New-Object System.Text.StringBuilder
+  $length = $sqlText.Length
+  $index = 0
+
+  while ($index -lt $length) {
+    $character = $sqlText[$index]
+    $next = if (($index + 1) -lt $length) { $sqlText[$index + 1] } else { [char]0 }
+
+    if ($character -eq '-' -and $next -eq '-') {
+      [void]$statement.Append('  ')
+      $index += 2
+      while ($index -lt $length -and $sqlText[$index] -ne "`n" -and $sqlText[$index] -ne "`r") {
+        [void]$statement.Append(' ')
+        $index++
+      }
+      continue
+    }
+
+    if ($character -eq '/' -and $next -eq '*') {
+      $depth = 1
+      [void]$statement.Append('  ')
+      $index += 2
+      while ($index -lt $length -and $depth -gt 0) {
+        $commentNext = if (($index + 1) -lt $length) { $sqlText[$index + 1] } else { [char]0 }
+        if ($sqlText[$index] -eq '/' -and $commentNext -eq '*') {
+          $depth++
+          [void]$statement.Append('  ')
+          $index += 2
+        } elseif ($sqlText[$index] -eq '*' -and $commentNext -eq '/') {
+          $depth--
+          [void]$statement.Append('  ')
+          $index += 2
+        } else {
+          [void]$statement.Append(' ')
+          $index++
+        }
+      }
+      if ($depth -ne 0) { return $false }
+      continue
+    }
+
+    if ($character -eq "'" -or $character -eq '"') {
+      $quote = $character
+      $isString = $quote -eq "'"
+      [void]$statement.Append(' ')
+      $index++
+      $closed = $false
+      while ($index -lt $length) {
+        $quotedCharacter = $sqlText[$index]
+        if ($isString -and $quotedCharacter -eq '\') {
+          # Do not guess whether this is an escape string or standard string.
+          return $false
+        }
+        if ($quotedCharacter -eq $quote) {
+          if (($index + 1) -lt $length -and $sqlText[$index + 1] -eq $quote) {
+            [void]$statement.Append('  ')
+            $index += 2
+          } else {
+            [void]$statement.Append(' ')
+            $index++
+            $closed = $true
+            break
+          }
+        } else {
+          [void]$statement.Append(' ')
+          $index++
+        }
+      }
+      if (-not $closed) { return $false }
+      continue
+    }
+
+    if ($character -eq '$') {
+      $canStartDollarQuote = $true
+      if ($index -gt 0) {
+        $previousCharacter = [string]$sqlText[$index - 1]
+        if ([regex]::IsMatch($previousCharacter, '[\p{L}\p{N}\p{M}_$]')) {
+          # PostgreSQL treats a dollar sign adjacent to an identifier as part
+          # of that identifier, not as the start of a dollar-quoted string.
+          $canStartDollarQuote = $false
+        }
+      }
+      $dollarMatch = if ($canStartDollarQuote) {
+        [regex]::Match($sqlText.Substring($index), '^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$')
+      } else {
+        [System.Text.RegularExpressions.Match]::Empty
+      }
+      if ($dollarMatch.Success) {
+        $tag = $dollarMatch.Value
+        $closingIndex = $sqlText.IndexOf($tag, $index + $tag.Length, [StringComparison]::Ordinal)
+        if ($closingIndex -lt 0) { return $false }
+        $afterTag = $closingIndex + $tag.Length
+        while ($index -lt $afterTag) {
+          [void]$statement.Append(' ')
+          $index++
+        }
+        continue
+      }
+    }
+
+    if ($character -eq ';') {
+      $completedStatement = $statement.ToString().Trim()
+      if ([string]::IsNullOrWhiteSpace($completedStatement)) { return $false }
+      $statements.Add($completedStatement)
+      [void]$statement.Clear()
+      $index++
+      continue
+    }
+
+    [void]$statement.Append($character)
+    $index++
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($statement.ToString())) { return $false }
+  if ($statements.Count -lt 2) { return $false }
+
+  $normalized = @(
+    foreach ($item in $statements) {
+      ([regex]::Replace($item, '\s+', ' ')).Trim()
+    }
+  )
+  if (-not [string]::Equals($normalized[0], 'begin', [StringComparison]::OrdinalIgnoreCase) -or
+      -not [string]::Equals($normalized[$normalized.Count - 1], 'commit', [StringComparison]::OrdinalIgnoreCase)) {
+    return $false
+  }
+
+  $transactionControlPattern = '^(?i:begin|start\s+transaction|commit|end|rollback|abort|savepoint|release(?:\s+savepoint)?|prepare\s+transaction)\b'
+  for ($statementIndex = 0; $statementIndex -lt $normalized.Count; $statementIndex++) {
+    if ($normalized[$statementIndex] -match $transactionControlPattern) {
+      if (($statementIndex -eq 0 -and $normalized[$statementIndex] -ieq 'begin') -or
+          ($statementIndex -eq ($normalized.Count - 1) -and $normalized[$statementIndex] -ieq 'commit')) {
+        continue
+      }
+      return $false
+    }
+  }
+  return $true
+}
+
 function Test-PathIsInside([string]$Path, [string]$Parent) {
   $canonicalPath = Get-CanonicalPath $Path
   $canonicalParent = Get-CanonicalPath $Parent
@@ -202,4 +347,4 @@ function Assert-NoReparsePath([string]$Path) {
   }
 }
 
-Export-ModuleMember -Function Get-CanonicalPath, Assert-NativeLocalDrivePath, Get-NativeBinaryDirectory, Test-NativePgHbaRules, Assert-NativeSystemIdentifier, Test-CanonicalPathEqual, Test-NativePostgresCommandLine, Test-PathIsInside, Assert-NoReparsePath
+Export-ModuleMember -Function Get-CanonicalPath, Assert-NativeLocalDrivePath, Get-NativeBinaryDirectory, Test-NativePgHbaRules, Assert-NativeSystemIdentifier, Test-CanonicalPathEqual, Test-NativePostgresCommandLine, Test-NativeBootstrapTransactionStructure, Test-PathIsInside, Assert-NoReparsePath

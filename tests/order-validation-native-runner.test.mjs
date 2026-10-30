@@ -227,6 +227,8 @@ test('bootstrap wrapper requires shared live preflight and a fixed local target'
   assert.match(runner, /'-X', '-v', 'ON_ERROR_STOP=1'/);
   assert.match(runner, /__NATIVE_BOOTSTRAP_NONCE__/);
   assert.match(runner, /\[guid\]::NewGuid\(\)\.ToString\('N'\)/);
+  assert.match(runner, /Test-NativeBootstrapTransactionStructure \$bootstrapText/);
+  assert.doesNotMatch(runner, /\$bootstrapText -match .*commit\|rollback/s);
   assert.match(runner, /finally\s*\{[\s\S]*Restore-NativeEnvironment/);
   assert.doesNotMatch(runner, /\$DatabaseUrl|\$ConnectionString|\$DbUrl|\$Host\b|\$Port\b/i);
   const bootstrapSql = await read('../supabase/tests/native/bootstrap.sql');

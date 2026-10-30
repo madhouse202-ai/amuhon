@@ -98,8 +98,8 @@ try {
   if ($bootstrapMetaCommands.Count -gt 0 -or $bootstrapText -notmatch '(?im)^\s*\\set\s+ON_ERROR_STOP\s+on\s*$') {
     Stop-NativeBootstrap 'bootstrap SQL contains a missing or unsupported psql meta-command.'
   }
-  if ($bootstrapText -match '(?im)^\s*(?:commit|rollback)\s*;') {
-    Stop-NativeBootstrap 'bootstrap SQL contains an unexpected top-level transaction terminator.'
+  if (-not (Test-NativeBootstrapTransactionStructure $bootstrapText)) {
+    Stop-NativeBootstrap 'bootstrap SQL must contain one leading BEGIN and one final COMMIT, with no other transaction control.'
   }
 
   $runDirectory = Join-Path $logDirectory ('bootstrap-run-' + [guid]::NewGuid().ToString('N'))
