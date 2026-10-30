@@ -2,6 +2,15 @@ $ErrorActionPreference = 'Stop'
 $module = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\native-postgres\native-postgres-path-safety.psm1'
 Import-Module -Name $module -Force -ErrorAction Stop
 
+$ownerLower = 'desktop-lpdo96q\usre'
+$ownerUpper = 'DESKTOP-LPDO96Q\usre'
+if ([string]::Equals($ownerLower, $ownerUpper, [StringComparison]::Ordinal)) {
+  throw 'Ordinal owner comparison unexpectedly ignored case.'
+}
+if (-not [string]::Equals($ownerLower, $ownerUpper, [StringComparison]::OrdinalIgnoreCase)) {
+  throw 'OrdinalIgnoreCase did not accept a Windows account name differing only by case.'
+}
+
 $expectedExecutable = 'C:\amuhon-native-pg\pgsql\bin\postgres.exe'
 $expectedDataDirectory = 'C:\amuhon-native-pg\cluster'
 $forwardSlashCommandLine = '"C:/amuhon-native-pg/pgsql/bin/postgres.exe" -D "C:/amuhon-native-pg/cluster"'

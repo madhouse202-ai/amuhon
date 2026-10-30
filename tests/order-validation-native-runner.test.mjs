@@ -219,6 +219,8 @@ test('bootstrap wrapper requires shared live preflight and a fixed local target'
   assert.match(runner, /'-p', '55432'/);
   assert.match(runner, /'-d', 'amuhon_validation_native'/);
   assert.match(runner, /'-W'/);
+  assert.match(runner, /-not \[string\]::Equals\([\s\S]*\[string\]\$identity\.osOwner[\s\S]*\[StringComparison\]::OrdinalIgnoreCase[\s\S]*\)/);
+  assert.doesNotMatch(runner, /\[string\]\$identity\.osOwner\s+-cne\b/);
   assert.match(runner, /PGHOSTADDR/);
   assert.match(runner, /PGSERVICEFILE/);
   assert.match(runner, /PGPASSWORD/);
