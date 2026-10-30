@@ -176,6 +176,8 @@ test('migration runner is fixed, gated, ordered, atomic, and refuses partial rea
   assert.match(runner, /'-p', '55432'/);
   assert.match(runner, /'-d', 'amuhon_validation_native'/);
   assert.match(runner, /'-W'/);
+  assert.match(runner, /-not \[string\]::Equals\([\s\S]*\[string\]\$identity\.osOwner[\s\S]*\[StringComparison\]::OrdinalIgnoreCase[\s\S]*\)/);
+  assert.doesNotMatch(runner, /\[string\]\$identity\.osOwner\s+-cne\b/);
   assert.match(runner, /migration_history/);
   assert.match(runner, /sha256/);
   assert.match(runner, /migration ledger is partial or out of order/);

@@ -95,7 +95,11 @@ try {
       $identity.clusterName -ne 'amuhon-native-order-validation-v1' -or
       -not (Test-CanonicalPathEqual ([string]$identity.dataDirectory) $dataDirectory) -or
       [string]$identity.systemIdentifier -notmatch '^\d+$' -or
-      [string]$identity.osOwner -cne [Security.Principal.WindowsIdentity]::GetCurrent().Name) {
+      -not [string]::Equals(
+        [string]$identity.osOwner,
+        [Security.Principal.WindowsIdentity]::GetCurrent().Name,
+        [StringComparison]::OrdinalIgnoreCase
+      )) {
     Stop-NativeMigration 'the identity record does not match the fixed native cluster.'
   }
 
