@@ -321,6 +321,27 @@ for (const file of [
   });
 }
 
+test('targeted claim expiry outcomes are read in statements after the mutating RPC', async () => {
+  const sql = await read('../supabase/tests/native/order_validation_targeted_claim.native.sql');
+  for (const [orderId, attemptId, expectedCode, marker] of [
+    ['order_expired_attempt', 'attempt_expired', 'attempt_expired', 'ATTEMPT EXPIRY'],
+    ['order_expired_upload_lease', 'attempt_expired_upload', 'attempt_expired', 'UPLOAD LEASE'],
+    ['order_max_attempts', 'attempt_max_attempts', 'processing_timeout', 'ATTEMPT LIMIT'],
+  ]) {
+    const escapedMarker = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const check = new RegExp(
+      `result\\s*:=\\s*public\\.claim_amuhon_order_validation_job_for_attempt\\(${orderId},\\s*${attemptId},\\s*300\\);\\s*` +
+      `if\\s+result\\s+is\\s+not\\s+null\\s+then[\\s\\S]*?\\[${escapedMarker} RESULT\\][\\s\\S]*?end if;\\s*` +
+      `select\\s+j\\.state,\\s*j\\.error_code\\s+into\\s+observed_job_state,\\s*observed_error_code[\\s\\S]*?` +
+      `where\\s+j\\.attempt_id\\s*=\\s*${attemptId};\\s*` +
+      `if\\s+not\\s+found\\s+then[\\s\\S]*?\\[${escapedMarker} ROW\\][\\s\\S]*?end if;\\s*` +
+      `if\\s+observed_job_state\\s+is\\s+distinct\\s+from\\s+'failed'\\s+or\\s+observed_error_code\\s+is\\s+distinct\\s+from\\s+'${expectedCode}'\\s+then`,
+      'i',
+    );
+    assert.match(sql, check, `${marker} RPC result and persisted state are checked separately`);
+  }
+});
+
 test('native SQL tests reject executable content outside the rollback transaction and unauthorized psql commands', () => {
   assert.throws(() => getSqlStatements('\\connect amuhon-staging\n\\set ON_ERROR_STOP on\nbegin; rollback;'), /disallowed psql meta-command/);
   assert.throws(() => assertRollbackOnly('\\set ON_ERROR_STOP on\nselect 1; begin; rollback;'));

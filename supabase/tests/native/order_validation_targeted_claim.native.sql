@@ -27,6 +27,8 @@ declare
   first_lease uuid;
   rejected boolean;
   target_proc regprocedure;
+  observed_job_state text;
+  observed_error_code text;
 begin
   if current_database() is distinct from 'amuhon_validation_native' or
      current_user is distinct from 'postgres' or
@@ -117,9 +119,17 @@ begin
   if public.claim_amuhon_order_validation_job_for_attempt(order_primary, attempt_primary, 300) is not null then
     raise exception '[DOUBLE CLAIM] active target was claimed twice';
   end if;
-  if public.claim_amuhon_order_validation_job_for_attempt(pg_catalog.gen_random_uuid(), attempt_wrong_target, 300) is not null or
-     not exists (select 1 from public.amuhon_order_validation_jobs as j where j.attempt_id = attempt_wrong_target) or
-     (select j.state from public.amuhon_order_validation_jobs as j where j.attempt_id = attempt_wrong_target) is distinct from 'queued' then
+  result := public.claim_amuhon_order_validation_job_for_attempt(pg_catalog.gen_random_uuid(), attempt_wrong_target, 300);
+  if result is not null then
+    raise exception '[NO FALLBACK RESULT] mismatched order unexpectedly returned a claimed job';
+  end if;
+  select j.state into observed_job_state
+  from public.amuhon_order_validation_jobs as j
+  where j.attempt_id = attempt_wrong_target;
+  if not found then
+    raise exception '[NO FALLBACK ROW] mismatched order removed the synthetic job';
+  end if;
+  if observed_job_state is distinct from 'queued' then
     raise exception '[NO FALLBACK] mismatched order changed or claimed another job';
   end if;
 
@@ -128,20 +138,46 @@ begin
     raise exception '[NULL DECLARATION] declaredPageCount was not explicit JSON null';
   end if;
 
-  if public.claim_amuhon_order_validation_job_for_attempt(order_expired_attempt, attempt_expired, 300) is not null or
-     not exists (select 1 from public.amuhon_order_validation_jobs as j where j.attempt_id = attempt_expired) or
-     (select j.error_code from public.amuhon_order_validation_jobs as j where j.attempt_id = attempt_expired) is distinct from 'attempt_expired' then
-    raise exception '[ATTEMPT EXPIRY] expired synthetic attempt was not rejected';
+  result := public.claim_amuhon_order_validation_job_for_attempt(order_expired_attempt, attempt_expired, 300);
+  if result is not null then
+    raise exception '[ATTEMPT EXPIRY RESULT] expired synthetic attempt returned a claimed job';
   end if;
-  if public.claim_amuhon_order_validation_job_for_attempt(order_expired_upload_lease, attempt_expired_upload, 300) is not null or
-     not exists (select 1 from public.amuhon_order_validation_jobs as j where j.attempt_id = attempt_expired_upload) or
-     (select j.error_code from public.amuhon_order_validation_jobs as j where j.attempt_id = attempt_expired_upload) is distinct from 'attempt_expired' then
-    raise exception '[UPLOAD LEASE] expired synthetic order lease was not rejected';
+  select j.state, j.error_code into observed_job_state, observed_error_code
+  from public.amuhon_order_validation_jobs as j
+  where j.attempt_id = attempt_expired;
+  if not found then
+    raise exception '[ATTEMPT EXPIRY ROW] expired synthetic job row is missing';
   end if;
-  if public.claim_amuhon_order_validation_job_for_attempt(order_max_attempts, attempt_max_attempts, 300) is not null or
-     not exists (select 1 from public.amuhon_order_validation_jobs as j where j.attempt_id = attempt_max_attempts) or
-     (select j.error_code from public.amuhon_order_validation_jobs as j where j.attempt_id = attempt_max_attempts) is distinct from 'processing_timeout' then
-    raise exception '[ATTEMPT LIMIT] exhausted synthetic job was not rejected';
+  if observed_job_state is distinct from 'failed' or observed_error_code is distinct from 'attempt_expired' then
+    raise exception '[ATTEMPT EXPIRY STATE] expired synthetic attempt was not marked failed with attempt_expired';
+  end if;
+
+  result := public.claim_amuhon_order_validation_job_for_attempt(order_expired_upload_lease, attempt_expired_upload, 300);
+  if result is not null then
+    raise exception '[UPLOAD LEASE RESULT] expired upload lease returned a claimed job';
+  end if;
+  select j.state, j.error_code into observed_job_state, observed_error_code
+  from public.amuhon_order_validation_jobs as j
+  where j.attempt_id = attempt_expired_upload;
+  if not found then
+    raise exception '[UPLOAD LEASE ROW] expired upload lease job row is missing';
+  end if;
+  if observed_job_state is distinct from 'failed' or observed_error_code is distinct from 'attempt_expired' then
+    raise exception '[UPLOAD LEASE STATE] expired synthetic order lease was not marked failed with attempt_expired';
+  end if;
+
+  result := public.claim_amuhon_order_validation_job_for_attempt(order_max_attempts, attempt_max_attempts, 300);
+  if result is not null then
+    raise exception '[ATTEMPT LIMIT RESULT] exhausted synthetic job returned a claim';
+  end if;
+  select j.state, j.error_code into observed_job_state, observed_error_code
+  from public.amuhon_order_validation_jobs as j
+  where j.attempt_id = attempt_max_attempts;
+  if not found then
+    raise exception '[ATTEMPT LIMIT ROW] exhausted synthetic job row is missing';
+  end if;
+  if observed_job_state is distinct from 'failed' or observed_error_code is distinct from 'processing_timeout' then
+    raise exception '[ATTEMPT LIMIT STATE] exhausted synthetic job was not marked failed with processing_timeout';
   end if;
   result := public.claim_amuhon_order_validation_job_for_attempt(order_expired_job_lease, attempt_expired_job, 300);
   if result is null or jsonb_typeof(result) is distinct from 'object' or
