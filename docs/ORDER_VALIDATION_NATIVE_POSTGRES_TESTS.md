@@ -227,13 +227,126 @@ Static checks do not execute or parse SQL with PostgreSQL and do not prove the
 runner's environment checks against a live Windows process. Do not describe
 them as database integration-test success.
 
-## Concurrency
+## Two-session concurrency test
 
-The concurrency procedure requires two independent sessions and is intentionally
-not run by the single-session script. See
-`supabase/tests/native/order_validation_concurrency.native.md`. It uses only
-new synthetic rows and the targeted claim RPC. Never use the global claim or
-cleanup RPC for a concurrency test.
+The separate concurrency harness is not included in `-Test both`. It creates
+two fresh synthetic orders, two upload attempts, and two validation jobs so
+the targeted claim can be checked for a locked target and accidental fallback
+to a decoy. Fixture setup commits because another session must see those rows.
+Each lock-holder transaction rolls back after its bounded wait. A successful
+probe commits only a per-run `native_lock_probes` marker to the synthetic decoy
+order after verifying the actual lock, the null targeted-claim result, and the
+unchanged target/decoy jobs. This small synthetic-only commit lets a later
+session independently verify which probes actually passed.
+After locks are released, the harness commits one targeted claim for the
+synthetic target, checks a duplicate claim returns no job, then requires an
+explicit exact-ID cleanup action. It never uses global claim, cleanup RPCs,
+Storage, or cluster reset/deletion.
+
+Use Windows PowerShell 5.1. The only accepted endpoint/database/role are
+`127.0.0.1:55432`, `amuhon_validation_native`, and `postgres`. Every action
+invokes the existing native runner's `-PreflightOnly`; each SQL session also
+checks the database, client/server IPv4 addresses, port, data directory,
+system identifier, cluster name, application name, and per-run marker. The
+wrapper clears inherited libpq overrides and accepts no DB URL, SQL path,
+host, port, or role argument. Password entry remains interactive; no password
+is saved in scripts, arguments, manifest, or log.
+
+Prepare once:
+
+```powershell
+.\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action Prepare
+```
+
+Copy the printed `RunId` (it is not a credential). For each of `order`,
+`attempt`, and `job`, use two PowerShell windows. In window A, start the lock
+holder; while its fixed 120-second window is open, run the matching probe in
+window B. Each wrapper action prompts twice: once for its shared read-only
+preflight connection and once for the action's own psql connection. Enter the
+password only in those prompts:
+
+```powershell
+.\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action Hold -LockKind order -RunId <RUN_ID>
+.\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action Probe -LockKind order -RunId <RUN_ID>
+```
+
+Repeat with `-LockKind attempt` and `-LockKind job`. The probe checks that the
+matching holder session is active in a transaction, then tries `FOR UPDATE
+NOWAIT` on the exact requested synthetic row. It requires the attempt to fail
+with a row-lock conflict before calling only
+`claim_amuhon_order_validation_job_for_attempt`. It requires a null result,
+an unchanged queued target, and an unchanged queued decoy. Only after all
+checks pass does it commit the probe kind to the exact marked decoy order.
+The holder keeps its row lock across the `DO` block and a separate top-level
+`SELECT pg_catalog.pg_sleep(120)` because both execute on the same psql
+connection and open transaction. Holder detection does not depend on the
+possibly truncated `pg_stat_activity.query` text. A failure or timeout is a
+failed test; do not rerun the probe after its holder ends and call that a pass.
+
+After all three pairs finish, run the release/claim check, inspect the run,
+then explicitly clean the synthetic rows:
+
+```powershell
+.\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action ClaimAfterUnlock -RunId <RUN_ID>
+.\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action Status -RunId <RUN_ID>
+.\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action Cleanup -RunId <RUN_ID> -ConfirmSyntheticCleanup
+```
+
+If guarded Cleanup stops with a psql error and its original error text is no
+longer available, do not rerun Prepare or Cleanup to investigate. Use the
+separate read-only Diagnose action with the existing RunId:
+
+```powershell
+.\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action Diagnose -RunId <RUN_ID>
+```
+
+Diagnose uses the same native preflight, manifest UUIDs, fixed SQL-template
+path, and in-SQL cluster identity guard. It reports each Cleanup predicate as
+a condition name, PASS/FAIL result, and count without printing object keys or
+personal data. It begins a `READ ONLY` transaction only after the identity
+guard, then rolls it back. It does not acquire an advisory lock, change the
+fixture or manifest, or call Cleanup. An advisory-lock row count, if reported,
+is only a point-in-time observation. Diagnose does not guarantee that a later
+Cleanup will succeed: sessions and fixture state can change after its query.
+The wrapper writes a non-secret generated SQL snapshot under this RunId's
+existing local run directory; it does not update `manifest.json`.
+
+`ClaimAfterUnlock` does not trust the manifest's `completedLocks` JSON as
+proof. Its SQL requires exactly three committed probe markers (`order`,
+`attempt`, `job`) on this run's exact synthetic decoy order. Editing the
+manifest cannot bypass this database check. The wrapper stores the generated
+run manifest and fixed SQL snapshots under
+`NativeRoot\logs\order-validation-concurrency\runs\<RunId>`; they contain no
+credentials. It refuses a new prepare if an earlier manifest is not marked
+cleaned or a marked fixture remains in the database. Cleanup verifies the two
+order markers, exact order/attempt relations, object-key shape, job states,
+and absence of any other client session in the test database before deleting
+only those exact two jobs, two attempts, and two marked orders in one
+transaction. If any check fails, the transaction rolls back. The manifest
+remains after cleanup as a non-secret operational record. Status reports
+`fixture_not_present`, `fixture_in_progress`,
+`claim_committed_cleanup_pending`, `fixture_inconsistent_stop`, or
+`cleanup_completed` when no fixture rows remain and the manifest records a
+successful cleanup. The latter label uses the manifest only to distinguish a
+completed cleanup from a run that never created fixtures; it does not
+authorize claim or cleanup.
+
+Every session has `lock_timeout=3s`; probe and claim SQL have a 15-second
+timeout, setup/cleanup 20 seconds, and the lock holder sleeps 120 seconds
+under a 160-second SQL timeout and 180-second process watchdog. A run has a
+30-minute action window; status and guarded cleanup remain available after
+that. If a client is terminated, PostgreSQL closes its session and rolls back
+the open transaction. Committed setup/claim fixtures remain until explicit
+cleanup, so after interruption inspect `Status` and then use only guarded
+cleanup. Do not manually delete rows or discard/reinitialize the cluster.
+
+This is operator-coordinated rather than an automatically orchestrated
+two-session process. It has not been run against PostgreSQL as part of this
+change. PowerShell console inheritance for the interactive `psql -W` prompt
+and the SQL behavior must be verified in the dedicated native cluster before
+relying on it. Setup and Cleanup run their identity guard as the first SQL
+statement. Only after it succeeds do they begin a transaction and acquire the
+fixture-serialization advisory lock. Never use `amuhon` or `amuhon-staging`.
 
 ## Stop conditions and cleanup
 
@@ -241,8 +354,9 @@ Stop if the runner refuses any check, the server is not already running, the
 system identifier differs, the port has any other owner/address, database
 identity differs, the role or test marker differs, or SQL fails. Do not bypass
 the guard, substitute a connection string, or point the script at a Supabase
-endpoint. Do not repair a failed run by deleting arbitrary rows. Close sessions
-and discard the entire disposable cluster only through a separately reviewed
-manual procedure. The runner never stops or deletes it.
+endpoint. Do not repair a failed run by deleting arbitrary rows. For a
+concurrency fixture, use only its `Status` and explicitly confirmed guarded
+`Cleanup` actions; if identity/state checks fail, stop and request review. The
+runner never stops or deletes the cluster.
 
 No live PostgreSQL execution has been performed as part of this implementation.

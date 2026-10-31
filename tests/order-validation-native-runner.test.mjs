@@ -380,8 +380,232 @@ test('asset commit test disambiguates PL/pgSQL variables from column names', asy
 
 test('concurrency is documented but deliberately not automated in a single-session SQL file', async () => {
   const doc = await read('../supabase/tests/native/order_validation_concurrency.native.md');
-  assert.match(doc, /two separate `psql` sessions/i);
-  assert.match(doc, /not an executable test/i);
+  assert.match(doc, /guarded wrapper/i);
+  assert.match(doc, /two PowerShell windows/i);
   assert.match(doc, /SKIP LOCKED/i);
   assert.match(doc, /synthetic/i);
+});
+
+test('concurrency harness is isolated from ordinary tests and pins every connection', async () => {
+  const runner = await read('../scripts/native-postgres/test-order-validation-concurrency-native.ps1');
+  const processRunner = await read('../scripts/native-postgres/native-process-runner.psm1');
+  const ordinaryRunner = await read('../scripts/native-postgres/test-order-validation-native.ps1');
+  assert.match(runner, /ValidateSet\('Prepare', 'Hold', 'Probe', 'ClaimAfterUnlock', 'Status', 'Diagnose', 'Cleanup'\)/);
+  assert.match(runner, /ValidateSet\('order', 'attempt', 'job'\)/);
+  assert.match(runner, /Invoke-GuardedPreflight \$rootPath/);
+  assert.match(runner, /-PreflightOnly/);
+  assert.match(runner, /'-h', '127\.0\.0\.1', '-p', '55432', '-U', 'postgres', '-d', 'amuhon_validation_native'/);
+  assert.match(runner, /PGHOSTADDR/);
+  assert.match(runner, /SetEnvironmentVariable\('PGPASSFILE', 'NUL'/);
+  assert.match(runner, /'PGPASSWORD'/);
+  assert.match(runner, /SetEnvironmentVariable\(\$name, \$null, 'Process'\)/);
+  assert.match(runner, /finally\s*\{\s*Restore-NativeConcurrencyEnvironment/s);
+  assert.match(runner, /Import-Module -Name \$processRunnerModule -Force -ErrorAction Stop/);
+  assert.match(runner, /Invoke-NativeProcessWithTimeout -FilePath \$PsqlExe -Arguments \$Arguments -TimeoutSeconds \$TimeoutSeconds/);
+  assert.match(processRunner, /New-Object System\.Diagnostics\.ProcessStartInfo/);
+  assert.match(processRunner, /\$startInfo\.FileName = \$FilePath/);
+  assert.match(processRunner, /\$startInfo\.Arguments = \[string\]::Join\(' ', \$Arguments\)/);
+  assert.match(processRunner, /\$startInfo\.UseShellExecute = \$false/);
+  assert.match(processRunner, /\[System\.Diagnostics\.Process\]::Start\(\$startInfo\)/);
+  assert.doesNotMatch(processRunner, /^\s*\$process\s*=\s*Start-Process\b/m);
+  assert.match(processRunner, /WaitForExit\(\$TimeoutSeconds \* 1000\)/);
+  assert.match(processRunner, /\.Refresh\(\)/);
+  assert.match(processRunner, /\[int\]\$process\.ExitCode/);
+  assert.match(processRunner, /if \(\$ExitCode -ne 0\)/);
+  assert.match(processRunner, /psql returned exit code \$ExitCode/);
+  assert.doesNotMatch(processRunner, /\$LASTEXITCODE/);
+  assert.doesNotMatch(processRunner, /PGPASSWORD|PGHOSTADDR|postgres(?:ql)?:\/\//i);
+  assert.doesNotMatch(processRunner, /Write-(?:Host|Output|Error).*\$Arguments/i);
+  assert.match(runner, /schemaVersion = 1; runId = \$runId/);
+  assert.match(runner, /NewGuid\(\)\.ToString\('N'\)/);
+  assert.match(runner, /30-minute run window/);
+  assert.match(runner, /'preparing', 'ready', 'claimed', 'needs_review', 'cleaned'/);
+  assert.match(runner, /'Status', 'Diagnose', 'Cleanup'/);
+  assert.match(runner, /'Diagnose'\s*\{\s*'order_validation_concurrency_diagnose\.native\.sql'\s*\}/);
+  assert.match(runner, /if \(\$Action -notin @\('Status', 'Diagnose'\)\)/);
+  assert.match(runner, /Read-only cleanup-condition diagnosis completed/);
+  assert.match(ordinaryRunner, /ValidateSet\('targeted-claim', 'asset-commit', 'both'\)/);
+  assert.doesNotMatch(ordinaryRunner, /concurrency-native|order_validation_concurrency/);
+  assert.doesNotMatch(runner, /param\s*\([^)]*(?:DatabaseUrl|ConnectionString|SqlFile|Host|Port)\b/is);
+  assert.doesNotMatch(runner, /PGPASSWORD\s*=|PGPASSWORD=/i);
+  assert.doesNotMatch(runner, /(?:claim_amuhon_order_validation_job\s*\(|claim_expired_amuhon|cleanup_amuhon|storage\.objects|storage\.from)/i);
+});
+
+test('mock exit-code PowerShell test is process-only and covers zero plus nonzero codes', async () => {
+  const mockTest = await read('../tests/native-process-runner.test.ps1');
+  assert.match(mockTest, /Add-Type[\s\S]*OutputType ConsoleApplication/);
+  assert.match(mockTest, /amuhon-native-exit-/);
+  assert.match(mockTest, /public static int Main\(string\[\] args\)/);
+  assert.match(mockTest, /Get-DirectMockProcessExitCode/);
+  assert.match(mockTest, /System\.Diagnostics\.ProcessStartInfo/);
+  assert.match(mockTest, /\.Arguments = \$CommandLineArguments/);
+  assert.match(mockTest, /\$mockArguments = \[string\]\$expectedCode/);
+  assert.match(mockTest, /Arguments @\(\$mockArguments\)/);
+  assert.match(mockTest, /\$actualCode -ne \$directCode/);
+  assert.match(mockTest, /Remove-Item -LiteralPath \$mockExecutable -Force/);
+  assert.match(mockTest, /\@\(0, 1, 2, 3\)/);
+  assert.doesNotMatch(mockTest, /cmd\.exe|ComSpec|psql\.exe|amuhon_validation_native|127\.0\.0\.1|supabase/i);
+  assert.doesNotMatch(mockTest, /(?:NativeRoot|PGPASSWORD|DATABASE_URL|service_role)/i);
+});
+
+test('concurrency runner loads and validates shared path-safety helpers before using them', async () => {
+  const runner = await read('../scripts/native-postgres/test-order-validation-concurrency-native.ps1');
+  const moduleSource = await read('../scripts/native-postgres/native-postgres-path-safety.psm1');
+  const importIndex = runner.indexOf('Import-Module -Name $pathSafetyModule -Force -ErrorAction Stop');
+  const firstHelperUse = runner.indexOf('$rootPath = Assert-NativeLocalDrivePath $NativeRoot');
+  assert.ok(importIndex > 0 && importIndex < firstHelperUse, 'module import precedes the first shared-helper call');
+  assert.match(runner, /native-postgres-path-safety\.psm1/);
+  assert.match(runner, /if \(-not \(Test-Path -LiteralPath \$pathSafetyModule -PathType Leaf\)\)/);
+  assert.match(runner, /Native path-safety module is missing; no preflight or SQL was run/);
+  assert.match(runner, /catch \{\s*throw \[InvalidOperationException\]::new\('Native path-safety module could not be loaded; no preflight or SQL was run\.'\)\s*\}/s);
+  for (const helper of [
+    'Assert-NativeLocalDrivePath',
+    'Test-PathIsInside',
+    'Assert-NoReparsePath',
+    'Get-NativeBinaryDirectory',
+    'Test-CanonicalPathEqual',
+  ]) {
+    assert.match(moduleSource, new RegExp(`function ${helper}\\b`), `${helper} is defined in the shared module`);
+    assert.match(moduleSource, new RegExp(`Export-ModuleMember[\\s\\S]*\\b${helper}\\b`), `${helper} is exported`);
+  }
+});
+
+test('concurrency SQL uses fixed identity guards, bounded sessions, and exact synthetic scope', async () => {
+  const files = {
+    setup: '../supabase/tests/native/order_validation_concurrency_setup.native.sql',
+    lock: '../supabase/tests/native/order_validation_concurrency_lock.native.sql',
+    probe: '../supabase/tests/native/order_validation_concurrency_probe.native.sql',
+    claim: '../supabase/tests/native/order_validation_concurrency_claim.native.sql',
+    status: '../supabase/tests/native/order_validation_concurrency_status.native.sql',
+    diagnose: '../supabase/tests/native/order_validation_concurrency_diagnose.native.sql',
+    cleanup: '../supabase/tests/native/order_validation_concurrency_cleanup.native.sql',
+  };
+  const sql = {};
+  for (const [key, path] of Object.entries(files)) {
+    sql[key] = await read(path);
+    assert.doesNotMatch(sql[key], /[^\S\r\n]+$/m, `${key} has no trailing whitespace`);
+    getSqlStatements(sql[key]);
+    assert.match(sql[key], /current_database\(\).*amuhon_validation_native/s, key);
+    assert.match(sql[key], /inet_server_port\(\).*55432/s, key);
+    assert.match(sql[key], /host\(inet_server_addr\(\)\).*127\.0\.0\.1/s, key);
+    assert.match(sql[key], /host\(inet_client_addr\(\)\).*127\.0\.0\.1/s, key);
+    assert.match(sql[key], /pg_control_system\(\)/, key);
+    assert.match(sql[key], /current_setting\('app\.amuhon_native_concurrency_run'.*__RUN_ID__/s, key);
+    assert.doesNotMatch(sql[key], /claim_amuhon_order_validation_job\s*\(/i, key);
+    assert.doesNotMatch(sql[key], /claim_expired_amuhon|claim_amuhon_order_temp_upload_attempt_cleanup|finish_amuhon_order_temp_upload_cleanup/i, key);
+    assert.doesNotMatch(sql[key], /storage\.(?:objects|buckets)|storage\.from/i, key);
+  }
+  const setupStatements = getSqlStatements(sql.setup);
+  const lockStatements = getSqlStatements(sql.lock);
+  const probeStatements = getSqlStatements(sql.probe);
+  const claimStatements = getSqlStatements(sql.claim);
+  const diagnoseStatements = getSqlStatements(sql.diagnose);
+  const cleanupStatements = getSqlStatements(sql.cleanup);
+  assert.match(setupStatements[0], /^do\b/i, 'setup identifies the database before beginning its write transaction');
+  assert.match(setupStatements[1], /^begin$/i);
+  assert.match(setupStatements.at(-1), /^commit$/i);
+  assert.match(setupStatements[3], /pg_advisory_xact_lock\(20261031, 405\)/i);
+  assert.match(setupStatements.slice(1, -1).join(';'), /insert into public\.amuhon_orders/i);
+  assert.match(lockStatements[0], /^begin$/i);
+  assert.match(lockStatements.at(-1), /^rollback$/i);
+  assert.match(lockStatements.at(-2), /^select pg_catalog\.pg_sleep\(120\)$/i);
+  assert.ok(lockStatements.indexOf('begin') < lockStatements.indexOf('select pg_catalog.pg_sleep(120)'));
+  assert.match(lockStatements[3], /^do\b/i, 'holder validates identity and acquires the row lock before waiting');
+  assert.match(sql.lock, /for update/);
+  assert.match(sql.lock, /pg_sleep\(120\)/i);
+  assert.match(probeStatements[0], /^begin isolation level read committed$/i);
+  assert.match(probeStatements.at(-1), /^commit$/i, 'successful probe commits only its synthetic evidence marker');
+  assert.match(sql.probe, /claim_amuhon_order_validation_job_for_attempt\s*\(/i);
+  assert.match(sql.probe, /\[NO FALLBACK\]/);
+  assert.match(sql.probe, /application_name = '__HOLDER_APP_NAME__'/);
+  assert.match(sql.probe, /xact_start is not null/);
+  assert.match(sql.probe, /select pid into holder_pid/i);
+  assert.match(sql.probe, /pg_catalog\.pg_locks[\s\S]*rowsharelock/i);
+  assert.doesNotMatch(sql.probe, /query\s+ilike\s+'%pg_sleep/i, 'holder detection does not depend on truncated query text');
+  assert.match(sql.probe, /for update nowait/i, 'probe proves the requested row is actually locked');
+  assert.match(sql.probe, /\[ROW LOCK NOT HELD\]/);
+  assert.match(sql.probe, /native_lock_probes/);
+  assert.match(sql.probe, /update public\.amuhon_orders[\s\S]*__DECOY_ORDER_ID__[\s\S]*__RUN_ID__/i);
+  assert.match(sql.probe, /get diagnostics updated_rows = row_count/i);
+  assert.match(claimStatements[0], /^begin isolation level read committed$/i);
+  assert.match(claimStatements.at(-1), /^commit$/i);
+  assert.match(sql.claim, /\[DOUBLE CLAIM\]/);
+  assert.match(sql.claim, /\[PROBE EVIDENCE\]/);
+  assert.match(sql.claim, /jsonb_array_length\(o\.book_snapshot->'native_lock_probes'\) = 3/);
+  assert.match(sql.claim, /@> '\["order", "attempt", "job"\]'::jsonb/);
+  assert.match(cleanupStatements[0], /^do\b/i, 'cleanup identifies the database before beginning its write transaction');
+  assert.match(cleanupStatements[1], /^begin$/i);
+  assert.match(cleanupStatements.at(-1), /^commit$/i);
+  assert.match(cleanupStatements[3], /pg_advisory_xact_lock\(20261031, 405\)/i);
+  const cleanupDoBlocks = [...sql.cleanup.matchAll(/\bdo\s+(\$[A-Za-z_][A-Za-z0-9_]*\$)([\s\S]*?)\1\s*;/gi)]
+    .map((match) => ({ tag: match[1], body: match[2] }));
+  assert.deepEqual(cleanupDoBlocks.map(({ tag }) => tag), [
+    '$native_concurrency_cleanup$',
+    '$native_concurrency_cleanup_fixture$',
+    '$native_cleanup_verify$',
+  ], 'cleanup DO-block boundaries use the expected unique dollar tags');
+  const [cleanupIdentityGuard, cleanupFixtureGuard] = cleanupDoBlocks.map(({ body }) => body);
+  const cleanupCountVariables = [
+    'order_count',
+    'valid_order_count',
+    'attempt_count',
+    'valid_attempt_count',
+    'job_count',
+    'valid_job_count',
+  ];
+  assert.doesNotMatch(cleanupIdentityGuard, /\bdeclare\b/i);
+  assert.doesNotMatch(cleanupIdentityGuard, /\b(?:order_count|valid_order_count|attempt_count|valid_attempt_count|job_count|valid_job_count)\s+integer\s*;/i,
+    'identity guard has no fixture-local declarations');
+  assert.match(cleanupFixtureGuard, /^\s*declare\b/i,
+    'fixture checks declare their own PL/pgSQL variables in the block that uses them');
+  for (const variable of cleanupCountVariables) {
+    assert.match(cleanupFixtureGuard, new RegExp(`\\b${variable}\\s+integer\\s*;`, 'i'), `${variable} is declared in fixture block`);
+  }
+  assert.match(cleanupFixtureGuard, /into\s+order_count\s*,\s*valid_order_count/i);
+  assert.match(cleanupFixtureGuard, /into\s+attempt_count\s*,\s*valid_attempt_count/i);
+  assert.match(cleanupFixtureGuard, /into\s+job_count\s*,\s*valid_job_count/i);
+  assert.match(cleanupFixtureGuard, /if\s+order_count\s+not\s+in/i, 'fixture validation uses the block-local counts');
+  assert.match(sql.setup, /identity guard failed/);
+  assert.match(sql.cleanup, /identity guard failed/);
+  assert.match(cleanupStatements.join(';'), /delete from public\.amuhon_order_validation_jobs[\s\S]*delete from public\.amuhon_order_temp_upload_attempts[\s\S]*delete from public\.amuhon_orders/i);
+  const deletes = cleanupStatements.filter((statement) => /^delete\s+from\b/i.test(statement));
+  assert.equal(deletes.length, 3, 'cleanup contains only the three exact fixture-table deletes');
+  const rawCleanup = sql.cleanup;
+  assert.match(rawCleanup, /delete from public\.amuhon_order_validation_jobs where attempt_id = any\(array\['__TARGET_ATTEMPT_ID__', '__DECOY_ATTEMPT_ID__'\]/i);
+  assert.match(rawCleanup, /delete from public\.amuhon_order_temp_upload_attempts where[\s\S]*__TARGET_ATTEMPT_ID__[\s\S]*__TARGET_ORDER_ID__[\s\S]*__DECOY_ATTEMPT_ID__[\s\S]*__DECOY_ORDER_ID__/i);
+  assert.match(rawCleanup, /delete from public\.amuhon_orders where[\s\S]*customer->>'native_test_run'\s*=\s*'__RUN_ID__'/i);
+  assert.match(sql.cleanup, /native_test_run/);
+  assert.match(sql.cleanup, /\[\s*TARGET_ORDER_ID__|__TARGET_ORDER_ID__/);
+  assert.doesNotMatch(sql.setup + sql.lock + sql.probe + sql.claim + sql.status, /\bdelete\s+from\b|\btruncate\b|\bdrop\s+(?:table|schema|function|database)\b/i);
+  assert.doesNotMatch(sql.cleanup, /\b(?:drop|truncate)\b/i);
+  assert.match(sql.lock, /for update/);
+  assert.match(sql.status, /fixture_not_present/);
+  assert.match(sql.status, /fixture_in_progress/);
+  assert.match(sql.status, /cleanup_completed/);
+  assert.match(sql.status, /fixture_inconsistent_stop/);
+  assert.match(sql.status, /__MANIFEST_STATUS__/);
+  assert.match(diagnoseStatements[0], /^do\b/i, 'diagnose identifies the connection before opening its read-only transaction');
+  assert.match(diagnoseStatements[1], /^begin read only$/i);
+  assert.match(diagnoseStatements.at(-1), /^rollback$/i);
+  assert.match(sql.diagnose, /other_client_sessions_absent/);
+  assert.match(sql.diagnose, /native_connection_identity_guard/);
+  assert.match(sql.diagnose, /order_rows_match_cleanup_predicate/);
+  assert.match(sql.diagnose, /attempt_rows_match_cleanup_predicate/);
+  assert.match(sql.diagnose, /job_rows_match_cleanup_predicate/);
+  assert.match(sql.diagnose, /all_cleanup_preconditions_pass/);
+  assert.match(sql.diagnose, /pg_catalog\.pg_stat_activity/);
+  assert.match(sql.diagnose, /pg_catalog\.pg_locks/);
+  assert.match(sql.diagnose, /l\.classid::text = '20261031' and l\.objid::text = '405' and l\.objsubid = 2/);
+  assert.match(sql.diagnose, /body_pdf_storage_path is null and o\.cover_png_storage_path is null/i);
+  assert.match(sql.diagnose, /a\.state = 'issued'[\s\S]*body\.pdf[\s\S]*cover\.png/i);
+  assert.match(sql.diagnose, /j\.state = 'queued'[\s\S]*j\.attempt_count between 1 and 5[\s\S]*j\.lease_expires_at is not null/i);
+  assert.doesNotMatch(sql.diagnose, /pg_advisory_(?:xact_)?lock\s*\(|\binsert\s+into\b|\bupdate\b|\bdelete\s+from\b|\btruncate\b|\bdrop\b|cleanup_.*rpc|storage\.(?:objects|buckets)|storage\.from/i);
+  const diagnoseTopLevel = getSqlStatements(sql.diagnose);
+  assert.equal(diagnoseTopLevel.filter((statement) => /^\s*(?:insert|update|delete|truncate|drop)\b/i.test(statement)).length, 0);
+  const statusRunner = await read('../scripts/native-postgres/test-order-validation-concurrency-native.ps1');
+  assert.match(statusRunner, /'__MANIFEST_STATUS__'\s*=/);
+  assert.match(statusRunner, /Read fixture_status and row counts above/);
+  assert.match(statusRunner, /if \(\$Action -notin @\('Status', 'Diagnose'\)\)[\s\S]*Write-Manifest/);
+  assert.match(statusRunner, /'Diagnose'\s*\{\s*'order_validation_concurrency_diagnose\.native\.sql'\s*\}/);
+  assert.doesNotMatch(statusRunner, /completedLocks\)\.Count\s*-ne\s*3/, 'editable manifest cannot authorize skipping SQL evidence');
 });
