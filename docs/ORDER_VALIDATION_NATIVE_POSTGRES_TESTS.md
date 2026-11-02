@@ -227,6 +227,55 @@ Static checks do not execute or parse SQL with PostgreSQL and do not prove the
 runner's environment checks against a live Windows process. Do not describe
 them as database integration-test success.
 
+## Two-connection psql authentication check
+
+Use this separate check to distinguish simultaneous real-`psql` process and
+stdin/stdout/stderr behavior from the concurrency `Pair` SQL. It accepts no
+arguments and is fixed to `C:\amuhon-native-pg`, `127.0.0.1:55432`, database
+`amuhon_validation_native`, and role `postgres`. From the repository root, run
+it in Windows PowerShell 5.1:
+
+```powershell
+.\scripts\native-postgres\test-pair-connections-native.ps1
+```
+
+The script first calls the existing shared `-PreflightOnly` runner. Only after
+that succeeds does the script prompt for the paired sessions' `SecureString`
+password. The preflight uses its existing `psql -W` prompt separately, so an
+operator may be prompted once for preflight and once for the two-session check.
+It starts two independent local `psql` processes and sends the in-memory
+password separately to each process's standard input. It removes inherited libpq connection
+overrides, supplies no connection URL, and uses `PGPASSFILE=NUL`; it never uses
+`PGPASSWORD`, a password file, or a password argument. The processes execute
+only a fixed identity `SELECT`. Each connection checks its database, role,
+IPv4 endpoints, port, data/configuration paths, PostgreSQL system identifier,
+cluster name, application name, and per-run markers.
+
+The helper drains stdout and stderr asynchronously into separate bounded
+in-memory captures (8,192 characters retained per stream) and reports only
+counts, timestamps, exit states, and the exact identity result. It does not
+print or save raw output, the password, or a manifest. Success requires both
+processes to be confirmed closed, both output readers drained without
+truncation, exit code zero, and exactly `PASS` on stdout for each. Its
+30-second watchdog starts before process creation and covers password-input
+waits and process monitoring; if a synchronous process-start call returns
+after the deadline, the helper stops the children instead of accepting them.
+On timeout or child failure, it attempts to stop and confirm both processes.
+The bounded shutdown, stream-drain, and input-writer waits can extend wall
+clock time beyond the 30-second work deadline.
+No fixture, migration, manifest, or Storage operation is performed.
+
+If the check fails, stop. It does not retry using another authentication
+method or endpoint. A `PASS` proves that these two local `psql` processes
+completed their read-only identity queries under this invocation; it does not
+prove the SQL behavior of the concurrency test or guarantee how a future
+PostgreSQL client build handles interactive authentication. `Process.Start`
+is a synchronous operating-system call and cannot itself be forcibly
+interrupted by the script; the watchdog covers the time spent around process
+creation and all later waits, but a pathological OS-level hang in that call
+remains outside PowerShell's ability to cancel safely. No live PostgreSQL
+connection is made by the static or mock tests.
+
 ## Two-session concurrency test
 
 The separate concurrency harness is not included in `-Test both`. It creates
@@ -258,11 +307,32 @@ Prepare once:
 .\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action Prepare
 ```
 
-Copy the printed `RunId` (it is not a credential). For each of `order`,
-`attempt`, and `job`, use two PowerShell windows. In window A, start the lock
-holder; while its fixed 120-second window is open, run the matching probe in
-window B. Each wrapper action prompts twice: once for its shared read-only
-preflight connection and once for the action's own psql connection. Enter the
+Copy the printed `RunId` (it is not a credential). The recommended path is one
+`Pair` operation per lock kind. It starts two separate fixed local `psql`
+processes, waits for the holder to acquire the requested row lock, lets the
+probe check the exact lock and targeted-claim behavior, then waits for both
+clients to exit. It requires a ready fixture created within 30 minutes and
+refuses a lock kind already recorded as complete. It first runs the shared
+read-only cluster preflight, then asks once for the password to pass through
+each child process's standard-input pipe. The password is held only in memory;
+it is not placed in an environment variable, argument, file, log, or manifest.
+Each child receives a separate cleaned libpq environment and independently
+checks the database identity and all seven migration ledger hashes before it
+does test work. Pair has a fixed 180-second total timeout. If either child
+fails, times out, or cannot be confirmed closed, the manifest stays
+`needs_review`; Pair never runs Cleanup automatically. Use guarded Status and
+Diagnose, then decide on the separately confirmed Cleanup path.
+
+```powershell
+.\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action Pair -LockKind order -RunId <RUN_ID>
+.\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action Pair -LockKind attempt -RunId <RUN_ID>
+.\scripts\native-postgres\test-order-validation-concurrency-native.ps1 -NativeRoot C:\amuhon-native-pg -Action Pair -LockKind job -RunId <RUN_ID>
+```
+
+The legacy manual Hold/Probe path remains available for diagnosis, still uses
+two PowerShell windows, and is more timing-sensitive. Pair is preferred to
+avoid racing the two commands. Each legacy wrapper action prompts twice: once
+for the shared read-only preflight and once for its psql connection; enter the
 password only in those prompts:
 
 ```powershell

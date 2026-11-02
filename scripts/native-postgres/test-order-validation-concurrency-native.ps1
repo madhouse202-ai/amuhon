@@ -4,7 +4,7 @@ param(
   [string]$NativeRoot,
 
   [Parameter(Mandatory = $true)]
-  [ValidateSet('Prepare', 'Hold', 'Probe', 'ClaimAfterUnlock', 'Status', 'Diagnose', 'Cleanup')]
+  [ValidateSet('Prepare', 'Hold', 'Probe', 'Pair', 'ClaimAfterUnlock', 'Status', 'Diagnose', 'Cleanup')]
   [string]$Action,
 
   [ValidateSet('order', 'attempt', 'job')]
@@ -20,6 +20,34 @@ $processRunnerModule = Join-Path $PSScriptRoot 'native-process-runner.psm1'
 if (-not (Test-Path -LiteralPath $processRunnerModule -PathType Leaf)) {
   throw [InvalidOperationException]::new('Native process-runner module is missing; no preflight or SQL was run.')
 }
+
+function New-NativePairSnapshot([string]$TemplateName, [object]$Manifest, [string]$RootPath, [string]$ApplicationName, [string]$TemplateLockKind, [string]$ActionName, [string]$HolderApplicationName = '') {
+  $templatePath = Join-Path $PSScriptRoot ("..\..\supabase\tests\native\$TemplateName")
+  if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) { Stop-NativeConcurrency 'a fixed Pair SQL template is missing.' }
+  $runDirectory = Join-Path $RootPath ("logs\order-validation-concurrency\runs\" + $Manifest.runId)
+  if (-not (Test-Path -LiteralPath $runDirectory -PathType Container)) { Stop-NativeConcurrency 'the recorded Pair run directory is missing.' }
+  Assert-NoReparsePath $runDirectory
+  $replacements = @{
+    '__DATA_DIRECTORY__' = ([string]$Manifest.dataDirectory).Replace('\', '/').Replace("'", "''")
+    '__SYSTEM_IDENTIFIER__' = [string]$Manifest.systemIdentifier
+    '__APP_NAME__' = $ApplicationName
+    '__HOLDER_APP_NAME__' = $HolderApplicationName
+    '__RUN_ID__' = [string]$Manifest.runId
+    '__LOCK_KIND__' = $TemplateLockKind
+    '__TARGET_ORDER_ID__' = [string]$Manifest.targetOrderId
+    '__DECOY_ORDER_ID__' = [string]$Manifest.decoyOrderId
+    '__TARGET_ATTEMPT_ID__' = [string]$Manifest.targetAttemptId
+    '__DECOY_ATTEMPT_ID__' = [string]$Manifest.decoyAttemptId
+  }
+  $text = [IO.File]::ReadAllText($templatePath)
+  foreach ($key in $replacements.Keys) { $text = $text.Replace($key, [string]$replacements[$key]) }
+  if ($text -match '__[A-Z0-9_]+__') { Stop-NativeConcurrency 'a fixed Pair SQL template contains an unresolved placeholder.' }
+  $snapshot = Join-Path $runDirectory ("pair-$TemplateLockKind-$ActionName.sql")
+  [IO.File]::WriteAllText($snapshot, $text, (New-Object Text.UTF8Encoding($false)))
+  Assert-NoReparsePath $snapshot
+  return $snapshot
+}
+
 try {
   Import-Module -Name $processRunnerModule -Force -ErrorAction Stop
 } catch {
@@ -244,10 +272,10 @@ try {
   if ([string]::IsNullOrWhiteSpace($RunId) -or $RunId -notmatch '^[a-fA-F0-9]{32}$') {
     Stop-NativeConcurrency 'a generated 32-character RunId is required for this action.'
   }
-  if (($Action -in @('Hold', 'Probe')) -and [string]::IsNullOrWhiteSpace($LockKind)) {
-    Stop-NativeConcurrency 'Hold and Probe require one fixed LockKind: order, attempt, or job.'
+  if (($Action -in @('Hold', 'Probe', 'Pair')) -and [string]::IsNullOrWhiteSpace($LockKind)) {
+    Stop-NativeConcurrency 'Hold, Probe, and Pair require one fixed LockKind: order, attempt, or job.'
   }
-  if (($Action -notin @('Hold', 'Probe')) -and $LockKind) { Stop-NativeConcurrency 'LockKind is accepted only for Hold and Probe.' }
+  if (($Action -notin @('Hold', 'Probe', 'Pair')) -and $LockKind) { Stop-NativeConcurrency 'LockKind is accepted only for Hold, Probe, and Pair.' }
   if ($Action -eq 'Cleanup' -and -not $ConfirmSyntheticCleanup) {
     Stop-NativeConcurrency 'Cleanup requires the explicit -ConfirmSyntheticCleanup switch.'
   }
@@ -273,7 +301,8 @@ try {
   }
   if ($Action -eq 'Hold' -and $manifest.status -ne 'ready') { Stop-NativeConcurrency 'fixture is not in a state that permits lock testing.' }
   if ($Action -eq 'Probe' -and $manifest.status -ne 'ready') { Stop-NativeConcurrency 'fixture is not in a state that permits probe testing.' }
-  if ($Action -eq 'Probe' -and @($manifest.completedLocks) -contains $LockKind) {
+  if ($Action -in @('Probe', 'Pair') -and $manifest.status -ne 'ready') { Stop-NativeConcurrency "$Action requires a ready fixture." }
+  if ($Action -in @('Probe', 'Pair') -and @($manifest.completedLocks) -contains $LockKind) {
     Stop-NativeConcurrency 'this lock kind has already been recorded as passed.'
   }
   if ($Action -eq 'ClaimAfterUnlock' -and $manifest.status -ne 'ready') { Stop-NativeConcurrency 'ClaimAfterUnlock requires a ready fixture and released holder session.' }
@@ -281,6 +310,84 @@ try {
   # ClaimAfterUnlock SQL independently requires committed per-run evidence
   # written by each successful Probe to the exact synthetic decoy order.
   if ($Action -eq 'Cleanup' -and $manifest.status -notin @('preparing', 'ready', 'claimed', 'needs_review', 'cleaned')) { Stop-NativeConcurrency 'fixture status does not permit exact cleanup.' }
+  if ($Action -eq 'Pair') {
+    $pairProcessRunnerModule = Join-Path $PSScriptRoot 'native-pair-process-runner.psm1'
+    if (-not (Test-Path -LiteralPath $pairProcessRunnerModule -PathType Leaf)) {
+      Stop-NativeConcurrency 'the fixed pair process-runner module is missing.'
+    }
+    try { Import-Module -Name $pairProcessRunnerModule -Force -ErrorAction Stop } catch {
+      Stop-NativeConcurrency 'the fixed pair process-runner module could not be loaded.'
+    }
+    if ($createdAt -gt [DateTime]::UtcNow.AddMinutes(1)) {
+      Stop-NativeConcurrency 'the manifest creation time is in the future; Pair refuses to use it.'
+    }
+    $pairHolderName = "amuhon-pair-$($manifest.runId.Substring(0, 12))-$LockKind-holder"
+    $pairProbeName = "amuhon-pair-$($manifest.runId.Substring(0, 12))-$LockKind-probe"
+    $pairLockSnapshot = New-NativePairSnapshot 'order_validation_concurrency_pair_lock.native.sql' $manifest $rootPath $pairHolderName $LockKind 'PairLock'
+    $pairProbeSnapshot = New-NativePairSnapshot 'order_validation_concurrency_pair_probe.native.sql' $manifest $rootPath $pairProbeName $LockKind 'PairProbe' $pairHolderName
+    $fixedPsqlArguments = @('-X', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-h', '127.0.0.1', '-p', '55432', '-U', 'postgres', '-d', 'amuhon_validation_native', '-W')
+    $pairEnvironment = @{
+      PGCONNECT_TIMEOUT = '5'
+      PGPASSFILE = 'NUL'
+      PGOPTIONS = "-c app.amuhon_native_test_environment=$expectedEnvironmentMarker -c app.amuhon_native_system_identifier=$($manifest.systemIdentifier) -c app.amuhon_native_concurrency_run=$($manifest.runId) -c statement_timeout=160000 -c lock_timeout=3000 -c idle_in_transaction_session_timeout=150000"
+    }
+    $holderEnvironment = @{} + $pairEnvironment
+    $holderEnvironment['PGAPPNAME'] = $pairHolderName
+    $probeEnvironment = @{} + $pairEnvironment
+    $probeEnvironment['PGAPPNAME'] = $pairProbeName
+    $manifest.status = 'needs_review'
+    $manifest.lastAction = 'PairStarted'
+    Write-Manifest $manifestPath $manifest
+    $securePassword = $null
+    try {
+      $securePassword = Read-Host -Prompt 'Enter the local native PostgreSQL password (memory only; not saved)' -AsSecureString
+      $pairResult = Invoke-NativePairProcesses `
+        -PsqlPath $psqlExe `
+        -HoldArguments @($fixedPsqlArguments + @('-f', $pairLockSnapshot)) `
+        -HoldEnvironment $holderEnvironment `
+        -ProbeArguments @($fixedPsqlArguments + @('-f', $pairProbeSnapshot)) `
+        -ProbeEnvironment $probeEnvironment `
+        -Password $securePassword `
+        -TimeoutSeconds 180
+      if ($pairResult.TimedOut -or $pairResult.HoldExitCode -ne 0 -or $pairResult.ProbeExitCode -ne 0) {
+        foreach ($diagnostic in @($pairResult.Hold, $pairResult.Probe)) {
+          if ($null -eq $diagnostic) { continue }
+          Write-Host ('Pair diagnostics {0}: start={1}; password_sent={2}; end={3}; exit={4}; running_at_timeout={5}; termination_attempted={6}; termination_succeeded={7}; client_closed={8}; output_drained={9}; stdout_chars={10}; stdout_truncated={11}; stderr_chars={12}; stderr_truncated={13}; last_psql_status={14}; sqlstate={15}; script_line={16}; plpgsql_context={17}; transaction_end_confirmed={18}' -f `
+            $diagnostic.Name, $diagnostic.StartedAtUtc, $diagnostic.PasswordSentAtUtc, $diagnostic.EndedAtUtc,
+            $diagnostic.ExitCode, $diagnostic.WasRunningAtTimeout, $diagnostic.TerminationAttempted,
+            $diagnostic.TerminationSucceeded, $diagnostic.ProcessClosed, $diagnostic.OutputDrained,
+            $diagnostic.StdOutCharacters, $diagnostic.StdOutTruncated, $diagnostic.StdErrCharacters,
+            $diagnostic.StdErrTruncated, $diagnostic.LastCompletedPsqlStatus, $diagnostic.SqlState,
+            $diagnostic.PsqlScriptLine, $diagnostic.PlpgsqlContext, $diagnostic.DatabaseTransactionEndConfirmed)
+          if ($diagnostic.Name -eq 'Hold') {
+            Write-Host ('Pair Hold-only marker: hold_ready_notice={0}' -f $diagnostic.HoldReadyNoticeSeen)
+          } elseif ($diagnostic.Name -eq 'Probe') {
+            Write-Host ('Pair Probe stage: {0}' -f $diagnostic.ProbeStage)
+          }
+        }
+        Write-Host ('Pair diagnostics: timed_out={0}; timed_out_processes={1}; client_processes_closed={2}; database_transactions_confirmed={3}' -f `
+          $pairResult.TimedOut, (@($pairResult.TimedOutProcesses) -join ','), $pairResult.ProcessesClosed, $pairResult.DatabaseTransactionsConfirmed)
+      }
+      if (-not $pairResult.ProcessesClosed) { Stop-NativeConcurrency 'both paired psql sessions could not be confirmed closed; fixture requires Status review.' }
+      if ($pairResult.TimedOut) { Stop-NativeConcurrency 'the bounded pair operation timed out; see per-process diagnostics above. Client termination does not confirm the PostgreSQL transaction ended; manifest requires review.' }
+      if ($pairResult.HoldExitCode -ne 0 -or $pairResult.ProbeExitCode -ne 0) {
+        Stop-NativeConcurrency "Pair failed (holder exit $($pairResult.HoldExitCode), probe exit $($pairResult.ProbeExitCode)); manifest remains needs_review. Inspect guarded Status; do not retry this fixture."
+      }
+      $manifest.completedLocks = @(@($manifest.completedLocks) + $LockKind)
+      $manifest.status = 'ready'
+      $manifest.lastAction = 'Pair'
+      Write-Manifest $manifestPath $manifest
+      Write-Host "Synthetic concurrency pair passed: $LockKind (both fixed local psql sessions exited 0)."
+      return
+    } catch {
+      $manifest.status = 'needs_review'
+      $manifest.lastAction = 'PairFailed'
+      Write-Manifest $manifestPath $manifest
+      throw
+    } finally {
+      if ($null -ne $securePassword) { $securePassword.Dispose() }
+    }
+  }
   $null = Invoke-Template $template $manifest $rootPath $psqlExe $Action $LockKind
   if ($Action -eq 'Probe') {
     $completedLocks = @($manifest.completedLocks)

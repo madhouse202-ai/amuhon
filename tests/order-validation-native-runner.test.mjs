@@ -75,10 +75,11 @@ function maskSqlCommentsAndLiterals(source) {
   return output.join('');
 }
 
-function getSqlStatements(source, { allowOnlyOnErrorStop = true } = {}) {
+function getSqlStatements(source, { allowOnlyOnErrorStop = true, allowedPsqlCommands = [] } = {}) {
   if (allowOnlyOnErrorStop) {
+    const allowedCommands = new Set(allowedPsqlCommands.map((command) => command.trim()));
     for (const line of source.split(/\r?\n/)) {
-      if (/^\s*\\/.test(line) && !/^\s*\\set\s+ON_ERROR_STOP\s+on\s*$/i.test(line)) {
+      if (/^\s*\\/.test(line) && !/^\s*\\set\s+ON_ERROR_STOP\s+on\s*$/i.test(line) && !allowedCommands.has(line.trim())) {
         assert.fail(`disallowed psql meta-command: ${line.trim().split(/\s+/)[0]}`);
       }
     }
@@ -86,8 +87,9 @@ function getSqlStatements(source, { allowOnlyOnErrorStop = true } = {}) {
     assert.equal(setCommands.length, 1, 'expected exactly one approved psql setting');
   }
 
+  const allowedCommands = new Set(allowedPsqlCommands.map((command) => command.trim()));
   const sqlWithoutPsql = source.split(/\r?\n/)
-    .filter((line) => !/^\s*\\set\s+ON_ERROR_STOP\s+on\s*$/i.test(line))
+    .filter((line) => !/^\s*\\set\s+ON_ERROR_STOP\s+on\s*$/i.test(line) && !allowedCommands.has(line.trim()))
     .join('\n');
   const masked = maskSqlCommentsAndLiterals(sqlWithoutPsql);
   const statements = [];
@@ -390,7 +392,7 @@ test('concurrency harness is isolated from ordinary tests and pins every connect
   const runner = await read('../scripts/native-postgres/test-order-validation-concurrency-native.ps1');
   const processRunner = await read('../scripts/native-postgres/native-process-runner.psm1');
   const ordinaryRunner = await read('../scripts/native-postgres/test-order-validation-native.ps1');
-  assert.match(runner, /ValidateSet\('Prepare', 'Hold', 'Probe', 'ClaimAfterUnlock', 'Status', 'Diagnose', 'Cleanup'\)/);
+  assert.match(runner, /ValidateSet\('Prepare', 'Hold', 'Probe', 'Pair', 'ClaimAfterUnlock', 'Status', 'Diagnose', 'Cleanup'\)/);
   assert.match(runner, /ValidateSet\('order', 'attempt', 'job'\)/);
   assert.match(runner, /Invoke-GuardedPreflight \$rootPath/);
   assert.match(runner, /-PreflightOnly/);
@@ -468,6 +470,148 @@ test('concurrency runner loads and validates shared path-safety helpers before u
     assert.match(moduleSource, new RegExp(`function ${helper}\\b`), `${helper} is defined in the shared module`);
     assert.match(moduleSource, new RegExp(`Export-ModuleMember[\\s\\S]*\\b${helper}\\b`), `${helper} is exported`);
   }
+});
+
+test('Pair is a fixed, fail-closed two-client action with exact migration ledger checks', async () => {
+  const runner = await read('../scripts/native-postgres/test-order-validation-concurrency-native.ps1');
+  const processModule = await read('../scripts/native-postgres/native-pair-process-runner.psm1');
+  const pairLock = await read('../supabase/tests/native/order_validation_concurrency_pair_lock.native.sql');
+  const pairProbe = await read('../supabase/tests/native/order_validation_concurrency_pair_probe.native.sql');
+  const pairMock = await read('../tests/native-pair-process-runner.test.ps1');
+  const migrationRunner = await read('../scripts/native-postgres/apply-order-validation-native.ps1');
+  const pairLockStatements = getSqlStatements(pairLock);
+  const pairProbeStages = [
+    'SQL_FILE_STARTED',
+    'IDENTITY_GUARD_PASSED',
+    'TRANSACTION_STARTED',
+    'HOLDER_DETECTED',
+    'SKIP_LOCKED_VALIDATION_COMPLETED',
+    'COMMIT_ACKNOWLEDGED',
+  ];
+  const pairProbeCommands = ['SQL_FILE_STARTED', 'IDENTITY_GUARD_PASSED', 'TRANSACTION_STARTED', 'COMMIT_ACKNOWLEDGED']
+    .map((stage) => `\\echo PAIR_PROBE_STAGE:${stage}`);
+  const pairProbeStatements = getSqlStatements(pairProbe, { allowedPsqlCommands: pairProbeCommands });
+  assert.match(runner, /ValidateSet\('Prepare', 'Hold', 'Probe', 'Pair', 'ClaimAfterUnlock', 'Status', 'Diagnose', 'Cleanup'\)/);
+  assert.match(runner, /\$Action -in @\('Hold', 'Probe', 'Pair'\)/);
+  assert.match(runner, /\$Action -eq 'Pair'[\s\S]*Invoke-NativePairProcesses/);
+  assert.match(runner, /-h', '127\.0\.0\.1', '-p', '55432', '-U', 'postgres', '-d', 'amuhon_validation_native', '-W'/);
+  assert.match(runner, /Read-Host[\s\S]*-AsSecureString/);
+  assert.match(runner, /VERBOSITY=verbose/);
+  assert.match(runner, /\$manifest\.status = 'needs_review'[\s\S]*Write-Manifest[\s\S]*Invoke-NativePairProcesses/);
+  assert.match(runner, /if \(\$pairResult\.HoldExitCode -ne 0 -or \$pairResult\.ProbeExitCode -ne 0\)/);
+  assert.match(runner, /Pair diagnostics \{0\}: start=\{1\}; password_sent=\{2\}; end=\{3\}; exit=\{4\}/);
+  assert.match(runner, /stdout_truncated=\{11\}; stderr_chars=\{12\}; stderr_truncated=\{13\}/);
+  assert.match(runner, /Pair Hold-only marker: hold_ready_notice=\{0\}/);
+  assert.match(runner, /Pair Probe stage: \{0\}/);
+  assert.doesNotMatch(runner, /Pair diagnostics[^\r\n]*holder_ready_notice=\$diagnostic\.HolderReadyNoticeSeen/);
+  assert.doesNotMatch(runner, /Std(?:Out|Err)Capture\.Snapshot|Standard(?:Output|Error)\.ReadToEnd|Write-Host[^\r\n]*RawOutput/);
+  assert.match(runner, /timed_out_processes=\{1\}.*database_transactions_confirmed=\{3\}/);
+  assert.match(runner, /client termination does not confirm the PostgreSQL transaction ended/i);
+  assert.match(runner, /\$manifest\.completedLocks = @\(@\(\$manifest\.completedLocks\) \+ \$LockKind\)/);
+  assert.match(runner, /\$manifest\.status = 'ready'/);
+  assert.match(runner, /pair_lock\.native\.sql/);
+  assert.match(runner, /pair_probe\.native\.sql/);
+  assert.match(runner, /30-minute run window/);
+  assert.match(runner, /completedLocks\) -contains \$LockKind/);
+  assert.doesNotMatch(runner, /(?:DatabaseUrl|ConnectionString|SqlFile|\[string\]\$Host|\[int\]\$Port)\b/i);
+  assert.doesNotMatch(runner, /PGPASSWORD\s*=/i);
+  const pairAction = runner.slice(runner.indexOf("if ($Action -eq 'Pair') {"), runner.indexOf('$null = Invoke-Template'));
+  assert.doesNotMatch(pairAction, /Cleanup|delete\s+from|truncate|storage\./i);
+  for (const sql of [pairLock, pairProbe]) {
+    assert.match(sql, /current_database\(\).*amuhon_validation_native/s);
+    assert.match(sql, /current_user\s+is distinct from 'postgres'/i);
+    assert.match(sql, /host\(inet_server_addr\(\)\).*127\.0\.0\.1/s);
+    assert.match(sql, /inet_server_port\(\).*55432/s);
+    assert.match(sql, /pg_control_system\(\)/);
+    assert.match(sql, /current_setting\('app\.amuhon_native_concurrency_run'.*__RUN_ID__/s);
+    assert.match(sql, /migration_history/);
+    assert.match(sql, /migration_version[\s\S]*sha256/);
+    assert.match(sql, /1942af227de4e7f823ef14e031c2501865980c79d4ea0679df2ea36c8f857f69/);
+    assert.match(sql, /194b9d0b333556b8b2b31f3427866c0f826509267d4684b245eca2454fb789de/);
+    assert.doesNotMatch(sql, /claim_amuhon_order_validation_job\s*\(/i);
+    assert.doesNotMatch(sql, /cleanup_amuhon|claim_expired_amuhon|storage\.(?:objects|buckets)|\bdelete\s+from\b/i);
+  }
+  assert.match(pairLock, /^\\set ON_ERROR_STOP on/m);
+  assert.match(pairLockStatements[0], /^do\b/i);
+  assert.match(pairLockStatements[1], /^begin$/i);
+  assert.match(pairLockStatements.at(-1), /^rollback$/i);
+  assert.match(pairLock, /do \$native_concurrency_pair_lock_identity\$/);
+  assert.match(pairLock, /begin;[\s\S]*for update[\s\S]*pg_sleep\(120\)[\s\S]*rollback;/i);
+  assert.match(pairProbe, /for wait_iteration in 1\.\.100 loop/i);
+  let previousStageOffset = -1;
+  for (const stage of pairProbeStages) {
+    const marker = `PAIR_PROBE_STAGE:${stage}`;
+    const offset = pairProbe.indexOf(marker);
+    assert.ok(offset > previousStageOffset, `${stage} marker follows the previous Probe stage`);
+    previousStageOffset = offset;
+  }
+  assert.match(pairProbe, /PAIR_PROBE_STAGE:HOLDER_DETECTED/);
+  assert.match(pairProbe, /PAIR_PROBE_STAGE:SKIP_LOCKED_VALIDATION_COMPLETED/);
+  assert.doesNotMatch(pairProbe.slice(0, pairProbe.indexOf('$native_concurrency_pair_probe_identity$')), /\b(?:insert\s+into|update|delete\s+from|claim_amuhon_)\b/i,
+    'only fixed psql marker output precedes the connection identity guard');
+  assert.match(pairProbeStatements[0], /^do\b/i);
+  assert.match(pairProbeStatements[1], /^begin isolation level read committed$/i);
+  assert.match(pairProbeStatements.at(-1), /^commit$/i);
+  assert.match(pairProbe, /pg_catalog\.pg_locks/);
+  assert.match(pairProbe, /for update nowait/i);
+  assert.match(pairProbe, /claim_amuhon_order_validation_job_for_attempt\s*\(/i);
+  assert.match(pairProbe, /\[PAIR NO FALLBACK\]/);
+  assert.match(pairProbe, /commit;\s*\\echo PAIR_PROBE_STAGE:COMMIT_ACKNOWLEDGED\s*$/i);
+  const approvedMigrations = [
+    ['20261017000100_order_drafts', '1942af227de4e7f823ef14e031c2501865980c79d4ea0679df2ea36c8f857f69'],
+    ['20261020000100_order_asset_uploads', '6ebe44db71d00407116ccde9bd35a6ade0611751bcaf046d6ec56c02ad3aa538'],
+    ['20261020000200_order_asset_size_limit', 'ca41c0aedcc83816588010bb7fc1d80767ac2543972c288a3194d8b03f6fdf33'],
+    ['20261020000300_order_temp_uploads', '5d2a079326b1749a1bc40ec3f7de616d6575d0c4ac50c449d01d63d27448044e'],
+    ['20261021000100_order_validation_jobs', '8f10bbe8cce4cb2d81a29ea6f02c66aadb38e8ad23be43c3b7d0c50938fcb995'],
+    ['20261022000100_order_validation_asset_commit', '28e0b23873f02030da1162d7006478305b3843b8ca6122e44e7494dd2e58de0d'],
+    ['20261025000100_order_validation_targeted_claim', '194b9d0b333556b8b2b31f3427866c0f826509267d4684b245eca2454fb789de'],
+  ];
+  for (const [version, hash] of approvedMigrations) {
+    assert.ok(migrationRunner.includes(`${version}' = '${hash}'`), `${version} uses the approved wrapper hash`);
+    assert.ok(pairLock.includes(`('${version}', '${hash}')`), `${version} checked by holder`);
+    assert.ok(pairProbe.includes(`('${version}', '${hash}')`), `${version} checked by probe`);
+  }
+  assert.doesNotMatch(processModule, /PGPASSWORD\s*\]|PGPASSWORD\s*=/i);
+  assert.match(processModule, /RedirectStandardInput = \$true/);
+  assert.match(processModule, /SecureStringToGlobalAllocUnicode/);
+  assert.match(processModule, /ZeroFreeGlobalAllocUnicode/);
+  assert.match(processModule, /EnvironmentVariables\.Keys[\s\S]*StartsWith\('PG'/);
+  assert.match(processModule, /WaitForExit\(10000\)/);
+  assert.match(processModule, /TimedOut/);
+  assert.match(processModule, /ProcessesClosed/);
+  assert.match(processModule, /class NativePairBoundedCapture/);
+  assert.match(processModule, /NativePairBoundedCapture\]::new\(8192\)/);
+  assert.match(processModule, /function Start-NativePairObservedProcess[\s\S]*RedirectStandardOutput = \$true[\s\S]*RedirectStandardError = \$true/);
+  assert.match(processModule, /function Complete-NativePairObservedProcess[\s\S]*StdOutTask\.Wait\(5000\)[\s\S]*StdErrTask\.Wait\(5000\)/);
+  assert.match(processModule, /function Get-NativePairProcessDiagnostic[\s\S]*SQL state:[\s\S]*LastCompletedPsqlStatus[\s\S]*DatabaseTransactionEndConfirmed/);
+  assert.match(processModule, /PAIR_PROBE_STAGE:\(SQL_FILE_STARTED\|IDENTITY_GUARD_PASSED\|TRANSACTION_STARTED\|HOLDER_DETECTED\|SKIP_LOCKED_VALIDATION_COMPLETED\|COMMIT_ACKNOWLEDGED\)/);
+  assert.match(processModule, /foreach \(\$stream in @\(\$stdout, \$stderr\)\)[\s\S]*\[Array\]::IndexOf\(\$probeStages, \$stageName\)[\s\S]*\$stageRank -gt \$latestStageRank/);
+  assert.doesNotMatch(processModule, /\[regex\]::Matches\(\$combined, 'PAIR_PROBE_STAGE:/);
+  assert.match(processModule, /未到達または観測不能/);
+  assert.match(processModule, /if \(\$Record\.Name -eq 'Hold'\).*HoldReadyNoticeSeen/s);
+  assert.doesNotMatch(processModule, /ProbeStage\s*=\s*\$Record\.HoldReadyNoticeSeen/);
+  assert.match(processModule, /WasRunningAtTimeout/);
+  assert.doesNotMatch(processModule, /Write-(?:Host|Output|Error).*(?:Arguments|Password|Environment)/i);
+  assert.match(pairMock, /\[System\.Diagnostics\.Process\]::Start|Start-NativePairProcess/);
+  assert.match(pairMock, /Invoke-NativePairProcesses/);
+  assert.match(pairMock, /nonzero probe mock/i);
+  assert.match(pairMock, /SQLSTATE and bounded error-location diagnostics/i);
+  assert.match(pairMock, /allProbeStages[\s\S]*ProbeStage -cne 'COMMIT_ACKNOWLEDGED'/);
+  assert.match(pairMock, /distributedStages[\s\S]*ERR:PAIR_PROBE_STAGE:HOLDER_DETECTED[\s\S]*ERR:PAIR_PROBE_STAGE:SKIP_LOCKED_VALIDATION_COMPLETED/);
+  assert.match(pairMock, /Probe stage uses fixed progress rank across stdout and stderr/i);
+  assert.match(pairMock, /unknown or missing Probe markers remain unobserved/i);
+  assert.match(pairMock, /未到達または観測不能/);
+  assert.match(pairMock, /ReferenceEquals\(\$null, \$stagePair\.Probe\.HoldReadyNoticeSeen\)/);
+  assert.match(pairMock, /timeout identifies a still-running Probe/i);
+  assert.match(pairMock, /timeout identifies a still-running Hold/i);
+  assert.match(pairMock, /timeout identifies both clients/i);
+  assert.match(pairMock, /inputDelay[\s\S]*Thread\.Sleep\(inputDelay\)[\s\S]*Console\.In\.ReadLine\(\)/);
+  assert.match(pairMock, /independentInput[\s\S]*PasswordSentAtUtc[\s\S]*OutputDrained[\s\S]*HoldExitCode[\s\S]*ProbeExitCode/);
+  assert.match(pairMock, /noOutputPair[\s\S]*StdOutCharacters[\s\S]*StdErrCharacters[\s\S]*未到達または観測不能/);
+  assert.match(pairMock, /250000[\s\S]*StdErrTruncated[\s\S]*StdOutTruncated[\s\S]*OutputDrained/);
+  assert.match(pairMock, /pairTimedOut[\s\S]*ProcessesClosed/);
+  assert.match(pairMock, /concurrent large stdout\/stderr is drained and retained only in bounded memory/i);
+  assert.doesNotMatch(pairMock, /psql\.exe|amuhon_validation_native|127\.0\.0\.1|supabase/i);
 });
 
 test('concurrency SQL uses fixed identity guards, bounded sessions, and exact synthetic scope', async () => {
@@ -608,4 +752,84 @@ test('concurrency SQL uses fixed identity guards, bounded sessions, and exact sy
   assert.match(statusRunner, /if \(\$Action -notin @\('Status', 'Diagnose'\)\)[\s\S]*Write-Manifest/);
   assert.match(statusRunner, /'Diagnose'\s*\{\s*'order_validation_concurrency_diagnose\.native\.sql'\s*\}/);
   assert.doesNotMatch(statusRunner, /completedLocks\)\.Count\s*-ne\s*3/, 'editable manifest cannot authorize skipping SQL evidence');
+});
+
+test('native Pair auth probe is fixed, read-only, preflight-gated, and keeps credentials in memory', async () => {
+  const script = await read('../scripts/native-postgres/test-pair-auth-native.ps1');
+  const processModule = await read('../scripts/native-postgres/native-pair-process-runner.psm1');
+
+  assert.ok(script.includes("$nativeRoot = 'C:\\amuhon-native-pg'"), 'NativeRoot is a hard-coded local path');
+  assert.doesNotMatch(script, /\[string\]\s*\$(?:Database|Host|Port|User|Url|ConnectionString)|\$env:PG(?:HOST|HOSTADDR|PORT|DATABASE|USER|PASSWORD|SERVICE)/i);
+  assert.match(script, /&\s*\$preflight\s+-NativeRoot\s+\$rootPath\s+-PreflightOnly/);
+  assert.ok(script.indexOf('& $preflight') < script.indexOf('Read-Host -Prompt'), 'preflight must complete before password input');
+  assert.ok(script.indexOf('Read-Host -Prompt') < script.indexOf('Invoke-NativePairAuthProbe'), 'password is read only for the fixed probe');
+  assert.match(script, /\$probeSql\s*=\s*@"\r?\n\s*select\b[\s\S]*?"@/i);
+  const sqlMatch = script.match(/\$probeSql\s*=\s*@"\r?\n([\s\S]*?)\r?\n"@/i);
+  assert.ok(sqlMatch, 'fixed SQL probe is a single here-string');
+  assert.doesNotMatch(sqlMatch[1], /\b(?:insert|update|delete|merge|truncate|drop|alter|create|call|do)\b|\b(?:claim|cleanup)_amuhon_[a-z0-9_]*\s*\(/i,
+    'auth probe SQL is read-only and calls no RPC');
+  for (const argument of [
+    "'-h', $expectedHost", "'-p', [string]$expectedPort", "'-U', $expectedRole",
+    "'-d', $expectedDatabase", "'-W'", "'-c', $probeSql",
+  ]) assert.ok(script.includes(argument), `fixed psql argument ${argument}`);
+  assert.match(script, /select case when[\s\S]*current_database\(\)[\s\S]*current_user[\s\S]*host\(inet_server_addr\(\)\)[\s\S]*host\(inet_client_addr\(\)\)[\s\S]*inet_server_port\(\)[\s\S]*data_directory[\s\S]*pg_control_system\(\)[\s\S]*cluster_name[\s\S]*application_name[\s\S]*app\.amuhon_native_test_environment[\s\S]*app\.amuhon_native_system_identifier[\s\S]*listen_addresses[\s\S]*config_file[\s\S]*hba_file[\s\S]*then 'PASS' else 'FAIL' end;/i);
+  assert.match(script, /\$result\.ExitCode\s+-ne\s+0[\s\S]*\$result\.Output\.Trim\(\)\s+-cne\s+'PASS'/);
+  assert.match(script, /Read-Host[^\r\n]*-AsSecureString/);
+  assert.match(script, /PGPASSFILE\s*=\s*'NUL'/);
+  assert.match(script, /PGOPTIONS\s*=\s*"[^"]*app\.amuhon_native_test_environment=[^"]*app\.amuhon_native_system_identifier=[^"]*statement_timeout=/);
+  assert.doesNotMatch(script, /PGPASSWORD|Set-Content|Out-File|Export-Clixml|manifest|Start-Process|Cleanup|Bootstrap|Migration/i);
+  assert.match(script, /\$securePassword\.Dispose\(\)/);
+  assert.match(processModule, /function Invoke-NativePairAuthProbe[\s\S]*?RedirectStandardOutput\s*=\s*\$true[\s\S]*?ReadToEndAsync\(\)[\s\S]*?Write-NativeSecurePasswordToProcess[\s\S]*?WaitForExit\([\s\S]*?ExitCode/i);
+  assert.match(processModule, /'PGPASSWORD'/);
+  assert.match(processModule, /Export-ModuleMember[\s\S]*Invoke-NativePairAuthProbe/);
+});
+
+test('two-connection auth check is fixed, preflight-gated, read-only, and fail-closed', async () => {
+  const script = await read('../scripts/native-postgres/test-pair-connections-native.ps1');
+  const processModule = await read('../scripts/native-postgres/native-pair-process-runner.psm1');
+  const mock = await read('../tests/native-pair-process-runner.test.ps1');
+  const docs = await read('../docs/ORDER_VALIDATION_NATIVE_POSTGRES_TESTS.md');
+
+  assert.match(script, /^\[CmdletBinding\(\)\]\s*param\(\)/, 'the entry point accepts no endpoint or SQL parameters');
+  for (const fixedValue of [
+    "$nativeRoot = 'C:\\amuhon-native-pg'",
+    "$expectedDatabase = 'amuhon_validation_native'",
+    "$expectedRole = 'postgres'",
+    "$expectedHost = '127.0.0.1'",
+    '$expectedPort = 55432',
+  ]) assert.ok(script.includes(fixedValue), `fixed target includes ${fixedValue}`);
+  assert.match(script, /&\s*\$preflight\s+-NativeRoot\s+\$rootPath\s+-PreflightOnly/);
+  assert.ok(script.indexOf('& $preflight') < script.indexOf('Read-Host -Prompt'), 'shared preflight runs before password input');
+  assert.ok(script.indexOf('& $preflight') < script.indexOf('Invoke-NativePairReadOnlyIdentityChecks'), 'shared preflight runs before psql processes');
+  assert.match(script, /Read-Host -Prompt[^\r\n]*-AsSecureString/);
+  assert.match(script, /PGPASSFILE\s*=\s*'NUL'/);
+  assert.match(script, /PGAPPNAME/);
+  assert.match(script, /PGOPTIONS/);
+  assert.doesNotMatch(script, /PGPASSWORD|Start-Process|\b(?:Set-Content|Out-File|Export-Clixml|Add-Content)\b|manifest|connectionstring|databaseurl/i,
+    'the entry point neither persists credentials nor exposes flexible connection targets');
+  assert.match(script, /'-h',\s*\$expectedHost[\s\S]*?'-p',\s*\[string\]\$expectedPort[\s\S]*?'-U',\s*\$expectedRole[\s\S]*?'-d',\s*\$expectedDatabase[\s\S]*?'-W'/);
+  assert.equal((script.match(/'-c',\s*\$firstQuery/g) || []).length, 1);
+  assert.equal((script.match(/'-c',\s*\$secondQuery/g) || []).length, 1);
+  assert.match(script, /current_database\(\)[\s\S]*current_user[\s\S]*host\(inet_server_addr\(\)\)[\s\S]*host\(inet_client_addr\(\)\)[\s\S]*inet_server_port\(\)[\s\S]*pg_control_system\(\)[\s\S]*application_name[\s\S]*app\.amuhon_native_pair_connection_run[\s\S]*then 'PASS' else 'FAIL' end/i);
+  const query = script.match(/\$sqlTemplate\s*=\s*@'\r?\n([\s\S]*?)\r?\n'@/);
+  assert.ok(query, 'the fixed identity query is a single-quoted PowerShell here-string');
+  const identityStatements = getSqlStatements(query[1], { allowOnlyOnErrorStop: false });
+  assert.equal(identityStatements.length, 1, 'each connection executes one fixed SQL statement');
+  assert.match(identityStatements[0], /^\s*select\b/i);
+  assert.doesNotMatch(query[1], /\b(?:insert|update|delete|merge|truncate|drop|alter|create|call|do|begin|commit|rollback)\b|\b(?:claim|cleanup)_amuhon_[a-z0-9_]*\s*\(/i,
+    'the query template is read-only and has no RPC or transaction command');
+  assert.match(processModule, /function Invoke-NativePairReadOnlyIdentityChecks[\s\S]*?New-NativePairReadOnlyProcess 'First'[\s\S]*?New-NativePairReadOnlyProcess 'Second'[\s\S]*?WriteAndCloseAsync\(\$first\.Process[\s\S]*?WriteAndCloseAsync\(\$second\.Process[\s\S]*?TimeoutSeconds[\s\S]*?Stop-NativePairProcess/i);
+  assert.match(processModule, /StdOutCapture = \[Amuhon\.NativePairBoundedCapture\]::new\(8192\)[\s\S]*StdErrCapture = \[Amuhon\.NativePairBoundedCapture\]::new\(8192\)/);
+  assert.match(processModule, /IdentityResult = \$identityResult[\s\S]*Passed = \[bool\][\s\S]*OutputDrained[\s\S]*ExitCode -eq 0[\s\S]*'PASS'/);
+  assert.match(processModule, /Export-ModuleMember[\s\S]*Invoke-NativePairReadOnlyIdentityChecks/);
+  assert.match(script, /if \(\$result\.TimedOut\)[\s\S]*if \(-not \$result\.ProcessesClosed\)[\s\S]*if \(\$result\.StartupOrInputFailure\)[\s\S]*if \(\$result\.ChildFailure\)[\s\S]*if \(-not \$result\.Passed\)/);
+  assert.match(mock, /Invoke-NativePairReadOnlyIdentityChecks/);
+  assert.match(mock, /readOnlyPass\.Passed/);
+  assert.match(mock, /readOnlyMarkerFail\.Passed/);
+  assert.match(mock, /readOnlyExitFail\.Passed/);
+  assert.match(mock, /readOnlyNoOutput\.Passed/);
+  assert.match(mock, /readOnlyLargeOutput\.First\.OutputDrained/);
+  assert.match(mock, /readOnlyTimedOut\.ProcessesClosed/);
+  assert.match(docs, /test-pair-connections-native\.ps1/);
+  assert.match(docs, /No fixture, migration, manifest, or Storage operation/);
 });
