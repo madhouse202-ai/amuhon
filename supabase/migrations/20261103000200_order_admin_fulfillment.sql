@@ -25,8 +25,9 @@ begin
   ) then
     alter table public.amuhon_orders add constraint amuhon_orders_printer_submission_audit_pair
       check (
-        (printer_submission_status = 'submitted') =
-        (printer_submitted_at is not null and printer_submitted_by is not null)
+        (printer_submitted_at is null) = (printer_submitted_by is null)
+        and (printer_submission_status = 'submitted') =
+          (printer_submitted_at is not null and printer_submitted_by is not null)
       );
   end if;
 end;

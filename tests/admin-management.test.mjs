@@ -67,6 +67,7 @@ test("login has no signup path and admin browser code contains no server-only se
 test("fulfillment migration keeps payment status separate and makes updates atomic and idempotent", async () => {
   const sql = await read("supabase/migrations/20261103000200_order_admin_fulfillment.sql");
   assert.match(sql, /printer_submission_status text not null default 'not_submitted'/i);
+  assert.match(sql, /\(printer_submitted_at is null\) = \(printer_submitted_by is null\)[\s\S]*?printer_submission_status = 'submitted'[\s\S]*?printer_submitted_at is not null and printer_submitted_by is not null/i);
   assert.match(sql, /jsonb_build_object\(\s*'orders', coalesce\(jsonb_agg/i);
   assert.match(sql, /select \* into target from public\.amuhon_orders where id = p_order_id for update/i);
   assert.match(sql, /if target\.status <> 'paid' then raise exception 'ORDER_NOT_PAID'/i);

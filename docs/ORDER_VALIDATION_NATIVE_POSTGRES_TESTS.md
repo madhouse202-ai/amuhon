@@ -172,6 +172,59 @@ allowlist and documentation.
 | `20261022000100_order_validation_asset_commit.sql` | `28e0b23873f02030da1162d7006478305b3843b8ca6122e44e7494dd2e58de0d` |
 | `20261025000100_order_validation_targeted_claim.sql` | `194b9d0b333556b8b2b31f3427866c0f826509267d4684b245eca2454fb789de` |
 
+## Append the checkout and fulfillment migrations
+
+The two following files are a separate, one-time append after the exact
+seven-file baseline above. Do not rerun the initial seven-file wrapper. The
+dedicated append wrapper accepts only `NativeRoot`, runs the same shared live
+cluster preflight, fixes the endpoint to `127.0.0.1:55432`, database
+`amuhon_validation_native`, and role `postgres`, and checks the native cluster
+identity again inside the SQL session. It refuses a ledger other than the
+exact seven approved versions and hashes, any pre-existing checkout/admin
+schema objects, or any rows in the native order table. That last condition
+keeps this test-only migration pass from changing an existing fixture or
+order record; inspect and resolve a non-empty table separately rather than
+relaxing the guard.
+
+The wrapper snapshots and hash-checks only the two files below, includes them
+in order in one `psql -1` transaction, and records both versions and hashes in
+a separate `native_test.checkout_migration_history` table in that same
+transaction. The original `native_test.migration_history` remains exactly
+the seven-row ledger expected by the existing SQL tests. `ON_ERROR_STOP=1` plus
+`psql -1` means a SQL error rolls back both migrations and both ledger rows.
+The migration files intentionally contain no top-level `BEGIN`/`COMMIT`; this
+avoids nested transaction control and leaves their use by the repository's
+normal migration tooling unchanged. Function creation, PUBLIC/browser-role
+revocation, and `service_role` grants become visible together at commit, so a
+partially applied `SECURITY DEFINER` routine is not exposed between those
+statements. The native wrapper is not a Supabase project migration tool.
+
+Run only after confirming the dedicated cluster is already running and the
+seven-file native baseline is fully applied. Enter the PostgreSQL password
+only at the interactive prompt. Do not manually run either migration with
+`psql`, do not apply one file at a time, and do not rerun this wrapper after an
+error or an uncertain client result until the ledger and schema have been
+reviewed read-only.
+
+```powershell
+.\scripts\native-postgres\apply-order-checkout-native.ps1 -NativeRoot C:\amuhon-native-pg
+```
+
+| Append migration | Approved SHA-256 |
+| --- | --- |
+| `20261103000100_order_stripe_checkout.sql` | `c450a88a4a7728b13719e8cead3971384a30f45160e72369d589492c7c6fcd39` |
+| `20261103000200_order_admin_fulfillment.sql` | `8e7f87ccf26b156af960c809c358a3c99dc1414f690d8ce3bd63b6a9116a6b25` |
+
+These hashes are the reviewed bytes for the native-only append wrapper. Any
+future edit requires a separate review and explicit hash update. Before
+applying these migrations to any database with existing orders, independently
+check for duplicate non-null `stripe_payment_id` values (the new unique index
+would reject duplicates), identify any prior/manual fulfillment that should
+not receive the default `not_submitted` state, and confirm the migration
+versions have not already been recorded. This native test wrapper itself
+requires the order table to be empty and refuses partial objects. It does not
+connect to or modify `amuhon` or `amuhon-staging`.
+
 The mocked `storage` schema is deliberately
 incomplete compared with Supabase; a migration failure due to a missing
 Supabase-specific dependency means this native path cannot validate that part.

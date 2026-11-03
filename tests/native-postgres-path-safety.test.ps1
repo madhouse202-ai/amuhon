@@ -122,6 +122,27 @@ if (-not $driveRelativeRejected) {
 
 $nativeRoot = 'C:\amuhon-native-pg'
 $expectedBinaryDirectory = 'C:\amuhon-native-pg\pgsql\bin'
+$expectedCheckoutRoot = 'C:\amuhon-native-pg'
+foreach ($pathAlias in @(
+  'c:\AMUHON-NATIVE-PG\',
+  'C:\amuhon-native-pg\.\',
+  'C:\amuhon-native-pg\temporary\..'
+)) {
+  $normalizedRoot = Assert-NativeLocalDrivePath $pathAlias
+  if (-not (Test-CanonicalPathEqual $normalizedRoot $expectedCheckoutRoot)) {
+    throw "A safe fixed-root path alias did not normalize to the dedicated NativeRoot: $pathAlias"
+  }
+}
+foreach ($otherRoot in @(
+  'C:\amuhon-native-pg-extra',
+  'C:\other\amuhon-native-pg',
+  'D:\amuhon-native-pg'
+)) {
+  $normalizedOtherRoot = Assert-NativeLocalDrivePath $otherRoot
+  if (Test-CanonicalPathEqual $normalizedOtherRoot $expectedCheckoutRoot) {
+    throw "A different NativeRoot was accepted as the dedicated path: $otherRoot"
+  }
+}
 if (-not (Test-CanonicalPathEqual (Get-NativeBinaryDirectory $nativeRoot) $expectedBinaryDirectory)) {
   throw 'Native PostgreSQL binary directory did not resolve to NativeRoot\pgsql\bin.'
 }
