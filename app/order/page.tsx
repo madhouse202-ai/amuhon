@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Upload } from "tus-js-client";
 
@@ -31,7 +32,15 @@ const emptyCustomer: OrderCustomer = {
   email: "",
 };
 
-type SavedDraft = { id: string; status: "draft" | "preparing"; createdAt: string };
+type SavedDraft = { id: string; status: "draft" | "preparing" | "ready_for_payment"; createdAt: string };
+type CheckoutSummary = {
+  status?: string;
+  pageCount?: number | null;
+  filesVerified: boolean;
+  quotedAmountYen?: number | null;
+  canCheckout: boolean;
+  checkoutState?: string;
+};
 type DirectUploadIntent = {
   attemptId: string;
   expiresAt: string;
@@ -64,6 +73,7 @@ type TusDiagnostic = {
 };
 
 export default function OrderPage() {
+  const router = useRouter();
   const [book, setBook] = useState<BookData | null>(null);
   const [customer, setCustomer] = useState<OrderCustomer>(emptyCustomer);
   const [fieldErrors, setFieldErrors] = useState<OrderFieldErrors>({});
@@ -74,6 +84,8 @@ export default function OrderPage() {
   const [bodyPdfFile, setBodyPdfFile] = useState<File | null>(null);
   const [coverPngFile, setCoverPngFile] = useState<File | null>(null);
   const [filesSaved, setFilesSaved] = useState(false);
+  const [checkoutSummary, setCheckoutSummary] = useState<CheckoutSummary | null>(null);
+  const [checkingCheckoutStatus, setCheckingCheckoutStatus] = useState(false);
   const [validationJobState, setValidationJobState] = useState<ValidationJobState>("not_registered");
   const [uploadProgress, setUploadProgress] = useState<{ bodyPdf: number; coverPng: number } | null>(null);
   const [directUploadExpiresAt, setDirectUploadExpiresAt] = useState<string | null>(null);
@@ -82,6 +94,66 @@ export default function OrderPage() {
   const idempotencyKeyRef = useRef<string | null>(null);
   const actionInProgressRef = useRef(false);
   const directAttemptIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!draft || !filesSaved) return;
+    let active = true;
+    void fetch(`/api/orders/${encodeURIComponent(draft.id)}/status`, { cache: "no-store", credentials: "same-origin" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("status_unavailable");
+        return await response.json() as CheckoutSummary;
+      })
+      .then((summary) => { if (active) setCheckoutSummary(summary); })
+      .catch(() => { if (active) setCheckoutSummary(null); });
+    return () => { active = false; };
+  }, [draft, filesSaved]);
+
+  async function beginStripeCheckout() {
+    if (!draft || !checkoutSummary?.canCheckout || DIRECT_UPLOAD_EXPERIMENT || actionInProgressRef.current) return;
+    actionInProgressRef.current = true;
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/orders/${encodeURIComponent(draft.id)}/checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        credentials: "same-origin",
+      });
+      const result = await response.json() as { checkoutUrl?: unknown; alreadyPaid?: boolean; error?: string };
+      if (response.ok && result.alreadyPaid === true) {
+        router.replace(`/order/success?order_id=${encodeURIComponent(draft.id)}`);
+        return;
+      }
+      if (!response.ok || typeof result.checkoutUrl !== "string") throw new Error(result.error ?? "テスト決済を開始できませんでした。");
+      const checkoutUrl = new URL(result.checkoutUrl);
+      if (checkoutUrl.protocol !== "https:" || checkoutUrl.hostname !== "checkout.stripe.com") {
+        throw new Error("決済画面の接続先を確認できませんでした。");
+      }
+      window.location.assign(checkoutUrl.toString());
+    } catch (checkoutError) {
+      setError(checkoutError instanceof Error ? checkoutError.message : "テスト決済を開始できませんでした。");
+      actionInProgressRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  async function retryCheckoutStatus() {
+    if (!draft || checkingCheckoutStatus) return;
+    setCheckingCheckoutStatus(true);
+    try {
+      const response = await fetch(`/api/orders/${encodeURIComponent(draft.id)}/status`, {
+        cache: "no-store", credentials: "same-origin",
+      });
+      if (!response.ok) throw new Error("status_unavailable");
+      setCheckoutSummary(await response.json() as CheckoutSummary);
+      setError("");
+    } catch {
+      setError("検証済みファイルと価格を確認できませんでした。時間をおいて再確認してください。");
+    } finally {
+      setCheckingCheckoutStatus(false);
+    }
+  }
 
   useEffect(() => {
     const currentBook = loadBookData();
@@ -431,9 +503,11 @@ export default function OrderPage() {
         <p className="mt-3 rounded-lg bg-amber-50 p-4">状態：{filesSaved
           ? DIRECT_UPLOAD_EXPERIMENT
             ? validationJobState === "succeeded" ? "preparing（検証・正式ファイル確定済み）" : "preparing（一時保存済み・検証未完了）"
-            : "preparing（ファイル検証済み）"
-          : "ファイル未検証"}。価格は未確定のため、決済には進めません。</p>
-        <p className="mt-3">価格：価格確認中</p>
+            : checkoutSummary?.filesVerified ? `${checkoutSummary.status ?? "preparing"}（ファイル検証済み）` : "preparing（ファイル検証状態を確認中）"
+          : "ファイル未検証"}。{checkoutSummary?.status === "paid" ? "決済済みです。" : "支払済みの表示はサーバーの決済確認後に行います。"}</p>
+        <p className="mt-3">価格：{checkoutSummary?.filesVerified && Number.isSafeInteger(checkoutSummary.quotedAmountYen)
+          ? `${new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" }).format(checkoutSummary.quotedAmountYen as number)}（税込・送料込み）`
+          : "検証後にサーバーで確定"}</p>
         {!filesSaved && (
           <section className="mt-6 rounded-xl border border-stone-200 p-5">
             <h2 className="text-lg font-bold">入稿ファイルを送信</h2>
@@ -483,8 +557,22 @@ export default function OrderPage() {
           </section>
         )}
         {filesSaved && <p className="mt-3 text-sm text-stone-600">{DIRECT_UPLOAD_EXPERIMENT
-          ? `非公開の一時領域への送信は完了しました。検証ジョブ（登録API応答時点）：${VALIDATION_JOB_LABELS[validationJobState]}。この表示は自動更新されません。ジョブ登録だけでは検証完了・製本可能を意味しません。決済・製本発注も未実装です。`
-          : "配送先情報と非公開の入稿ファイルはサーバー側の注文IDに紐付けて保存されました。決済機能は未実装です。"}</p>}
+          ? `非公開の一時領域への送信は完了しました。検証ジョブ（登録API応答時点）：${VALIDATION_JOB_LABELS[validationJobState]}。この表示は自動更新されません。ジョブ登録だけでは検証完了・製本可能を意味しません。一時アップロード状態の注文は決済できません。`
+          : "配送先情報と検証済み入稿ファイルはサーバー側の注文に紐付いています。決済はStripeのテストモードでのみ開始します。"}</p>}
+        {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && checkoutSummary?.canCheckout && (
+          <button className="mt-5 rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => void beginStripeCheckout()} disabled={saving}>
+            {saving ? "Stripeテスト決済画面を準備中……" : "税込・送料込み価格を確認してテスト決済へ進む"}
+          </button>
+        )}
+        {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && !checkoutSummary && (
+          <button className="mt-4 rounded-lg border border-stone-400 px-5 py-3 disabled:opacity-50" type="button" onClick={() => void retryCheckoutStatus()} disabled={checkingCheckoutStatus}>
+            {checkingCheckoutStatus ? "注文状態を確認中……" : "検証状態と価格を再確認"}
+          </button>
+        )}
+        {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && checkoutSummary && !checkoutSummary.canCheckout && (
+          <p className="mt-4 text-sm text-amber-800">この注文は現在決済できません。検証済みファイル、対象ページ数、価格状態をサーバーで確認してください（{checkoutSummary.checkoutState ?? "確認中"}）。</p>
+        )}
+        {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && error && <p role="alert" className="mt-4 text-red-700">{error}</p>}
         {filesSaved && DIRECT_UPLOAD_EXPERIMENT && error && <p role="alert" className="mt-3 text-red-700">{error}</p>}
         {filesSaved && DIRECT_UPLOAD_EXPERIMENT &&
           (validationJobState === "not_registered" || validationJobState === "registration_failed") && (
@@ -578,7 +666,7 @@ export default function OrderPage() {
             <dt>電話番号</dt><dd>{customer.phone}</dd>
             <dt>メールアドレス</dt><dd>{customer.email}</dd>
           </dl>
-          <p className="mt-4 rounded-lg bg-amber-50 p-4">価格確認中です。今回は注文下書きの保存のみ行い、決済・製本発注には進みません。</p>
+          <p className="mt-4 rounded-lg bg-amber-50 p-4">入稿ファイルの検証完了後、ページ数に応じた税込・送料込み価格をサーバーで確定してStripeテスト決済へ進みます。ファイル未検証の注文は決済できません。</p>
           <section className="mt-5 rounded-xl border border-stone-200 p-5" aria-label="入稿ファイル選択">
             <h3 className="font-bold">{DIRECT_UPLOAD_EXPERIMENT ? "実験用：アップロードするファイルを選択" : "先に出力した入稿ファイルを選択してください"}</h3>
             {DIRECT_UPLOAD_EXPERIMENT ? (

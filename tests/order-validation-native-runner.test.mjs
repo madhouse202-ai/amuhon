@@ -833,3 +833,35 @@ test('two-connection auth check is fixed, preflight-gated, read-only, and fail-c
   assert.match(docs, /test-pair-connections-native\.ps1/);
   assert.match(docs, /No fixture, migration, manifest, or Storage operation/);
 });
+
+test('Pair connection preflight diagnostics allowlist fixed refusals and suppress unknown details', async () => {
+  const script = await read('../scripts/native-postgres/test-pair-connections-native.ps1');
+  const testScript = await read('../tests/native-pair-preflight-diagnostics.test.ps1');
+  const preflight = await read('../scripts/native-postgres/test-order-validation-native.ps1');
+  const concurrencyRunner = await read('../scripts/native-postgres/test-order-validation-concurrency-native.ps1');
+
+  assert.match(script, /function Get-SafeNativePreflightFailureMessage\([\s\S]*?\$knownFixedReasons = @\([\s\S]*?\)/);
+  const preflightChecks = preflight.slice(0, preflight.indexOf('if ($PreflightOnly)'));
+  const staticReasons = [...preflightChecks.matchAll(/Stop-NativeTest\s+'([^']+)'/g)].map((match) => match[1]);
+  for (const reason of staticReasons) {
+    assert.ok(script.includes(`'${reason}'`), `allowlist includes fixed preflight reason: ${reason}`);
+  }
+  assert.match(script, /\[string\]::Equals\(\$ExceptionMessage, \(\$prefix \+ \$reason\), \[StringComparison\]::Ordinal\)/);
+  assert.match(script, /if \(\$ExceptionThrown\)[\s\S]*unrecognized exception; details were suppressed/);
+  assert.match(script, /if \(-not \$InvocationSucceeded\)[\s\S]*false success indicator/);
+  assert.match(script, /\$preflightExceptionThrown = \$true[\s\S]*\$preflightExceptionMessage = \[string\]\$_.Exception.Message/);
+  assert.match(script, /\$preflightSucceeded = \[bool\]\$\?/);
+  const invocation = script.indexOf('& $preflight -NativeRoot $rootPath -PreflightOnly');
+  const failureStop = script.indexOf('if ($null -ne $preflightFailureMessage) { Stop-NativePairConnections $preflightFailureMessage }');
+  const pairedStart = script.indexOf('Invoke-NativePairReadOnlyIdentityChecks `');
+  assert.ok(invocation >= 0 && failureStop > invocation && pairedStart > failureStop,
+    'preflight must finish before diagnostics branch and paired psql helper');
+  assert.match(concurrencyRunner, /& \$preflight -NativeRoot \$Root -PreflightOnly[\s\S]*if \(-not \$\?\)/,
+    'the existing preflight call form remains unchanged');
+  assert.match(testScript, /known fixed preflight refusal is displayed/);
+  assert.match(testScript, /unknown preflight exception details and secret-like values are suppressed/);
+  assert.match(testScript, /false success indicator is distinct/);
+  assert.match(testScript, /before either paired psql process is started/);
+  assert.doesNotMatch(testScript, /psql\.exe|amuhon_validation_native|127\.0\.0\.1|Start-Process|&\s*\$scriptPath\b/,
+    'diagnostic mock test does not connect to PostgreSQL or start the real entry point');
+});

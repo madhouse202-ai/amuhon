@@ -20,6 +20,59 @@ function ConvertTo-NativeConnectionSqlLiteral([string]$Value) {
   return "'" + $Value.Replace("'", "''") + "'"
 }
 
+function Get-SafeNativePreflightFailureMessage(
+  [bool]$InvocationSucceeded,
+  [bool]$ExceptionThrown,
+  [string]$ExceptionMessage
+) {
+  $prefix = 'Native PostgreSQL test refused: '
+  $knownFixedReasons = @(
+    'NativeRoot cannot be the drive root.',
+    'NativeRoot must be an existing dedicated directory; this script does not create directories.',
+    'PostgreSQL binaries and data must remain outside the application repository.',
+    'NativeRoot must not contain whitespace or characters unsafe for the fixed process checks.',
+    'the expected bin, cluster, logs, or identity directory is missing.',
+    'a required PostgreSQL directory resolves inside the application repository.',
+    'the manually provisioned cluster identity file is missing.',
+    'one or more required PostgreSQL executables are missing from the dedicated bin directory.',
+    'the identity file is not for this dedicated native validation cluster.',
+    'the expected PostgreSQL system identifier is malformed.',
+    'the identity file data directory does not match the fixed cluster directory.',
+    'the current Windows user does not match the cluster owner recorded at provisioning.',
+    'the PostgreSQL executable version could not be identified.',
+    'the PostgreSQL cluster is not initialized.',
+    'the PostgreSQL binary and cluster major versions differ or are outside the reviewed supported range.',
+    'pg_hba.conf is missing from the dedicated data directory.',
+    'pg_hba.conf must contain only the four reviewed rules in the exact required order; include directives and any extra rules are refused.',
+    'pg_controldata system identifier was missing, duplicated, malformed, unreadable, or did not match the reviewed cluster identity.',
+    'the expected PostgreSQL cluster is not running; start it manually after review.',
+    'postmaster.pid is incomplete or malformed.',
+    'postmaster.pid does not identify the fixed data directory, port, and loopback address.',
+    'pg_ctl status reports a PID different from postmaster.pid.',
+    'the PostgreSQL server process could not be uniquely identified.',
+    'the running PID executable or command line does not match this cluster.',
+    'the PostgreSQL server process owner is unknown or differs from the current Windows user.',
+    'the PostgreSQL process is registered as a Windows service; service-managed clusters are not accepted.',
+    'Windows process identity or service ownership could not be verified.',
+    'the fixed port is not owned only by this PostgreSQL PID on IPv4 loopback.',
+    'a selected native-only SQL test file is missing.',
+    'the PostgreSQL identity probe failed or returned an unexpected result shape.',
+    'the database-reported identity, network, configuration, or cluster ID does not match the expected native cluster.'
+  )
+  foreach ($reason in $knownFixedReasons) {
+    if ([string]::Equals($ExceptionMessage, ($prefix + $reason), [StringComparison]::Ordinal)) {
+      return ("the shared native preflight rejected the environment: {0}; no paired psql process was started." -f $reason)
+    }
+  }
+  if ($ExceptionThrown) {
+    return 'the shared native preflight raised an unrecognized exception; details were suppressed and no paired psql process was started.'
+  }
+  if (-not $InvocationSucceeded) {
+    return 'the shared native preflight returned a false success indicator; no paired psql process was started.'
+  }
+  return $null
+}
+
 try {
   $pathSafetyModule = Join-Path $PSScriptRoot 'native-postgres-path-safety.psm1'
   $processModule = Join-Path $PSScriptRoot 'native-pair-process-runner.psm1'
@@ -46,12 +99,21 @@ try {
   Assert-NoReparsePath $rootPath
 
   # This fixed shared preflight checks the already-running local cluster and database identity.
+  $preflightSucceeded = $false
+  $preflightExceptionThrown = $false
+  $preflightExceptionMessage = $null
   try {
     & $preflight -NativeRoot $rootPath -PreflightOnly
-    if (-not $?) { Stop-NativePairConnections 'the shared native preflight failed.' }
+    $preflightSucceeded = [bool]$?
   } catch {
-    Stop-NativePairConnections 'the shared native preflight failed; no paired psql process was started.'
+    $preflightExceptionThrown = $true
+    $preflightExceptionMessage = [string]$_.Exception.Message
   }
+  $preflightFailureMessage = Get-SafeNativePreflightFailureMessage `
+    -InvocationSucceeded $preflightSucceeded `
+    -ExceptionThrown $preflightExceptionThrown `
+    -ExceptionMessage $preflightExceptionMessage
+  if ($null -ne $preflightFailureMessage) { Stop-NativePairConnections $preflightFailureMessage }
 
   $identityPath = Join-Path $rootPath 'identity\native-cluster.json'
   Assert-NoReparsePath $identityPath
