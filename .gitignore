@@ -16,6 +16,7 @@
 # next.js
 /.next/
 /out/
+/tmp/final-pdf-poc/
 
 # production
 /build
