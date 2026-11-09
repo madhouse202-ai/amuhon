@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { access } from "node:fs/promises";
 import test from "node:test";
 import { chromium } from "playwright-core";
+import sharp from "sharp";
 
 import { validateBodyPdf, validateCoverPng } from "../lib/order-assets.ts";
 import { calculateCoverLayout } from "../lib/production.ts";
@@ -113,6 +114,24 @@ test("local order UI generates and validates both assets without file selection"
         const expectedCover = calculateCoverLayout(body.pageCount);
         assert.equal(validatedCover.width, expectedCover.pixelWidth);
         assert.equal(validatedCover.height, expectedCover.pixelHeight);
+        const { data: pixels, info } = await sharp(Buffer.from(coverPngBytes))
+          .removeAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        const pixelAt = (x, y) => {
+          const offset = (y * info.width + x) * info.channels;
+          return [...pixels.subarray(offset, offset + 3)];
+        };
+        const pixelsPerMm = info.width / expectedCover.coverWidthMm;
+        const framePixel = pixelAt(Math.round(9 * pixelsPerMm), Math.round(20 * pixelsPerMm));
+        assert.ok(framePixel[0] > 230 && framePixel[1] > 220 && framePixel[2] > 200,
+          "The classic frame should remain at its intended front-cover position.");
+        const lowerRightHorizontalArtifact = pixelAt(Math.round(info.width * 0.9), Math.round(info.height * 0.82));
+        const lowerRightVerticalArtifact = pixelAt(Math.round(info.width * 0.56), Math.round(info.height * 0.9));
+        for (const pixel of [lowerRightHorizontalArtifact, lowerRightVerticalArtifact]) {
+          assert.ok(pixel[0] < 210 && pixel[1] < 100 && pixel[2] < 100,
+            "The unintended white lower-right frame must not be present.");
+        }
         await route.fulfill({ json: { order: { status: "preparing", bodyPdfPageCount: body.pageCount } } });
         return;
       }

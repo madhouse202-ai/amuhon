@@ -127,6 +127,10 @@ export async function createSpreadCoverPngBlob(
 
   if (book.coverStyle === "classic") {
     context.save();
+    // These coordinates and the line width are already in output pixels.
+    // The cover fill is still scaled from millimeters, so reset the transform
+    // before drawing to keep the frame inside the front-cover trim area.
+    context.setTransform(1, 0, 0, 1, 0, 0);
     context.strokeStyle = palette.foreground;
     context.lineWidth = 0.25 * pxPerMmX;
     context.strokeRect(
