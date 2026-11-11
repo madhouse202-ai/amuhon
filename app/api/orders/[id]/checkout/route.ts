@@ -4,6 +4,7 @@ import { readOrderUploadCookie } from "../../../../../lib/order-upload-cookie.ts
 import { hashOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
 import { quoteOrderPrice } from "../../../../../lib/order-pricing.ts";
 import { callOrderRpc, getSupabaseServerConfig, isValidOrderId, validOrderPostOrigin } from "../../../../../lib/order-checkout-server.ts";
+import { getStripeServerConfig, isCheckoutSessionIdForMode } from "../../../../../lib/stripe-mode.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,11 +15,6 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 
 function fail(message: string, status: number) {
   return Response.json({ error: message }, { status, headers: { "Cache-Control": "no-store" } });
-}
-
-function getStripeTestSecret(): string | null {
-  const key = process.env.STRIPE_SECRET_KEY;
-  return key && key.startsWith("sk_test_") && key.length >= 16 ? key : null;
 }
 
 function validCheckoutUrl(value: unknown, sessionId: string): value is string {
@@ -38,17 +34,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!isValidOrderId(orderId)) return fail("注文情報を確認できません。", 404);
   const token = readOrderUploadCookie(request, orderId);
   if (!token) return fail("決済を開始する権限がありません。", 403);
-  const stripeSecret = getStripeTestSecret();
+  const stripe = getStripeServerConfig();
   const supabase = getSupabaseServerConfig();
-  if (!stripeSecret || !supabase) return fail("テスト決済サービスが未設定です。", 503);
+  if (!stripe || !supabase) return fail("決済サービスの設定を確認できません。", 503);
 
   const tokenHash = hashOrderUploadToken(token);
   let begin: Awaited<ReturnType<typeof callOrderRpc>>;
   try {
-    begin = await callOrderRpc(supabase, "begin_amuhon_order_checkout", {
+    begin = await callOrderRpc(supabase, "begin_amuhon_order_checkout_v2", {
       p_order_id: orderId,
       p_upload_token_hash: tokenHash,
       p_checkout_attempt_id: randomUUID(),
+      p_livemode: stripe.livemode,
     });
   } catch {
     return fail("注文の決済条件を確認できませんでした。時間をおいて再試行してください。", 502);
@@ -56,14 +53,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!begin.ok || !begin.data) return fail("この注文は決済を開始できません。ファイル検証・ページ数・価格を確認してください。", 409);
   if (begin.data.state === "paid") return fail("この注文の決済はすでに確認されています。", 409);
   if (begin.data.state === "session_available" && typeof begin.data.sessionId === "string" &&
-      /^cs_test_[A-Za-z0-9]+$/.test(begin.data.sessionId) && validCheckoutUrl(begin.data.checkoutUrl, begin.data.sessionId)) {
+      isCheckoutSessionIdForMode(begin.data.sessionId, stripe.mode) && begin.data.livemode === stripe.livemode &&
+      validCheckoutUrl(begin.data.checkoutUrl, begin.data.sessionId)) {
     return Response.json({ checkoutUrl: begin.data.checkoutUrl }, { headers: { "Cache-Control": "no-store" } });
   }
   const attemptId = begin.data.attemptId;
   const pageCount = begin.data.pageCount;
   const amountYen = begin.data.amountYen;
   const attemptStartedAt = typeof begin.data.attemptStartedAt === "string" ? Date.parse(begin.data.attemptStartedAt) : Number.NaN;
-  if (begin.data.state !== "create_session" || typeof attemptId !== "string" || !UUID_PATTERN.test(attemptId) ||
+  if (begin.data.state !== "create_session" || begin.data.livemode !== stripe.livemode ||
+      typeof attemptId !== "string" || !UUID_PATTERN.test(attemptId) ||
       !Number.isSafeInteger(pageCount) || !Number.isSafeInteger(amountYen) || begin.data.currency !== "JPY" ||
       !Number.isFinite(attemptStartedAt) || attemptStartedAt > Date.now() + 60_000 || attemptStartedAt < Date.now() - 45 * 60_000) {
     return fail("決済情報を安全に確認できませんでした。注文状況を確認してください。", 409);
@@ -105,27 +104,27 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const stripeResponse = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${stripeSecret}`,
+        Authorization: `Bearer ${stripe.secretKey}`,
         "Content-Type": "application/x-www-form-urlencoded",
-        "Idempotency-Key": `amuhon-order-${orderId}-${attemptId}`,
+        "Idempotency-Key": `amuhon-order-${stripe.mode}-${orderId}-${attemptId}`,
       },
       body: params,
       cache: "no-store",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (!stripeResponse.ok) return fail("テスト決済画面を作成できませんでした。時間をおいて注文状況を確認してください。", 502);
+    if (!stripeResponse.ok) return fail("決済画面を作成できませんでした。時間をおいて注文状況を確認してください。", 502);
     stripeSession = await stripeResponse.json() as Record<string, unknown>;
   } catch {
-    return fail("テスト決済画面への接続を確認できませんでした。注文状況を確認してから再試行してください。", 502);
+    return fail("決済画面への接続を確認できませんでした。注文状況を確認してから再試行してください。", 502);
   }
 
   const sessionId = stripeSession.id;
   const checkoutUrl = stripeSession.url;
   const stripeExpiry = stripeSession.expires_at;
-  if (typeof sessionId !== "string" || !/^cs_test_[A-Za-z0-9]+$/.test(sessionId) || stripeSession.object !== "checkout.session" ||
+  if (!isCheckoutSessionIdForMode(sessionId, stripe.mode) || stripeSession.object !== "checkout.session" ||
       !validCheckoutUrl(checkoutUrl, sessionId) || !Number.isSafeInteger(stripeExpiry) ||
       (stripeExpiry as number) <= Math.floor(Date.now() / 1000) || (stripeExpiry as number) > expiresAt + 5 ||
-      stripeSession.livemode !== false || stripeSession.status !== "open" || stripeSession.mode !== "payment" || stripeSession.currency !== "jpy" || stripeSession.amount_total !== quote.amountYen ||
+      stripeSession.livemode !== stripe.livemode || stripeSession.status !== "open" || stripeSession.mode !== "payment" || stripeSession.currency !== "jpy" || stripeSession.amount_total !== quote.amountYen ||
       stripeSession.client_reference_id !== orderId || !stripeSession.metadata || typeof stripeSession.metadata !== "object" ||
       (stripeSession.metadata as Record<string, unknown>).order_id !== orderId ||
       (stripeSession.metadata as Record<string, unknown>).checkout_attempt_id !== attemptId) {
@@ -133,13 +132,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   try {
-    const recorded = await callOrderRpc(supabase, "record_amuhon_order_checkout_session", {
+    const recorded = await callOrderRpc(supabase, "record_amuhon_order_checkout_session_v2", {
       p_order_id: orderId,
       p_upload_token_hash: tokenHash,
       p_checkout_attempt_id: attemptId,
       p_session_id: sessionId,
       p_session_url: checkoutUrl,
       p_expires_at_epoch: stripeExpiry,
+      p_livemode: stripe.livemode,
     });
     if (!recorded.ok || !recorded.data || !["recorded", "paid"].includes(String(recorded.data.state))) {
       return fail("決済画面は作成されましたが、注文への記録を確認できませんでした。注文状況を確認してください。", 503);

@@ -27,9 +27,11 @@ function paidEvent(overrides = {}) {
   };
 }
 
-async function invoke(event, { signatureHeader, mockFetch } = {}) {
+async function invoke(event, { signatureHeader, mockFetch, mode = "test", stripeKey, webhookSecret = SECRET } = {}) {
   const oldFetch = globalThis.fetch;
-  process.env.STRIPE_WEBHOOK_SECRET = SECRET;
+  process.env.STRIPE_MODE = mode;
+  process.env.STRIPE_SECRET_KEY = stripeKey ?? (mode === "live" ? "sk_live_server-only-test-key" : "sk_test_server-only-test-key");
+  process.env.STRIPE_WEBHOOK_SECRET = webhookSecret;
   process.env.SUPABASE_URL = "https://mock-project.supabase.co";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test-only";
   const raw = Buffer.from(JSON.stringify(event));
@@ -38,7 +40,7 @@ async function invoke(event, { signatureHeader, mockFetch } = {}) {
     return await POST(new Request("https://app.test/api/webhooks/stripe", {
       method: "POST", headers: {
         "Content-Type": "application/json",
-        "Stripe-Signature": signatureHeader ?? signature(raw),
+        "Stripe-Signature": signatureHeader ?? signature(raw, Math.floor(Date.now() / 1000), webhookSecret),
       }, body: raw,
     }));
   } finally { globalThis.fetch = oldFetch; }
@@ -57,7 +59,7 @@ test("only a verified test-mode paid Checkout event reaches the atomic payment R
   const event = paidEvent();
   let rpcArgs;
   const response = await invoke(event, { mockFetch: async (input, init) => {
-    assert.match(String(input), /apply_amuhon_stripe_checkout_paid$/);
+    assert.match(String(input), /apply_amuhon_stripe_checkout_paid_v2$/);
     rpcArgs = JSON.parse(String(init.body));
     return Response.json({ state: "paid", orderId: ORDER_ID });
   } });
@@ -70,7 +72,32 @@ test("only a verified test-mode paid Checkout event reaches the atomic payment R
   assert.equal(rpcArgs.p_amount_total, 1980);
   assert.equal(rpcArgs.p_currency, "jpy");
   assert.equal(rpcArgs.p_payment_intent_id, "pi_testABC123");
+  assert.equal(rpcArgs.p_livemode, false);
   assert.doesNotMatch(await response.text(), /service-role-test-only|whsec_/);
+});
+
+test("only a verified live-mode paid Checkout event reaches the live-bound payment RPC", async () => {
+  const event = paidEvent({
+    id: "cs_live_abc123",
+    livemode: true,
+    payment_intent: "pi_liveABC123",
+  });
+  event.livemode = true;
+  const liveSecret = "whsec_live-webhook-secret-only";
+  let rpcArgs;
+  const response = await invoke(event, {
+    mode: "live",
+    webhookSecret: liveSecret,
+    mockFetch: async (input, init) => {
+      assert.match(String(input), /apply_amuhon_stripe_checkout_paid_v2$/);
+      rpcArgs = JSON.parse(String(init.body));
+      return Response.json({ state: "paid", orderId: ORDER_ID, livemode: true });
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(rpcArgs.p_session_id, "cs_live_abc123");
+  assert.equal(rpcArgs.p_payment_intent_id, "pi_liveABC123");
+  assert.equal(rpcArgs.p_livemode, true);
 });
 
 test("invalid signatures, live-mode events, and unpaid sessions never reach the database", async () => {
@@ -83,6 +110,20 @@ test("invalid signatures, live-mode events, and unpaid sessions never reach the 
   assert.equal((await invoke(paidEvent({ payment_status: "unpaid" }), { mockFetch })).status, 400);
   assert.equal(calls, 0);
   assert.ok(signature(raw));
+});
+
+test("mode/key mismatch and session/event livemode mismatch never reach the database", async () => {
+  let calls = 0;
+  const mockFetch = async () => { calls += 1; throw new Error("RPC must not be called"); };
+  const testEvent = paidEvent();
+  const responseWithModeMismatch = await invoke(testEvent, {
+    mode: "live", stripeKey: "sk_test_wrong-mode-key", mockFetch,
+  });
+  assert.equal(responseWithModeMismatch.status, 503);
+
+  const responseWithSessionMismatch = await invoke(paidEvent({ livemode: true }), { mockFetch });
+  assert.equal(responseWithSessionMismatch.status, 400);
+  assert.equal(calls, 0);
 });
 
 test("unhandled signed event types are acknowledged without payment mutation", async () => {

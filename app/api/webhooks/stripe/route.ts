@@ -1,5 +1,6 @@
 import { verifyStripeWebhookSignature } from "../../../../lib/stripe-webhook-signature.ts";
 import { callOrderRpc, getSupabaseServerConfig } from "../../../../lib/order-checkout-server.ts";
+import { getStripeServerConfig, isCheckoutSessionIdForMode } from "../../../../lib/stripe-mode.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,8 +54,9 @@ function isUuid(value: unknown): value is string {
 
 export async function POST(request: Request) {
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) return fail(415);
+  const stripe = getStripeServerConfig();
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-  if (!webhookSecret || !webhookSecret.startsWith("whsec_")) return fail(503);
+  if (!stripe || !webhookSecret || !webhookSecret.startsWith("whsec_")) return fail(503);
   const rawBody = await readLimitedBody(request);
   if (!rawBody || !verifyStripeWebhookSignature(rawBody, request.headers.get("stripe-signature"), webhookSecret)) return fail(400);
 
@@ -66,14 +68,14 @@ export async function POST(request: Request) {
   } catch {
     return fail(400);
   }
-  if (typeof event.id !== "string" || !/^evt_[A-Za-z0-9]+$/.test(event.id) || event.livemode !== false) return fail(400);
+  if (typeof event.id !== "string" || !/^evt_[A-Za-z0-9]+$/.test(event.id) || event.livemode !== stripe.livemode) return fail(400);
   if (event.type !== "checkout.session.completed") {
     return Response.json({ received: true, ignored: true }, { headers: { "Cache-Control": "no-store" } });
   }
   const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : null;
   const session = data?.object && typeof data.object === "object" ? data.object as Record<string, unknown> : null;
   const metadata = session?.metadata && typeof session.metadata === "object" ? session.metadata as Record<string, unknown> : null;
-  if (!session || !metadata || session.object !== "checkout.session" || session.livemode !== false || session.mode !== "payment" || session.payment_status !== "paid") return fail(400);
+  if (!session || !metadata || session.object !== "checkout.session" || session.livemode !== stripe.livemode || session.mode !== "payment" || session.payment_status !== "paid") return fail(400);
   const orderId = metadata.order_id;
   const attemptId = metadata.checkout_attempt_id;
   const sessionId = session.id;
@@ -81,14 +83,14 @@ export async function POST(request: Request) {
   const amount = session.amount_total;
   const expiry = session.expires_at;
   if (!isUuid(orderId) || !isUuid(attemptId) || session.client_reference_id !== orderId ||
-      typeof sessionId !== "string" || !/^cs_test_[A-Za-z0-9]+$/.test(sessionId) ||
+      !isCheckoutSessionIdForMode(sessionId, stripe.mode) ||
       typeof paymentIntent !== "string" || !/^pi_[A-Za-z0-9]+$/.test(paymentIntent) ||
       !Number.isSafeInteger(amount) || !Number.isSafeInteger(expiry) || session.currency !== "jpy") return fail(400);
 
   const supabase = getSupabaseServerConfig();
   if (!supabase) return fail(503);
   try {
-    const result = await callOrderRpc(supabase, "apply_amuhon_stripe_checkout_paid", {
+    const result = await callOrderRpc(supabase, "apply_amuhon_stripe_checkout_paid_v2", {
       p_event_id: event.id,
       p_event_type: event.type,
       p_order_id: orderId,
@@ -98,6 +100,7 @@ export async function POST(request: Request) {
       p_amount_total: amount,
       p_currency: session.currency,
       p_payment_intent_id: paymentIntent,
+      p_livemode: stripe.livemode,
     });
     if (!result.ok || !result.data || !["paid", "duplicate"].includes(String(result.data.state))) return fail(500);
   } catch {

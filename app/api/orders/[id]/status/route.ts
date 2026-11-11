@@ -32,6 +32,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       priceConsistent: result.data.priceConsistent === true,
       canCheckout: result.data.canCheckout === true,
       checkoutState: result.data.checkoutState,
+      livemode: result.data.livemode === true ? true : result.data.livemode === false ? false : null,
     }, { headers: { "Cache-Control": "no-store" } });
   } catch {
     return fail("注文状況を取得できませんでした。", 502);

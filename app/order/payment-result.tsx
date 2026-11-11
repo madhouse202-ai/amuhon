@@ -10,6 +10,7 @@ type CheckoutState = {
   filesVerified?: boolean;
   quotedAmountYen?: number | null;
   currency?: string | null;
+  livemode?: boolean | null;
 };
 
 export default function PaymentResult({ mode, orderId: rawOrderId }: { mode: "success" | "cancel"; orderId?: string }) {
@@ -77,7 +78,7 @@ export default function PaymentResult({ mode, orderId: rawOrderId }: { mode: "su
       <h1 className="text-3xl font-bold">{paid ? "お支払いを確認しました" : mode === "success" ? "決済結果を確認しています" : "決済画面から戻りました"}</h1>
       {!orderId && <p className="mt-5">注文情報を確認できません。注文画面から状態をご確認ください。</p>}
       {orderId && !paid && <p className="mt-5 rounded-lg bg-amber-50 p-4">決済サービスから戻ったことだけでは支払済みになりません。署名を確認した決済通知を受信後、注文状況を更新します。</p>}
-      {paid && <p className="mt-5 rounded-lg bg-emerald-50 p-4">Stripeのテスト決済成功をサーバーで確認しました。製本会社への入稿・製本手配はまだ手動です。</p>}
+      {paid && <p className="mt-5 rounded-lg bg-emerald-50 p-4">{state?.livemode === true ? "Stripeの本番決済成功" : state?.livemode === false ? "Stripeのテスト決済成功" : "Stripeの決済成功"}をサーバーで確認しました。製本会社への入稿・製本手配はまだ手動です。</p>}
       {state?.filesVerified && Number.isSafeInteger(state.quotedAmountYen) && (
         <p className="mt-4">本文 {state.pageCount}ページ・税込送料込み {new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" }).format(state.quotedAmountYen as number)}</p>
       )}

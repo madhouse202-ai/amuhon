@@ -134,14 +134,14 @@ export default function OrderPage() {
         router.replace(`/order/success?order_id=${encodeURIComponent(draft.id)}`);
         return;
       }
-      if (!response.ok || typeof result.checkoutUrl !== "string") throw new Error(result.error ?? "テスト決済を開始できませんでした。");
+      if (!response.ok || typeof result.checkoutUrl !== "string") throw new Error(result.error ?? "決済を開始できませんでした。");
       const checkoutUrl = new URL(result.checkoutUrl);
       if (checkoutUrl.protocol !== "https:" || checkoutUrl.hostname !== "checkout.stripe.com") {
         throw new Error("決済画面の接続先を確認できませんでした。");
       }
       window.location.assign(checkoutUrl.toString());
     } catch (checkoutError) {
-      setError(checkoutError instanceof Error ? checkoutError.message : "テスト決済を開始できませんでした。");
+      setError(checkoutError instanceof Error ? checkoutError.message : "決済を開始できませんでした。");
       actionInProgressRef.current = false;
       setSaving(false);
     }
@@ -623,7 +623,7 @@ export default function OrderPage() {
           : "配送先情報と検証済み入稿ファイルはサーバー側の注文に紐付いています。決済はStripeのテストモードでのみ開始します。"}</p>}
         {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && checkoutSummary?.canCheckout && (
           <button className="mt-5 rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => void beginStripeCheckout()} disabled={saving}>
-            {saving ? "Stripeテスト決済画面を準備中……" : "税込・送料込み価格を確認してテスト決済へ進む"}
+            {saving ? "Stripe決済画面を準備中……" : "税込・送料込み価格を確認して決済へ進む"}
           </button>
         )}
         {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && !checkoutSummary && (
@@ -728,7 +728,7 @@ export default function OrderPage() {
             <dt>電話番号</dt><dd>{customer.phone}</dd>
             <dt>メールアドレス</dt><dd>{customer.email}</dd>
           </dl>
-          <p className="mt-4 rounded-lg bg-amber-50 p-4">入稿ファイルの検証完了後、ページ数に応じた税込・送料込み価格をサーバーで確定してStripeテスト決済へ進みます。ファイル未検証の注文は決済できません。</p>
+          <p className="mt-4 rounded-lg bg-amber-50 p-4">入稿ファイルの検証完了後、ページ数に応じた税込・送料込み価格をサーバーで確定してStripe決済へ進みます。ファイル未検証の注文は決済できません。</p>
           {AUTO_FILE_GENERATION_ENABLED && (
             <fieldset className="mt-5 rounded-xl border border-stone-200 p-5">
               <legend className="px-2 font-bold">入稿ファイルの準備方法</legend>
