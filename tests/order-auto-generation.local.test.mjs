@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { access } from "node:fs/promises";
 import test from "node:test";
 import { chromium } from "playwright-core";
 import sharp from "sharp";
 
+import { findFinalPdfChromiumExecutable } from "../lib/local-final-pdf.ts";
+import { resolveFinalPdfRendererConfig } from "../lib/final-pdf-renderer-config.ts";
 import { validateBodyPdf, validateCoverPng } from "../lib/order-assets.ts";
 import { calculateCoverLayout } from "../lib/production.ts";
 
@@ -14,24 +15,6 @@ const WORKS = [
   { id: "000019", title: "或阿呆の一生" },
 ];
 const ORDER_ID = "d9d71ea0-115c-4b26-8c1d-86bead2aecc4";
-
-const BROWSER_EXECUTABLES = [
-  "C:/Program Files/Google/Chrome/Application/chrome.exe",
-  "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
-  "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
-];
-
-async function findBrowserExecutable() {
-  for (const executablePath of BROWSER_EXECUTABLES) {
-    try {
-      await access(executablePath);
-      return executablePath;
-    } catch {
-      // Only standard local browser locations are considered.
-    }
-  }
-  throw new Error("A standard local Chrome or Edge installation is required.");
-}
 
 async function loadSelectedWorks() {
   const works = [];
@@ -76,7 +59,14 @@ test("local order UI generates and validates both assets without file selection"
     coverStyle: "classic",
     coverColor: "red",
   };
-  const browser = await chromium.launch({ executablePath: await findBrowserExecutable(), headless: true });
+  const localRendererConfig = resolveFinalPdfRendererConfig({
+    ...process.env,
+    NODE_ENV: "development",
+  });
+  const browser = await chromium.launch({
+    executablePath: await findFinalPdfChromiumExecutable(localRendererConfig),
+    headless: true,
+  });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "ja-JP" });
   const page = await context.newPage();
   let draftRequestCount = 0;

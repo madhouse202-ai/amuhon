@@ -17,6 +17,7 @@
 /.next/
 /out/
 /tmp/final-pdf-poc/
+/tmp/final-typography-comparison/
 
 # production
 /build

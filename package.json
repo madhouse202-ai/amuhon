@@ -18,6 +18,9 @@
     "generate:order-fixtures": "node --experimental-strip-types scripts/generate-order-validation-fixtures.mjs",
     "benchmark:order-assets": "node --experimental-strip-types scripts/benchmark-order-assets.mjs",
     "generate:final-pdf-poc": "node --experimental-strip-types scripts/generate-final-pdf-poc.mjs",
+    "compare:final-typography": "node --experimental-strip-types scripts/compare-final-typography.mjs",
+    "test:final-typography": "node --experimental-strip-types --test tests/final-typography-comparison.test.mjs",
+    "test:final-typography-preview": "node --experimental-strip-types --test tests/final-typography-preview.test.mjs tests/final-typography-comparison.test.mjs",
     "test:local-order-auto": "node --experimental-strip-types --test tests/local-order-pdf-request.test.mjs tests/order-auto-generation.local.test.mjs"
   },
   "dependencies": {

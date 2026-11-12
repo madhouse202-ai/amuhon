@@ -13,6 +13,15 @@ import {
   loadBookData,
   type BookData,
 } from "@/lib/book";
+import {
+  FINAL_PRELOADED_WORKS_SESSION_KEY,
+  FINAL_TYPOGRAPHY_SESSION_KEY,
+  NOTO_SERIF_JP_UNAVAILABLE_MESSAGE,
+  parseFinalPreviewWorkTexts,
+  type FinalBodyTypography,
+  type FinalPreviewWorkText,
+} from "@/lib/final-typography-preview";
+import { ensureNotoSerifJpLoaded } from "@/lib/noto-serif-jp-preview";
 import { isSubmissionPageCount, padPerfectBindingBodyPageCount } from "@/lib/production";
 import {
   BODY_RUBY_ENABLED,
@@ -315,9 +324,11 @@ function TableOfContents({
 function BodyPage({
   columns,
   pageNumber,
+  bodyTypography,
 }: {
   columns: LayoutUnit[][];
   pageNumber: number;
+  bodyTypography: FinalBodyTypography;
 }) {
   const paddedColumns: Array<
     LayoutUnit[] | null
@@ -338,6 +349,7 @@ function BodyPage({
     >
       <div
         className="body-content"
+        data-body-typography={bodyTypography}
         style={{
           width: CONTENT_WIDTH,
 
@@ -379,7 +391,7 @@ function BodyPage({
                 textOrientation:
                   "mixed",
 
-                fontFamily: "serif",
+                fontFamily: bodyTypography === "noto-serif-jp" ? '"Noto Serif JP", serif' : "serif",
 
                 fontSize:
                   BODY_FONT_SIZE,
@@ -416,6 +428,7 @@ function BodyPage({
                       <span
                         key={unitIndex}
                         className="print-character-cell"
+                        data-unit-character-count={unitCharacterCount(unit)}
                         style={{
                           insetInlineStart: `${inlineOffset}em`,
                           inlineSize: `${unitCharacterCount(unit)}em`,
@@ -508,9 +521,19 @@ export default function FinalPage() {
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const [isPrinting, setIsPrinting] = useState(false);
   const [pdfOutputMode, setPdfOutputMode] = useState<PdfOutputMode>("all-pages");
+  const [bodyTypography, setBodyTypography] = useState<FinalBodyTypography>("serif");
+  const [typographyError, setTypographyError] = useState("");
+  const [isTypographyLoading, setIsTypographyLoading] = useState(false);
+  const [isPreviewPdfGenerating, setIsPreviewPdfGenerating] = useState(false);
+  const [previewPdfStatus, setPreviewPdfStatus] = useState("");
+  const [previewPdfError, setPreviewPdfError] = useState("");
   const printingRef = useRef(false);
   const loadSequenceRef = useRef(0);
   const loadControllerRef = useRef<AbortController | null>(null);
+  const previewSessionSnapshotRef = useRef<{
+    typographyRequest: string | null;
+    preloadedWorksJson: string | null;
+  } | null>(null);
 
   const loadWorks = async (book: BookData) => {
     loadControllerRef.current?.abort();
@@ -595,17 +618,69 @@ export default function FinalPage() {
 
   useEffect(() => {
     let active = true;
-    void Promise.resolve().then(() => {
-      if (!active) return;
+    const initializeFinalPage = async () => {
       const book = loadBookData();
       setData(book);
+
+      let previewSessionSnapshot = previewSessionSnapshotRef.current;
+      if (process.env.NODE_ENV === "development" && previewSessionSnapshot === null) {
+        previewSessionSnapshot = {
+          typographyRequest: sessionStorage.getItem(FINAL_TYPOGRAPHY_SESSION_KEY),
+          preloadedWorksJson: sessionStorage.getItem(FINAL_PRELOADED_WORKS_SESSION_KEY),
+        };
+        previewSessionSnapshotRef.current = previewSessionSnapshot;
+        sessionStorage.removeItem(FINAL_TYPOGRAPHY_SESSION_KEY);
+        sessionStorage.removeItem(FINAL_PRELOADED_WORKS_SESSION_KEY);
+      }
+      let preloadedWorks: FinalPreviewWorkText[] | null = null;
+      const typographyRequest = process.env.NODE_ENV === "development"
+        ? previewSessionSnapshot?.typographyRequest ?? null
+        : null;
+      const preloadedWorksJson = process.env.NODE_ENV === "development"
+        ? previewSessionSnapshot?.preloadedWorksJson ?? null
+        : null;
+
+      if (preloadedWorksJson !== null) {
+        try {
+          const parsed = parseFinalPreviewWorkTexts(JSON.parse(preloadedWorksJson) as unknown, book);
+          if (!parsed) throw new Error("invalid_preview_snapshot");
+          preloadedWorks = parsed;
+        } catch {
+          if (active) {
+            setError("検証用の本文スナップショットが選択作品と一致しません。PDFを作成できません。");
+            setLoading(false);
+          }
+          return;
+        }
+      }
+
+      if (typographyRequest === "noto-serif-jp") {
+        try {
+          await ensureNotoSerifJpLoaded();
+          if (!active) return;
+          setBodyTypography("noto-serif-jp");
+        } catch {
+          if (active) {
+            setError(NOTO_SERIF_JP_UNAVAILABLE_MESSAGE);
+            setLoading(false);
+          }
+          return;
+        }
+      }
+
+      if (!active) return;
       if (book.works.length === 0) {
         setError("本に作品がありません。作品を選んでからPDFを作成してください。");
+        setLoading(false);
+      } else if (preloadedWorks) {
+        setWorks(preloadedWorks);
+        setProgress({ completed: preloadedWorks.length, total: book.works.length });
         setLoading(false);
       } else {
         void loadWorks(book);
       }
-    });
+    };
+    void initializeFinalPage();
     return () => {
       active = false;
       loadControllerRef.current?.abort();
@@ -630,6 +705,73 @@ export default function FinalPage() {
 
   const canPrint = Boolean(data && !loading && !error && works.length > 0 &&
     works.every((work) => !work.error && work.text.trim().length > 0));
+
+  const selectBodyTypography = async (typography: FinalBodyTypography) => {
+    setTypographyError("");
+    if (typography === "serif") {
+      setBodyTypography("serif");
+      return;
+    }
+    setIsTypographyLoading(true);
+    try {
+      await ensureNotoSerifJpLoaded();
+      setBodyTypography("noto-serif-jp");
+    } catch {
+      setBodyTypography("serif");
+      setTypographyError(NOTO_SERIF_JP_UNAVAILABLE_MESSAGE);
+    } finally {
+      setIsTypographyLoading(false);
+    }
+  };
+
+  const saveTypographyPreviewPdf = async () => {
+    if (!canPrint || !data || !submissionPageCountValid || isPreviewPdfGenerating) return;
+    setPreviewPdfError("");
+    setPreviewPdfStatus("");
+    setIsPreviewPdfGenerating(true);
+    try {
+      if (bodyTypography === "noto-serif-jp") await ensureNotoSerifJpLoaded();
+      const response = await fetch("/api/dev/final-preview-pdf", {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          book: data,
+          bodyPdfPageCount: submissionPageCount,
+          bodyTypography,
+          works: works.map(({ id, title, author, text }) => ({ id, title, author, text })),
+        }),
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(result?.error ?? "開発用検証PDFを作成できませんでした。");
+      }
+      const reportedPageCount = Number(response.headers.get("X-Body-Pdf-Page-Count"));
+      const reportedRubyCount = Number(response.headers.get("X-Body-Ruby-Count"));
+      if (reportedPageCount !== submissionPageCount ||
+          response.headers.get("X-Body-Typography") !== bodyTypography ||
+          !Number.isSafeInteger(reportedRubyCount) || reportedRubyCount <= 0) {
+        throw new Error("A6ページ数、ルビ、書体の検証結果が一致しません。PDFは保存しませんでした。");
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = `amuhon-final-${bodyTypography}-${reportedPageCount}pages.pdf`;
+        anchor.click();
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      }
+      setPreviewPdfStatus(`${bodyTypography === "noto-serif-jp" ? "Noto Serif JP" : "serif"}でPDFを生成しました。A6縦 ${reportedPageCount}ページ、ルビ ${reportedRubyCount}箇所を確認済みです。`);
+    } catch (previewError) {
+      setPreviewPdfError(previewError instanceof Error ? previewError.message : "開発用検証PDFを作成できませんでした。");
+    } finally {
+      setIsPreviewPdfGenerating(false);
+    }
+  };
 
   const savePdf = (mode: PdfOutputMode) => {
     if (!canPrint || printingRef.current) return;
@@ -697,7 +839,7 @@ export default function FinalPage() {
       >
         <h1>エラー</h1>
 
-        <p>{error}</p>
+        <p role="alert">{error}</p>
       </main>
     );
   }
@@ -834,6 +976,7 @@ export default function FinalPage() {
             1 +
             pageIndex
           }
+          bodyTypography={bodyTypography}
         />,
       );
     }
@@ -949,6 +1092,29 @@ export default function FinalPage() {
             </div>
           ) : (
             <p>PDFを保存するには、すべての作品本文の取得が必要です。</p>
+          )}
+          {process.env.NODE_ENV === "development" && (
+            <fieldset className="mt-5 rounded border border-violet-300 p-4" aria-label="開発用本文書体検証">
+              <legend className="px-2 font-bold text-violet-950">開発用・本文書体検証（注文データには使用しません）</legend>
+              <p className="mb-3 text-sm">本文だけを切り替えます。初期値は従来のserifです。見開き表紙、注文PDF、Storage、決済は変更しません。</p>
+              <div className="flex flex-wrap gap-3">
+                <button className="rounded border border-stone-600 px-4 py-2" type="button" onClick={() => void selectBodyTypography("serif")} disabled={isTypographyLoading || isPreviewPdfGenerating}>
+                  現行 serif・1.00em
+                </button>
+                <button className="rounded border border-violet-800 px-4 py-2 font-bold text-violet-950" type="button" onClick={() => void selectBodyTypography("noto-serif-jp")} disabled={isTypographyLoading || isPreviewPdfGenerating}>
+                  {isTypographyLoading ? "Noto Serif JPを確認中…" : "D版 Noto Serif JP・1.00em"}
+                </button>
+                <button className="rounded bg-violet-900 px-4 py-2 font-bold text-white" type="button" onClick={() => void saveTypographyPreviewPdf()} disabled={!canPrint || !submissionPageCountValid || isTypographyLoading || isPreviewPdfGenerating}>
+                  {isPreviewPdfGenerating ? "検証PDFを生成中…" : "現在の本文で検証PDFを保存"}
+                </button>
+              </div>
+              <p className="mt-2 text-sm" role="status">
+                現在の本文書体：{bodyTypography === "noto-serif-jp" ? "Noto Serif JP・1.00em" : "従来のserif・1.00em"}
+              </p>
+              {typographyError && <p className="mt-2 text-sm text-red-800" role="alert">{typographyError}</p>}
+              {previewPdfStatus && <p className="mt-2 text-sm text-emerald-800" role="status">{previewPdfStatus}</p>}
+              {previewPdfError && <p className="mt-2 text-sm text-red-800" role="alert">{previewPdfError}</p>}
+            </fieldset>
           )}
           {canPrint && !submissionPageCountValid && (
             <p role="alert" className="mt-4 text-red-800">

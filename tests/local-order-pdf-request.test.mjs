@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+import { resolveFinalPdfRendererConfig } from "../lib/final-pdf-renderer-config.ts";
 import { parseLocalOrderPdfRequest } from "../lib/local-order-pdf-request.ts";
 
 const validInput = {
@@ -63,10 +64,61 @@ test("does not carry caller-supplied HTML or render URL into the accepted snapsh
   assert.equal("url" in parsed, false);
 });
 
-test("renderer stays development-only and uses a fixed local /final page", async () => {
-  const [route, renderer, orderPage] = await Promise.all([
+test("renderer config keeps local defaults and fails closed outside development", () => {
+  const local = resolveFinalPdfRendererConfig({ NODE_ENV: "development" }, "win32");
+  assert.equal(local.renderUrl, "http://localhost:3000/final");
+  assert.equal(local.renderOrigin, "http://localhost:3000");
+  assert.equal(local.executableCandidates.length, 3);
+
+  assert.throws(
+    () => resolveFinalPdfRendererConfig({ NODE_ENV: "production" }, "linux"),
+    /Chromium実行パスが設定されていません/,
+  );
+  assert.throws(
+    () => resolveFinalPdfRendererConfig({
+      NODE_ENV: "production",
+      ORDER_PDF_CHROMIUM_EXECUTABLE_PATH: "/usr/bin/chromium",
+    }, "linux"),
+    /内部URLが設定されていません/,
+  );
+});
+
+test("production renderer requires an absolute Chromium path and loopback /final URL", () => {
+  const accepted = resolveFinalPdfRendererConfig({
+    NODE_ENV: "production",
+    ORDER_PDF_CHROMIUM_EXECUTABLE_PATH: "C:\\renderer\\chromium.exe",
+    ORDER_PDF_RENDER_URL: "http://127.0.0.1:3100/final",
+  }, "win32");
+  assert.equal(accepted.renderUrl, "http://127.0.0.1:3100/final");
+  assert.deepEqual(accepted.executableCandidates, ["C:\\renderer\\chromium.exe"]);
+
+  for (const renderUrl of [
+    "https://example.com/final",
+    "http://192.168.1.2:3100/final",
+    "http://localhost/final",
+    "http://localhost:3100/other",
+    "http://user:pass@localhost:3100/final",
+    "http://localhost:3100/final?url=https://example.com",
+  ]) {
+    assert.throws(() => resolveFinalPdfRendererConfig({
+      NODE_ENV: "production",
+      ORDER_PDF_CHROMIUM_EXECUTABLE_PATH: "/usr/bin/chromium",
+      ORDER_PDF_RENDER_URL: renderUrl,
+    }, "linux"), /loopbackの\/final/);
+  }
+
+  assert.throws(() => resolveFinalPdfRendererConfig({
+    NODE_ENV: "production",
+    ORDER_PDF_CHROMIUM_EXECUTABLE_PATH: "relative/chromium",
+    ORDER_PDF_RENDER_URL: "http://127.0.0.1:3100/final",
+  }, "linux"), /絶対パス/);
+});
+
+test("renderer stays development-only at its API and seeds only the isolated render origin", async () => {
+  const [route, renderer, rendererConfig, orderPage] = await Promise.all([
     readFile(new URL("../app/api/dev/order-pdf/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/local-final-pdf.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/final-pdf-renderer-config.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/order/page.tsx", import.meta.url), "utf8"),
   ]);
 
@@ -76,7 +128,13 @@ test("renderer stays development-only and uses a fixed local /final page", async
   assert.match(route, /host !== "localhost:3000"/);
   assert.match(route, /parseLocalOrderPdfRequest\(raw\)/);
   assert.match(route, /MAX_REQUEST_BYTES = 256 \* 1024/);
-  assert.match(renderer, /const LOCAL_FINAL_URL = "http:\/\/localhost:3000\/final"/);
+  assert.match(renderer, /resolveFinalPdfRendererConfig\(\)/);
+  assert.match(renderer, /location\.origin === renderOrigin/);
+  assert.match(renderer, /page\.goto\(rendererConfig\.renderUrl/);
+  assert.match(rendererConfig, /ORDER_PDF_CHROMIUM_EXECUTABLE_PATH/);
+  assert.match(rendererConfig, /ORDER_PDF_RENDER_URL/);
+  assert.match(rendererConfig, /url\.pathname !== "\/final"/);
+  assert.doesNotMatch(renderer, /http:\/\/localhost:3000\/final/);
   assert.match(renderer, /preferCSSPageSize: true/);
   assert.match(renderer, /printBackground: true/);
   assert.match(orderPage, /AUTO_FILE_GENERATION_ENABLED = process\.env\.NODE_ENV === "development"/);
