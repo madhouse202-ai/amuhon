@@ -4,8 +4,12 @@ import { parseLocalOrderPdfRequest } from "./local-order-pdf-request.ts";
 export const FINAL_TYPOGRAPHY_SESSION_KEY = "amuhon-dev-final-body-typography";
 export const FINAL_PRELOADED_WORKS_SESSION_KEY = "amuhon-dev-final-preview-works";
 export const NOTO_SERIF_JP_FONT_FAMILY = "Noto Serif JP";
+export const NOTO_SERIF_CJK_JP_FAMILY = "Noto Serif CJK JP";
+export const NOTO_SERIF_CJK_JP_REGULAR_POSTSCRIPT_NAME = "NotoSerifCJKjp-Regular";
+export const NOTO_SERIF_JP_FONT_SIZE_BYTES = 24_573_864;
+export const NOTO_SERIF_JP_FONT_SHA256 = "D9854C7A8EF170B5A7932558856FD64EB8DE0B007CD823FED6F9F514AD2803D3";
 export const NOTO_SERIF_JP_UNAVAILABLE_MESSAGE =
-  "Noto Serif JPの開発用フォントを読み込めません。C:\\Windows\\Fonts\\NotoSerifJP-VF.ttf があるか確認してください。";
+  "Noto Serif CJK JP 2.003の開発用フォントを読み込めません。.local-assets\\fonts\\NotoSerifCJKjp-Regular.otf の配置とSHA-256を確認してください。";
 
 export type FinalBodyTypography = "serif" | "noto-serif-jp";
 export type FinalPreviewWorkText = {

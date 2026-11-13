@@ -1,4 +1,6 @@
 import {
+  NOTO_SERIF_CJK_JP_FAMILY,
+  NOTO_SERIF_CJK_JP_REGULAR_POSTSCRIPT_NAME,
   NOTO_SERIF_JP_FONT_FAMILY,
   NOTO_SERIF_JP_UNAVAILABLE_MESSAGE,
 } from "./final-typography-preview.ts";
@@ -7,12 +9,32 @@ let fontLoad: Promise<void> | null = null;
 
 /** Chromium may expose a FontFace family name with its CSS quotes included. */
 export function isNotoSerifJpFontFamily(family: string): boolean {
-  return family.replace(/[\"']/g, "").replace(/\s+/g, "").toLowerCase() === "notoserifjp";
+  const normalized = family.replace(/[\"']/g, "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const logicalFamily = NOTO_SERIF_JP_FONT_FAMILY.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const internalFamily = NOTO_SERIF_CJK_JP_FAMILY.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return normalized === logicalFamily || normalized === internalFamily;
 }
 
-/** Load the fixed development-only font endpoint; never fall back silently. */
+/** CDP must identify this exact custom font by its internal family or PostScript name. */
+export function isNotoSerifJpRenderedFont(font: {
+  familyName?: string;
+  postScriptName?: string;
+  isCustomFont?: boolean;
+}): boolean {
+  if (font.isCustomFont !== true) return false;
+  const normalizedPostScript = (font.postScriptName ?? "")
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+  const expectedPostScript = NOTO_SERIF_CJK_JP_REGULAR_POSTSCRIPT_NAME.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return font.familyName === NOTO_SERIF_CJK_JP_FAMILY ||
+    normalizedPostScript === expectedPostScript;
+}
+
+/** Load the fixed preview font endpoint or the isolated renderer's intercepted, pinned font; never fall back silently. */
 export function ensureNotoSerifJpLoaded(): Promise<void> {
-  if (process.env.NODE_ENV !== "development") {
+  const isIsolatedPdfRenderer = typeof window !== "undefined" &&
+    (window as Window & { __AMUHON_PDF_RENDERER_V1__?: boolean }).__AMUHON_PDF_RENDERER_V1__ === true;
+  if (process.env.NODE_ENV !== "development" && !isIsolatedPdfRenderer) {
     return Promise.reject(new Error(NOTO_SERIF_JP_UNAVAILABLE_MESSAGE));
   }
   if (fontLoad) return fontLoad;
@@ -31,8 +53,8 @@ export function ensureNotoSerifJpLoaded(): Promise<void> {
         throw new Error(NOTO_SERIF_JP_UNAVAILABLE_MESSAGE);
       }
 
-      objectUrl = URL.createObjectURL(new Blob([bytes], { type: "font/ttf" }));
-      const face = new FontFace(NOTO_SERIF_JP_FONT_FAMILY, `url("${objectUrl}")`, { style: "normal" });
+      objectUrl = URL.createObjectURL(new Blob([bytes], { type: "font/otf" }));
+      const face = new FontFace(NOTO_SERIF_JP_FONT_FAMILY, `url("${objectUrl}")`, { style: "normal", weight: "400" });
       await face.load();
       if (face.status !== "loaded") throw new Error(NOTO_SERIF_JP_UNAVAILABLE_MESSAGE);
       document.fonts.add(face);

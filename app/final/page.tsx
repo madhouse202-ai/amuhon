@@ -22,6 +22,7 @@ import {
   type FinalPreviewWorkText,
 } from "@/lib/final-typography-preview";
 import { ensureNotoSerifJpLoaded } from "@/lib/noto-serif-jp-preview";
+import { CreationProgress } from "@/app/creation-progress";
 import { isSubmissionPageCount, padPerfectBindingBodyPageCount } from "@/lib/production";
 import {
   BODY_RUBY_ENABLED,
@@ -39,6 +40,14 @@ import {
 ========================================================= */
 
 const AOZORA_REQUEST_TIMEOUT_MS = 30_000;
+const NOTO_PREVIEW_DIAGNOSTIC_CODES = new Set([
+  "NOTO_FONT_READINESS_FAILURE",
+  "NOTO_BODY_COLUMNS_EMPTY_FAILURE",
+  "NOTO_CDP_FONTS_EMPTY_FAILURE",
+  "NOTO_FALLBACK_FONT_FAILURE",
+  "NOTO_CHECK_EXCEPTION_FAILURE",
+  "NOTO_USAGE_CHECK_FAILURE",
+]);
 
 const PAGE_WIDTH = "105mm";
 const PAGE_HEIGHT = "148mm";
@@ -62,6 +71,11 @@ const COLUMN_WIDTH = "5.4mm";
 
 /* The body starts below the page header area and has a separate safe bottom. */
 const BODY_TOP_OFFSET = "10mm";
+
+function isIsolatedPdfRenderer(): boolean {
+  return typeof window !== "undefined" &&
+    (window as Window & { __AMUHON_PDF_RENDERER_V1__?: boolean }).__AMUHON_PDF_RENDERER_V1__ === true;
+}
 
 /* =========================================================
    型
@@ -622,8 +636,9 @@ export default function FinalPage() {
       const book = loadBookData();
       setData(book);
 
+      const allowRendererSnapshot = process.env.NODE_ENV === "development" || isIsolatedPdfRenderer();
       let previewSessionSnapshot = previewSessionSnapshotRef.current;
-      if (process.env.NODE_ENV === "development" && previewSessionSnapshot === null) {
+      if (allowRendererSnapshot && previewSessionSnapshot === null) {
         previewSessionSnapshot = {
           typographyRequest: sessionStorage.getItem(FINAL_TYPOGRAPHY_SESSION_KEY),
           preloadedWorksJson: sessionStorage.getItem(FINAL_PRELOADED_WORKS_SESSION_KEY),
@@ -633,10 +648,10 @@ export default function FinalPage() {
         sessionStorage.removeItem(FINAL_PRELOADED_WORKS_SESSION_KEY);
       }
       let preloadedWorks: FinalPreviewWorkText[] | null = null;
-      const typographyRequest = process.env.NODE_ENV === "development"
+      const typographyRequest = allowRendererSnapshot
         ? previewSessionSnapshot?.typographyRequest ?? null
         : null;
-      const preloadedWorksJson = process.env.NODE_ENV === "development"
+      const preloadedWorksJson = allowRendererSnapshot
         ? previewSessionSnapshot?.preloadedWorksJson ?? null
         : null;
 
@@ -744,8 +759,11 @@ export default function FinalPage() {
         }),
       });
       if (!response.ok) {
-        const result = await response.json().catch(() => null) as { error?: string } | null;
-        throw new Error(result?.error ?? "開発用検証PDFを作成できませんでした。");
+        const result = await response.json().catch(() => null) as { error?: string; diagnosticCode?: string } | null;
+        const safeDiagnosticCode = result?.diagnosticCode && NOTO_PREVIEW_DIAGNOSTIC_CODES.has(result.diagnosticCode)
+          ? `（診断コード: ${result.diagnosticCode}）`
+          : "";
+        throw new Error(`${result?.error ?? "開発用検証PDFを作成できませんでした。"}${safeDiagnosticCode}`);
       }
       const reportedPageCount = Number(response.headers.get("X-Body-Pdf-Page-Count"));
       const reportedRubyCount = Number(response.headers.get("X-Body-Ruby-Count"));
@@ -1033,6 +1051,11 @@ export default function FinalPage() {
   const submissionPageCount = bodyPages.length - 2;
   const submissionPageCountValid = isSubmissionPageCount(submissionPageCount);
   const actualWorkBodyPageCount = workPageData.reduce((total, item) => total + item.pages.length, 0);
+  const coverSummaryPalette = {
+    red: { background: "#9e2f2f", foreground: "#fff8eb", label: "赤" },
+    blue: { background: "#315f8f", foreground: "#f7f4e9", label: "青" },
+    green: { background: "#47704e", foreground: "#f7f4e9", label: "緑" },
+  }[data.coverColor];
 
   /* =======================================================
      表示
@@ -1042,6 +1065,8 @@ export default function FinalPage() {
     <>
       <main
         className={`print-root${pdfOutputMode === "body-only" ? " print-root--body-only" : ""}`}
+        data-final-layout-ready={canPrint ? "true" : "false"}
+        data-submission-page-count={submissionPageCount}
         style={{
           minHeight: "100vh",
           background: "#ddd",
@@ -1055,12 +1080,66 @@ export default function FinalPage() {
           gap: "16px",
         }}
       >
-        <section className="print-controls mb-6 w-full max-w-3xl rounded-xl bg-white p-6 text-stone-800 shadow" aria-label="PDF出力">
-          <h1 className="text-xl font-bold">完成した本</h1>
+        <section className="print-controls mb-6 w-full max-w-3xl rounded-xl bg-white p-4 text-stone-800 shadow sm:p-6" aria-label="本の完成確認と操作">
+          <CreationProgress currentStep={3} />
+          <h1 className="text-2xl font-bold">本の完成を確認</h1>
+          <p className="mt-2 text-sm text-stone-600">作品の順番・表紙・ページ数を確認して、注文へ進めます。価格は入稿ファイルの検証後にサーバーで確定します。</p>
           {canPrint && (
-            <p className="mt-2 text-sm text-stone-600" role="status">
-              実組版結果：作品本文合計 {actualWorkBodyPageCount} ページ／本文PDF {submissionPageCount} ページ（目次・作品タイトル・奥付・末尾白紙を含む）
-            </p>
+            <section className="mt-5 rounded-xl border border-stone-200 bg-stone-50 p-4" aria-label="完成した本の内容">
+              <div className="grid gap-5 sm:grid-cols-[minmax(0,1fr)_auto]">
+                <div className="min-w-0">
+                  <h2 className="break-words text-xl font-bold">{data.title}</h2>
+                  <p className="mt-1 break-words text-sm text-stone-600">編者：{data.editor}</p>
+                  <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-lg bg-white p-3">
+                      <dt className="text-stone-500">作品本文</dt>
+                      <dd className="mt-1 font-bold">{actualWorkBodyPageCount}ページ</dd>
+                    </div>
+                    <div className="rounded-lg bg-white p-3">
+                      <dt className="text-stone-500">注文用本文PDF</dt>
+                      <dd className="mt-1 font-bold">{submissionPageCount}ページ</dd>
+                    </div>
+                  </dl>
+                  <p className="mt-2 text-xs leading-5 text-stone-500">本文PDFには目次・作品タイトル・奥付・末尾白紙を含みます。ページ数は実際の組版結果です。</p>
+                </div>
+                <div className="flex min-w-0 items-center gap-3 rounded-lg bg-white p-3 sm:w-64 sm:flex-col sm:items-start">
+                  <div
+                    role="img"
+                    aria-label={`表紙の簡易プレビュー：${data.title}、${coverSummaryPalette.label}、${data.coverStyle === "classic" ? "基本デザイン" : "自由デザイン"}`}
+                    className="relative flex h-24 w-16 shrink-0 items-center justify-center overflow-hidden rounded-sm shadow-sm sm:h-32 sm:w-[5.5rem]"
+                    style={{ background: coverSummaryPalette.background, color: coverSummaryPalette.foreground }}
+                  >
+                    {data.coverStyle === "classic" && <span aria-hidden="true" className="absolute inset-1 border border-current opacity-60" />}
+                    <span className="relative max-h-full overflow-hidden px-2 text-center text-xs font-semibold [writing-mode:vertical-rl]">{data.title}</span>
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="font-semibold">表紙</h3>
+                    <p className="mt-1 break-words text-sm text-stone-600">{data.coverStyle === "classic" ? "基本デザイン" : "自由デザイン"}・{coverSummaryPalette.label}</p>
+                    <button className="mt-2 min-h-10 break-words text-left text-sm font-medium text-emerald-900 underline underline-offset-4" type="button" onClick={openSpreadCover} disabled={!submissionPageCountValid}>
+                      表紙を確認・変更
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 border-t border-stone-200 pt-3">
+                <h3 className="font-semibold">収録作品（この順番）</h3>
+                <ol className="mt-2 max-h-40 space-y-1 overflow-y-auto text-sm text-stone-700">
+                  {data.works.map((work, index) => (
+                    <li className="break-words" key={`${work.id}-${index}`}>
+                      <span className="mr-1 text-stone-500">{index + 1}.</span>{work.title} — {work.author || "作者情報なし"}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </section>
+          )}
+          {canPrint && (
+            <div className="mt-4">
+              <button className="min-h-14 w-full break-words rounded-xl bg-emerald-900 px-5 py-4 text-lg font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50" type="button" onClick={openOrder} disabled={isPrinting || !submissionPageCountValid}>
+                注文内容を確認して進む
+              </button>
+              <p className="mt-2 text-xs text-stone-500">この段階では決済されません。ファイル検証・価格確認の後に決済へ進みます。</p>
+            </div>
           )}
           {works.some((work) => work.error) && (
             <div role="alert" className="print-errors mt-4 rounded-lg border border-red-200 bg-red-50 p-4 text-red-900">
@@ -1076,52 +1155,56 @@ export default function FinalPage() {
             </div>
           )}
           {canPrint ? (
-            <div className="mt-4 flex flex-wrap gap-3">
-              <button className="rounded bg-stone-800 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => savePdf("all-pages")} disabled={isPrinting}>
+            <section className="mt-5 border-t border-stone-200 pt-4" aria-label="印刷用PDFとカバー出力">
+              <h2 className="font-semibold">印刷用データを保存（任意）</h2>
+              <p className="mt-1 text-sm text-stone-600">注文には不要です。手元で内容を確認したい場合に使えます。</p>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+              <button className="min-h-11 rounded-lg bg-stone-800 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => savePdf("all-pages")} disabled={isPrinting}>
                 {isPrinting && pdfOutputMode === "all-pages" ? "印刷画面を準備しています…" : "全ページPDFを保存"}
               </button>
-              <button className="rounded border border-stone-800 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={() => savePdf("body-only")} disabled={isPrinting || !submissionPageCountValid}>
+              <button className="min-h-11 rounded-lg border border-stone-800 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={() => savePdf("body-only")} disabled={isPrinting || !submissionPageCountValid}>
                 {isPrinting && pdfOutputMode === "body-only" ? "印刷画面を準備しています…" : "本文PDFを保存（表紙なし）"}
               </button>
-              <button className="rounded border border-stone-500 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={openSpreadCover} disabled={isPrinting || !submissionPageCountValid}>
+              <button className="min-h-11 rounded-lg border border-stone-500 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={openSpreadCover} disabled={isPrinting || !submissionPageCountValid}>
                 見開きカバーを作成
               </button>
-              <button className="rounded border border-emerald-800 px-5 py-3 font-bold text-emerald-900 disabled:opacity-50" type="button" onClick={openOrder} disabled={isPrinting || !submissionPageCountValid}>
-                注文手続きへ
-              </button>
-            </div>
+              </div>
+              <p className="mt-2 text-xs text-stone-500">印刷画面では用紙サイズをA6、保存先を「PDFに保存」にしてください。</p>
+            </section>
           ) : (
             <p>PDFを保存するには、すべての作品本文の取得が必要です。</p>
           )}
           {process.env.NODE_ENV === "development" && (
-            <fieldset className="mt-5 rounded border border-violet-300 p-4" aria-label="開発用本文書体検証">
-              <legend className="px-2 font-bold text-violet-950">開発用・本文書体検証（注文データには使用しません）</legend>
-              <p className="mb-3 text-sm">本文だけを切り替えます。初期値は従来のserifです。見開き表紙、注文PDF、Storage、決済は変更しません。</p>
-              <div className="flex flex-wrap gap-3">
-                <button className="rounded border border-stone-600 px-4 py-2" type="button" onClick={() => void selectBodyTypography("serif")} disabled={isTypographyLoading || isPreviewPdfGenerating}>
-                  現行 serif・1.00em
-                </button>
-                <button className="rounded border border-violet-800 px-4 py-2 font-bold text-violet-950" type="button" onClick={() => void selectBodyTypography("noto-serif-jp")} disabled={isTypographyLoading || isPreviewPdfGenerating}>
-                  {isTypographyLoading ? "Noto Serif JPを確認中…" : "D版 Noto Serif JP・1.00em"}
-                </button>
-                <button className="rounded bg-violet-900 px-4 py-2 font-bold text-white" type="button" onClick={() => void saveTypographyPreviewPdf()} disabled={!canPrint || !submissionPageCountValid || isTypographyLoading || isPreviewPdfGenerating}>
-                  {isPreviewPdfGenerating ? "検証PDFを生成中…" : "現在の本文で検証PDFを保存"}
-                </button>
-              </div>
-              <p className="mt-2 text-sm" role="status">
-                現在の本文書体：{bodyTypography === "noto-serif-jp" ? "Noto Serif JP・1.00em" : "従来のserif・1.00em"}
-              </p>
-              {typographyError && <p className="mt-2 text-sm text-red-800" role="alert">{typographyError}</p>}
-              {previewPdfStatus && <p className="mt-2 text-sm text-emerald-800" role="status">{previewPdfStatus}</p>}
-              {previewPdfError && <p className="mt-2 text-sm text-red-800" role="alert">{previewPdfError}</p>}
-            </fieldset>
+            <details className="mt-5 rounded-lg border border-violet-200 p-3">
+              <summary className="cursor-pointer font-medium text-violet-950">開発者向け：本文書体の検証</summary>
+              <fieldset className="mt-3 rounded border border-violet-300 p-4" aria-label="開発用本文書体検証">
+                <legend className="px-2 font-bold text-violet-950">開発用・本文書体検証（注文データには使用しません）</legend>
+                <p className="mb-3 text-sm">本文だけを切り替えます。初期値は従来のserifです。見開き表紙、注文PDF、Storage、決済は変更しません。</p>
+                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                  <button className="min-h-10 rounded border border-stone-600 px-4 py-2" type="button" onClick={() => void selectBodyTypography("serif")} disabled={isTypographyLoading || isPreviewPdfGenerating}>
+                    現行 serif・1.00em
+                  </button>
+                  <button className="min-h-10 rounded border border-violet-800 px-4 py-2 font-bold text-violet-950" type="button" onClick={() => void selectBodyTypography("noto-serif-jp")} disabled={isTypographyLoading || isPreviewPdfGenerating}>
+                    {isTypographyLoading ? "Noto Serif JPを確認中…" : "D版 Noto Serif JP・1.00em"}
+                  </button>
+                  <button className="min-h-10 break-words rounded bg-violet-900 px-4 py-2 font-bold text-white" type="button" onClick={() => void saveTypographyPreviewPdf()} disabled={!canPrint || !submissionPageCountValid || isTypographyLoading || isPreviewPdfGenerating}>
+                    {isPreviewPdfGenerating ? "検証PDFを生成中…" : "現在の本文で検証PDFを保存"}
+                  </button>
+                </div>
+                <p className="mt-2 text-sm" role="status">
+                  現在の本文書体：{bodyTypography === "noto-serif-jp" ? "Noto Serif JP・1.00em" : "従来のserif・1.00em"}
+                </p>
+                {typographyError && <p className="mt-2 text-sm text-red-800" role="alert">{typographyError}</p>}
+                {previewPdfStatus && <p className="mt-2 text-sm text-emerald-800" role="status">{previewPdfStatus}</p>}
+                {previewPdfError && <p className="mt-2 text-sm text-red-800" role="alert">{previewPdfError}</p>}
+              </fieldset>
+            </details>
           )}
           {canPrint && !submissionPageCountValid && (
             <p role="alert" className="mt-4 text-red-800">
               標準入稿データは、末尾白紙を含め20〜500ページの範囲です。既存の8ページ単位調整を維持するため実際の出力範囲は24〜496ページです。現在の本文PDFは{submissionPageCount}ページのため、本文PDFとカバーの出力を停止しています。
             </p>
           )}
-          <p>印刷画面で用紙サイズを A6、保存先を「PDFに保存」にしてください。</p>
         </section>
 
         {bodyPages.map(

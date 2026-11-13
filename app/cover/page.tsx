@@ -2,14 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { CreationProgress } from "@/app/creation-progress";
+import { DraftSaveStatus } from "@/app/draft-save-status";
 import {
   CoverStyle,
   CoverColor,
   type BookData,
   bookLayoutKey,
-  loadBookData,
-  saveBookData,
 } from "@/lib/book";
+import { useBookDraftAutosave } from "@/lib/use-book-draft-autosave";
 import {
   BOOK_PRODUCTION,
   calculateCoverLayout,
@@ -29,14 +30,13 @@ type CoverPageCount = { bodyPdfPageCount: number; worksKey: string };
 
 export default function CoverPage() {
   const router = useRouter();
+  const { draft, updateDraft, loadState, saveState, flushDraft } = useBookDraftAutosave();
 
-  const [bookData, setBookData] = useState<BookData | null>(null);
-  const [title, setTitle] = useState("");
-  const [editor, setEditor] = useState("");
-  const [coverStyle, setCoverStyle] =
-    useState<CoverStyle>("classic");
-  const [coverColor, setCoverColor] =
-    useState<CoverColor>("red");
+  const bookData: BookData | null = loadState === "ready" ? draft : null;
+  const title = draft.title;
+  const editor = draft.editor;
+  const coverStyle: CoverStyle = draft.coverStyle;
+  const coverColor: CoverColor = draft.coverColor;
   const [coverPageCount, setCoverPageCount] = useState<CoverPageCount | null>(null);
   const [downloadError, setDownloadError] = useState("");
   const [showSpineText, setShowSpineText] = useState(true);
@@ -48,15 +48,6 @@ export default function CoverPage() {
   }[coverColor];
 
   useEffect(() => {
-    const book = loadBookData();
-
-    // Hydrate browser-only localStorage after mount to avoid server/client mismatch.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setTitle(book.title);
-    setBookData(book);
-    setEditor(book.editor);
-    setCoverStyle(book.coverStyle);
-    setCoverColor(book.coverColor);
     try {
       const value = sessionStorage.getItem(COVER_PAGE_COUNT_SESSION_KEY);
       const parsedValue = value ? JSON.parse(value) as Partial<CoverPageCount> & { pageCount?: number } : null;
@@ -65,6 +56,8 @@ export default function CoverPage() {
         bodyPdfPageCount: parsedValue.bodyPdfPageCount ?? parsedValue.pageCount ?? NaN,
         worksKey: parsedValue.worksKey ?? "",
       } : null;
+      // Hydrate the browser-only page-count handoff after mount.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setCoverPageCount(pageCount);
     } catch {
       setCoverPageCount(null);
@@ -90,23 +83,31 @@ export default function CoverPage() {
     ? calculateSpineTextLayout(coverPageCount.bodyPdfPageCount, title || "わたしの本", editor || "編者")
     : null;
 
-  function saveCoverSettings(book = bookData ?? loadBookData()) {
-    saveBookData({
-      ...book,
+  function saveCoverSettings() {
+    if (loadState !== "ready") return false;
+    const normalizedDraft = {
+      ...draft,
       title: title.trim() || "わたしの本",
       editor: editor.trim() || "編者",
       coverStyle,
       coverColor,
-    });
-    setBookData(loadBookData());
+    };
+    if (!flushDraft(normalizedDraft)) return false;
+    updateDraft(normalizedDraft);
+    return true;
   }
 
   function handleSave() {
-    saveCoverSettings();
+    if (!saveCoverSettings()) return;
 
     alert("この表紙で決定しました！");
 
     router.push("/final");
+  }
+
+  function returnToWorkSelection() {
+    if (!saveCoverSettings()) return;
+    router.push("/create");
   }
 
   async function downloadSpreadCover() {
@@ -117,7 +118,10 @@ export default function CoverPage() {
     }
 
     try {
-      saveCoverSettings();
+      if (!saveCoverSettings()) {
+        setDownloadError("編集内容を保存できませんでした。保存状態を確認してから、もう一度お試しください。");
+        return;
+      }
       const printBlob = await createSpreadCoverPngBlob({
         title,
         editor,
@@ -143,6 +147,21 @@ export default function CoverPage() {
         padding: "50px 20px 100px",
       }}
     >
+      <CreationProgress
+        currentStep={2}
+        allowCompletedNavigation={saveState === "idle" || saveState === "saved"}
+      />
+      <div style={{ marginBottom: "18px" }}>
+        <DraftSaveStatus loadState={loadState} saveState={saveState} onRetry={() => flushDraft()} />
+      </div>
+      <button
+        type="button"
+        onClick={returnToWorkSelection}
+        disabled={!bookData}
+        className="mb-5 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-stone-700 disabled:opacity-50"
+      >
+        作品を選び直す
+      </button>
       <h1
         style={{
           fontSize: "32px",
@@ -168,7 +187,8 @@ export default function CoverPage() {
         <input
           type="text"
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => updateDraft((current) => ({ ...current, title: e.target.value }))}
+          disabled={!bookData}
           placeholder="わたしの本"
           style={{
             width: "100%",
@@ -197,7 +217,8 @@ export default function CoverPage() {
         <input
           type="text"
           value={editor}
-          onChange={(e) => setEditor(e.target.value)}
+          onChange={(e) => updateDraft((current) => ({ ...current, editor: e.target.value }))}
+          disabled={!bookData}
           placeholder="編者"
           style={{
             width: "100%",
@@ -232,7 +253,8 @@ export default function CoverPage() {
         >
           <button
             type="button"
-            onClick={() => setCoverStyle("classic")}
+            onClick={() => updateDraft((current) => ({ ...current, coverStyle: "classic" }))}
+            disabled={!bookData}
             style={{
               padding: "12px 20px",
               borderRadius: "6px",
@@ -252,7 +274,8 @@ export default function CoverPage() {
 
           <button
             type="button"
-            onClick={() => setCoverStyle("free")}
+            onClick={() => updateDraft((current) => ({ ...current, coverStyle: "free" }))}
+            disabled={!bookData}
             style={{
               padding: "12px 20px",
               borderRadius: "6px",
@@ -293,7 +316,8 @@ export default function CoverPage() {
         >
           <button
             type="button"
-            onClick={() => setCoverColor("red")}
+            onClick={() => updateDraft((current) => ({ ...current, coverColor: "red" }))}
+            disabled={!bookData}
             style={{
               padding: "12px 20px",
               borderRadius: "6px",
@@ -311,7 +335,8 @@ export default function CoverPage() {
 
           <button
             type="button"
-            onClick={() => setCoverColor("blue")}
+            onClick={() => updateDraft((current) => ({ ...current, coverColor: "blue" }))}
+            disabled={!bookData}
             style={{
               padding: "12px 20px",
               borderRadius: "6px",
@@ -329,7 +354,8 @@ export default function CoverPage() {
 
           <button
             type="button"
-            onClick={() => setCoverColor("green")}
+            onClick={() => updateDraft((current) => ({ ...current, coverColor: "green" }))}
+            disabled={!bookData}
             style={{
               padding: "12px 20px",
               borderRadius: "6px",
@@ -439,7 +465,7 @@ export default function CoverPage() {
         <button
           type="button"
           onClick={() => void downloadSpreadCover()}
-          disabled={!spreadReady}
+          disabled={!spreadReady || !bookData}
           style={{ padding: "12px 20px", border: "none", borderRadius: "6px", background: spreadReady ? "#111" : "#888", color: "#fff", fontWeight: "bold", cursor: spreadReady ? "pointer" : "not-allowed" }}
         >
           見開きカバーPNGをダウンロード
@@ -521,6 +547,7 @@ export default function CoverPage() {
         <button
           type="button"
           onClick={handleSave}
+          disabled={!bookData}
           style={{
             padding: "15px 40px",
             fontSize: "18px",

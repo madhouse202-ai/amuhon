@@ -1,9 +1,15 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  NOTO_SERIF_JP_FONT_SHA256,
+  NOTO_SERIF_JP_FONT_SIZE_BYTES,
+} from "@/lib/final-typography-preview";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const FONT_PATH = "C:\\Windows\\Fonts\\NotoSerifJP-VF.ttf";
+const FONT_PATH = join(process.cwd(), ".local-assets", "fonts", "NotoSerifCJKjp-Regular.otf");
 const LOCAL_ORIGIN = "http://localhost:3000";
 
 export async function POST(request: Request) {
@@ -27,8 +33,10 @@ export async function POST(request: Request) {
 
   try {
     const bytes = await readFile(FONT_PATH);
-    if (bytes.byteLength < 1024 || bytes.byteLength > 30_000_000 ||
-        !(bytes.subarray(0, 4).equals(Buffer.from([0, 1, 0, 0])) || bytes.subarray(0, 4).toString("ascii") === "OTTO")) {
+    const sha256 = createHash("sha256").update(bytes).digest("hex").toUpperCase();
+    if (bytes.byteLength !== NOTO_SERIF_JP_FONT_SIZE_BYTES ||
+        sha256 !== NOTO_SERIF_JP_FONT_SHA256 ||
+        bytes.subarray(0, 4).toString("ascii") !== "OTTO") {
       throw new Error("invalid_font");
     }
     const body = new Uint8Array(bytes.byteLength);
@@ -36,7 +44,7 @@ export async function POST(request: Request) {
     return new Response(body.buffer, {
       status: 200,
       headers: {
-        "Content-Type": "font/ttf",
+        "Content-Type": "font/otf",
         "Content-Length": String(body.byteLength),
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",

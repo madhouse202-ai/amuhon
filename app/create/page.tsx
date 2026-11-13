@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { saveBookData } from "@/lib/book";
 import type { BookWork } from "@/lib/book";
+import { CreationProgress } from "@/app/creation-progress";
+import { DraftSaveStatus } from "@/app/draft-save-status";
+import { useBookDraftAutosave } from "@/lib/use-book-draft-autosave";
 
 type Work = BookWork;
 type PageEstimate = { status: "idle" | "loading" | "ready" | "error"; pages?: number };
@@ -87,14 +89,24 @@ function EstimateWhenVisible({
 
 export default function CreatePage() {
   const router = useRouter();
+  const { draft, updateDraft, loadState, saveState, flushDraft } = useBookDraftAutosave();
 
   const [query, setQuery] = useState("");
   const [works, setWorks] = useState<Work[]>([]);
-  const [selectedWorks, setSelectedWorks] = useState<Work[]>([]);
+  const selectedWorks = draft.works;
   const [isSearching, setIsSearching] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [searchError, setSearchError] = useState("");
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [pageEstimates, setPageEstimates] = useState<Record<string, PageEstimate>>({});
+  const estimatedSelectedIdsRef = useRef(new Set<string>());
+
+  const setSelectedWorks = (next: Work[] | ((current: Work[]) => Work[])) => {
+    updateDraft((current) => ({
+      ...current,
+      works: typeof next === "function" ? next(current.works) : next,
+    }));
+  };
 
   const requestEstimate = useCallback((work: Work) => {
     setPageEstimates((current) => {
@@ -113,8 +125,18 @@ export default function CreatePage() {
     requestEstimate(work);
   }, [requestEstimate]);
 
+  useEffect(() => {
+    if (loadState !== "ready") return;
+    draft.works.forEach((work) => {
+      if (estimatedSelectedIdsRef.current.has(work.id)) return;
+      estimatedSelectedIdsRef.current.add(work.id);
+      requestEstimate(work);
+    });
+  }, [draft.works, loadState, requestEstimate]);
+
   const searchWorks = async () => {
     const trimmedQuery = query.trim();
+    setSearchError("");
 
     if (!trimmedQuery) {
       setWorks([]);
@@ -123,13 +145,13 @@ export default function CreatePage() {
     }
 
     setIsSearching(true);
+    setWorks([]);
+    setSearched(false);
 
     try {
       const response = await fetch(
         `/api/works?q=${encodeURIComponent(trimmedQuery)}`
       );
-
-      console.log("API response:", response.status);
 
       if (!response.ok) {
         throw new Error("作品検索に失敗しました");
@@ -139,10 +161,9 @@ export default function CreatePage() {
 
       setWorks(data.works ?? []);
       setSearched(true);
-    } catch (error) {
-      console.error(error);
+    } catch {
       setWorks([]);
-      setSearched(true);
+      setSearchError("作品を検索できませんでした。通信状態を確認して、もう一度お試しください。");
     } finally {
       setIsSearching(false);
     }
@@ -227,35 +248,22 @@ export default function CreatePage() {
   };
 
   const createBook = () => {
-    if (selectedWorks.length === 0) {
+    if (selectedWorks.length === 0 || loadState !== "ready") {
       return;
     }
 
-    saveBookData({
-      works: selectedWorks,
-      title: "わたしの本",
-      editor: "編者",
-      coverStyle: "classic",
-      coverColor: "red",
-    });
-
-    const params = new URLSearchParams();
-
-    params.set(
-      "works",
-      selectedWorks
-        .map((work) => work.title)
-        .join(",")
-    );
-
-    router.push(
-      `/preview?${params.toString()}`
-    );
+    if (!flushDraft({ ...draft, works: selectedWorks })) return;
+    router.push("/cover");
   };
 
   return (
     <main className="min-h-screen bg-stone-50 px-6 py-16 text-stone-800">
       <div className="mx-auto max-w-3xl">
+
+        <CreationProgress currentStep={1} />
+        <div className="mb-5">
+          <DraftSaveStatus loadState={loadState} saveState={saveState} onRetry={() => flushDraft()} />
+        </div>
 
         <p className="text-sm tracking-widest text-stone-500">
           編む本
@@ -283,9 +291,10 @@ export default function CreatePage() {
             <input
               type="text"
               value={query}
-              onChange={(e) =>
-                setQuery(e.target.value)
-              }
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setSearchError("");
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   searchWorks();
@@ -309,9 +318,23 @@ export default function CreatePage() {
           {/* 検索結果 */}
           <div className="mt-8 space-y-4">
 
+            {searchError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-5 text-red-900" role="alert">
+                <p>{searchError}</p>
+                <button
+                  type="button"
+                  onClick={() => void searchWorks()}
+                  disabled={isSearching || !query.trim()}
+                  className="mt-3 rounded-lg border border-red-300 px-4 py-2 font-medium disabled:opacity-50"
+                >
+                  {isSearching ? "検索中…" : "もう一度検索する"}
+                </button>
+              </div>
+            )}
+
             {searched &&
               works.length === 0 &&
-              !isSearching && (
+              !isSearching && !searchError && (
                 <p className="rounded-xl bg-white p-6 text-center text-stone-500">
                   作品が見つかりませんでした。
                 </p>
@@ -351,7 +374,7 @@ export default function CreatePage() {
                     onClick={() =>
                       addWork(work)
                     }
-                    disabled={selected}
+                    disabled={selected || loadState !== "ready"}
                     className={`rounded-xl px-5 py-3 font-medium transition ${
                       selected
                         ? "bg-stone-200 text-stone-500"
@@ -430,7 +453,7 @@ export default function CreatePage() {
                           )
                         }
                         disabled={
-                          index === 0
+                          index === 0 || loadState !== "ready"
                         }
                         className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
                       >
@@ -446,7 +469,7 @@ export default function CreatePage() {
                         }
                         disabled={
                           index ===
-                          selectedWorks.length - 1
+                          selectedWorks.length - 1 || loadState !== "ready"
                         }
                         className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
                       >
@@ -459,6 +482,7 @@ export default function CreatePage() {
                             work.id
                           )
                         }
+                        disabled={loadState !== "ready"}
                         className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm"
                       >
                         削除
@@ -486,11 +510,11 @@ export default function CreatePage() {
         <button
           onClick={createBook}
           disabled={
-            selectedWorks.length === 0
+            selectedWorks.length === 0 || loadState !== "ready"
           }
           className="mt-8 w-full rounded-xl bg-stone-800 px-6 py-4 text-lg font-medium text-white transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          本を編む
+          表紙を作る
         </button>
 
       </div>

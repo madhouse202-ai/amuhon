@@ -1,0 +1,20 @@
+FROM mcr.microsoft.com/playwright:v1.65.0-noble
+
+WORKDIR /app
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    NEXT_TELEMETRY_DISABLED=1 \
+    AMUHON_PDF_WORKER_BROWSER_MODE=pinned \
+    AMUHON_PDF_RENDER_PORT=3000 \
+    AMUHON_PDF_FONT_PATH=/opt/amuhon/fonts/NotoSerifCJKjp-Regular.otf \
+    NODE_ENV=production
+
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY --chown=pwuser:pwuser . .
+RUN node scripts/fetch-pinned-pdf-font.mjs /opt/amuhon/fonts \
+    && node -e "const { chromium } = require('playwright-core'); require('node:fs').accessSync(chromium.executablePath())" \
+    && npm run build \
+    && chown -R pwuser:pwuser /app
+
+USER pwuser
+ENTRYPOINT ["node", "--experimental-strip-types", "scripts/render-order-assets-worker.mjs"]

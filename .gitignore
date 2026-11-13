@@ -18,6 +18,9 @@
 /out/
 /tmp/final-pdf-poc/
 /tmp/final-typography-comparison/
+/tmp/final-toc-comparison/
+/tmp/pdf-renderer-worker/
+/.local-assets/fonts/
 
 # production
 /build

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { CreationProgress } from "@/app/creation-progress";
 import {
   loadBookData,
   saveBookData,
@@ -71,6 +72,8 @@ export default function PreviewPage() {
   return (
     <main className="min-h-screen bg-stone-50 px-6 py-16 text-stone-800">
       <div className="mx-auto max-w-3xl">
+
+        <CreationProgress currentStep={1} />
 
         <p className="text-sm tracking-widest text-stone-500">
           編む本

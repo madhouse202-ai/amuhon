@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
     "validate:order-assets": "node --experimental-strip-types scripts/validate-order-assets.mjs",
@@ -18,8 +18,13 @@
     "generate:order-fixtures": "node --experimental-strip-types scripts/generate-order-validation-fixtures.mjs",
     "benchmark:order-assets": "node --experimental-strip-types scripts/benchmark-order-assets.mjs",
     "generate:final-pdf-poc": "node --experimental-strip-types scripts/generate-final-pdf-poc.mjs",
+    "render:pdf-worker": "node --experimental-strip-types scripts/render-order-assets-worker.mjs",
+    "render:pdf-worker:self-test": "node --experimental-strip-types scripts/render-order-assets-worker.mjs --self-test",
+    "fetch:pdf-worker-font": "node scripts/fetch-pinned-pdf-font.mjs",
     "compare:final-typography": "node --experimental-strip-types scripts/compare-final-typography.mjs",
+    "compare:final-toc": "node --experimental-strip-types scripts/compare-final-toc-layout.mjs",
     "test:final-typography": "node --experimental-strip-types --test tests/final-typography-comparison.test.mjs",
+    "test:final-toc": "node --experimental-strip-types --test tests/final-toc-comparison.test.mjs tests/book-layout.test.mjs",
     "test:final-typography-preview": "node --experimental-strip-types --test tests/final-typography-preview.test.mjs tests/final-typography-comparison.test.mjs",
     "test:local-order-auto": "node --experimental-strip-types --test tests/local-order-pdf-request.test.mjs tests/order-auto-generation.local.test.mjs"
   },

@@ -76,6 +76,33 @@ type TusDiagnostic = {
 };
 type OrderFiles = { bodyPdf: File; coverPng: File };
 
+const ORDER_FLOW_STEPS = ["本の確認", "配送先", "価格確定", "決済"] as const;
+
+function OrderFlowSteps({ currentStep }: { currentStep: 1 | 2 | 3 | 4 }) {
+  return (
+    <nav aria-label="注文の工程" className="mb-5">
+      <ol className="grid grid-cols-4 gap-1.5 text-center text-[11px] sm:gap-2 sm:text-sm">
+        {ORDER_FLOW_STEPS.map((label, index) => {
+          const step = index + 1;
+          const current = step === currentStep;
+          const complete = step < currentStep;
+          const className = `flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-lg px-1 py-2 sm:gap-2 sm:px-3 ${
+            current ? "bg-stone-900 font-bold text-white" : complete ? "bg-stone-200 text-stone-800" : "bg-stone-100 text-stone-500"
+          }`;
+          return (
+            <li key={label} className="min-w-0">
+              <span className={className} aria-current={current ? "step" : undefined}>
+                <span aria-hidden="true" className="shrink-0">{complete ? "✓" : step}</span>
+                <span className="truncate">{label}</span>
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
+  );
+}
+
 export default function OrderPage() {
   const router = useRouter();
   const [book, setBook] = useState<BookData | null>(null);
@@ -547,21 +574,32 @@ export default function OrderPage() {
     );
   }
 
+  const confirmedPrice = checkoutSummary?.filesVerified && Number.isSafeInteger(checkoutSummary.quotedAmountYen)
+    ? new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" }).format(checkoutSummary.quotedAmountYen as number)
+    : null;
+  const priceLabel = confirmedPrice
+    ? `${confirmedPrice}（税込・送料込み）`
+    : filesSaved
+      ? "確認中（サーバーの検証・価格確認中）"
+      : "確認中（ファイル検証後にサーバーで確定）";
+  const activeOrderStep: 1 | 2 | 3 | 4 = draft
+    ? checkoutSummary?.canCheckout || checkoutSummary?.status === "paid" ? 4 : 3
+    : step === "form" ? 2 : 3;
+
   if (draft) {
     return (
-      <main className="mx-auto max-w-3xl px-6 py-12 text-stone-800">
+      <main className="mx-auto w-full max-w-3xl px-4 py-8 text-stone-800 sm:px-6 sm:py-12">
+        <OrderFlowSteps currentStep={activeOrderStep} />
         <h1 className="text-3xl font-bold">{filesSaved
           ? usesDirectUpload ? "注文下書きと一時アップロードを完了しました" : "注文下書きと入稿ファイルを保存しました"
           : "注文下書きを作成しました"}</h1>
-        <p className="mt-5">注文ID：<span className="font-mono">{draft.id}</span></p>
+        <p className="mt-5 break-all">注文ID：<span className="font-mono">{draft.id}</span></p>
         <p className="mt-3 rounded-lg bg-amber-50 p-4">状態：{filesSaved
           ? usesDirectUpload
             ? validationJobState === "succeeded" ? "preparing（検証・正式ファイル確定済み）" : "preparing（一時保存済み・検証未完了）"
             : checkoutSummary?.filesVerified ? `${checkoutSummary.status ?? "preparing"}（ファイル検証済み）` : "preparing（ファイル検証状態を確認中）"
           : "ファイル未検証"}。{checkoutSummary?.status === "paid" ? "決済済みです。" : "支払済みの表示はサーバーの決済確認後に行います。"}</p>
-        <p className="mt-3">価格：{checkoutSummary?.filesVerified && Number.isSafeInteger(checkoutSummary.quotedAmountYen)
-          ? `${new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" }).format(checkoutSummary.quotedAmountYen as number)}（税込・送料込み）`
-          : "検証後にサーバーで確定"}</p>
+        <p className="mt-3 font-semibold" aria-live="polite">価格：{priceLabel}</p>
         {!filesSaved && (
           <section className="mt-6 rounded-xl border border-stone-200 p-5">
             <h2 className="text-lg font-bold">入稿ファイルを送信</h2>
@@ -622,7 +660,7 @@ export default function OrderPage() {
           ? `非公開の一時領域への送信は完了しました。検証ジョブ（登録API応答時点）：${VALIDATION_JOB_LABELS[validationJobState]}。この表示は自動更新されません。ジョブ登録だけでは検証完了・製本可能を意味しません。一時アップロード状態の注文は決済できません。`
           : "配送先情報と検証済み入稿ファイルはサーバー側の注文に紐付いています。決済はStripeのテストモードでのみ開始します。"}</p>}
         {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && checkoutSummary?.canCheckout && (
-          <button className="mt-5 rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => void beginStripeCheckout()} disabled={saving}>
+          <button className="mt-5 min-h-12 w-full break-words rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50 sm:w-auto" type="button" onClick={() => void beginStripeCheckout()} disabled={saving}>
             {saving ? "Stripe決済画面を準備中……" : "税込・送料込み価格を確認して決済へ進む"}
           </button>
         )}
@@ -676,20 +714,26 @@ export default function OrderPage() {
   );
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12 text-stone-800">
-      <Link href="/book-preview" className="text-sm underline">本のプレビューへ戻る</Link>
-      <h1 className="mt-5 text-3xl font-bold">注文手続き</h1>
-      <p className="mt-2 text-stone-600">会員登録は不要です。価格は確定していないため「価格確認中」と表示しています。</p>
+    <main className="mx-auto w-full max-w-3xl px-4 py-8 text-stone-800 sm:px-6 sm:py-12">
+      <Link href="/final" className="inline-flex min-h-11 items-center py-2 text-sm font-medium underline underline-offset-4">完成した本の確認に戻る</Link>
+      <div className="mt-5">
+        <OrderFlowSteps currentStep={activeOrderStep} />
+        <h1 className="text-3xl font-bold">注文内容と配送先</h1>
+        <p className="mt-2 text-sm text-stone-600">会員登録は不要です。価格はファイル検証後にサーバーで確定します。</p>
+      </div>
 
       <section className="mt-6 rounded-xl border border-stone-200 bg-white p-5" aria-label="注文する本">
-        <h2 className="text-xl font-bold">{book.title}</h2>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <h2 className="min-w-0 break-words text-xl font-bold">{book.title}</h2>
+          <span className="rounded-full bg-stone-100 px-3 py-1 text-xs text-stone-600">本の内容</span>
+        </div>
         <p className="mt-1">編者：{book.editor}</p>
-        <p className="mt-1">収録作品：{book.works.length}作品</p>
-        <ul className="mt-3 list-inside list-disc text-sm text-stone-700">
-          {book.works.map((work, index) => <li key={`${work.id}-${index}`}>{index + 1}. {work.title} — {work.author || "作者情報なし"}</li>)}
-        </ul>
-        <p className="mt-3 font-semibold">価格：価格確認中</p>
-        <p className="mt-2 text-sm text-stone-600">
+        <p className="mt-2 font-medium">収録作品：{book.works.length}作品</p>
+        <ol className="mt-2 space-y-1 text-sm text-stone-700">
+          {book.works.map((work, index) => <li className="break-words" key={`${work.id}-${index}`}><span className="mr-1 text-stone-500">{index + 1}.</span>{work.title} — {work.author || "作者情報なし"}</li>)}
+        </ol>
+        <p className="mt-4 font-semibold" aria-live="polite">価格：{priceLabel}</p>
+        <p className="mt-2 break-words text-sm text-stone-600">
           {declaredPageCount
             ? `本文PDFページ数（ブラウザー組版の申告値）：${declaredPageCount}ページ。サーバー検証前のため未確定です。`
             : "本文PDFの最終ページ数は未確定です。/final で組版すると参考ページ数を引き継げます。"}
@@ -698,7 +742,10 @@ export default function OrderPage() {
 
       {step === "form" ? (
         <form className="mt-8 space-y-5" onSubmit={continueToConfirmation} noValidate>
-          <h2 className="text-xl font-bold">配送先・連絡先</h2>
+          <div>
+            <p className="text-sm font-semibold text-stone-500">次の工程</p>
+            <h2 className="mt-1 text-xl font-bold">配送先・連絡先を入力</h2>
+          </div>
           {field("name", "氏名", "text", { autoComplete: "name" })}
           {field("postalCode", "郵便番号", "text", { autoComplete: "postal-code", inputMode: "numeric" })}
           <label className="block">
@@ -714,19 +761,20 @@ export default function OrderPage() {
           {field("phone", "電話番号", "tel", { autoComplete: "tel", inputMode: "tel" })}
           {field("email", "メールアドレス", "email", { autoComplete: "email", inputMode: "email" })}
           <p className="text-sm text-stone-600">入力内容は確認後に送信されます。入力中の配送先情報はブラウザーへ保存しません。</p>
-          <button className="rounded-lg bg-stone-900 px-6 py-3 font-bold text-white" type="submit">入力内容を確認する</button>
+          <button className="min-h-12 w-full rounded-lg bg-stone-900 px-6 py-3 font-bold text-white sm:w-auto" type="submit">配送先を確認する</button>
         </form>
       ) : (
         <section className="mt-8" aria-labelledby="confirm-heading">
-          <h2 id="confirm-heading" className="text-xl font-bold">入力内容の確認</h2>
+          <p className="text-sm font-semibold text-stone-500">次の工程：ファイル検証・価格確定</p>
+          <h2 id="confirm-heading" className="mt-1 text-xl font-bold">配送先を確認</h2>
           <dl className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-stone-50 p-5 sm:grid-cols-2">
-            <dt>氏名</dt><dd>{customer.name}</dd>
-            <dt>郵便番号</dt><dd>{customer.postalCode}</dd>
-            <dt>都道府県</dt><dd>{customer.prefecture}</dd>
-            <dt>市区町村</dt><dd>{customer.city}</dd>
-            <dt>番地・建物名</dt><dd>{customer.address}</dd>
-            <dt>電話番号</dt><dd>{customer.phone}</dd>
-            <dt>メールアドレス</dt><dd>{customer.email}</dd>
+            <dt>氏名</dt><dd className="break-words">{customer.name}</dd>
+            <dt>郵便番号</dt><dd className="break-words">{customer.postalCode}</dd>
+            <dt>都道府県</dt><dd className="break-words">{customer.prefecture}</dd>
+            <dt>市区町村</dt><dd className="break-words">{customer.city}</dd>
+            <dt>番地・建物名</dt><dd className="break-words">{customer.address}</dd>
+            <dt>電話番号</dt><dd className="break-words">{customer.phone}</dd>
+            <dt>メールアドレス</dt><dd className="break-words">{customer.email}</dd>
           </dl>
           <p className="mt-4 rounded-lg bg-amber-50 p-4">入稿ファイルの検証完了後、ページ数に応じた税込・送料込み価格をサーバーで確定してStripe決済へ進みます。ファイル未検証の注文は決済できません。</p>
           {AUTO_FILE_GENERATION_ENABLED && (
