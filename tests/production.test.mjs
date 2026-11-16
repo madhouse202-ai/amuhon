@@ -17,6 +17,7 @@ test("spine model matches all twelve supplied calculator measurements", () => {
     [20, 1.7, 217.7],
     [40, 2.9, 218.9],
     [50, 3.5, 219.5],
+    [72, 4.82, 220.82],
     [100, 6.5, 222.5],
     [150, 9.5, 225.5],
     [200, 12.5, 228.5],
@@ -35,6 +36,16 @@ test("spine model matches all twelve supplied calculator measurements", () => {
     assert.equal(layout.pixelWidth, Math.round((216 + expected) * 350 / 25.4));
     assert.equal(layout.pixelHeight, Math.round(154 * 350 / 25.4));
   }
+});
+
+test("72-page cover uses the expected A6 spread pixels at 350dpi", () => {
+  const layout = calculateCoverLayout(72);
+  assert.ok(layout);
+  assert.equal(layout.spineWidthMm, 4.82);
+  assert.equal(layout.coverWidthMm, 220.82);
+  assert.equal(layout.coverHeightMm, 154);
+  assert.equal(layout.pixelWidth, 3043);
+  assert.equal(layout.pixelHeight, 2122);
 });
 
 test("A6 trim and bleed panel coordinates have no gaps or overlaps", () => {
