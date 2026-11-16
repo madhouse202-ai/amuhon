@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import JSZip from "jszip";
 
 type Work = {
@@ -10,10 +9,55 @@ type Work = {
   xhtmlUrl: string;
 };
 
+type AuthorShelf = {
+  author: string;
+  workCount: number;
+  sampleTitles: string[];
+};
+
+const AUTHOR_SHELF_LIMIT = 12;
+const AUTHOR_SAMPLE_TITLE_LIMIT = 2;
+const WORK_SHELF_LIMIT = 24;
+const AUTHOR_WORK_PAGE_SIZE = 30;
+
 const CATALOG_URL =
   "https://www.aozora.gr.jp/index_pages/list_person_all_extended_utf8.zip";
 
 let catalogCache: Work[] | null = null;
+
+function sampleItems<T>(items: T[], count: number): T[] {
+  const shuffled = [...items];
+  const sampleSize = Math.min(count, shuffled.length);
+  for (let index = 0; index < sampleSize; index += 1) {
+    const selectedIndex = index + Math.floor(Math.random() * (shuffled.length - index));
+    [shuffled[index], shuffled[selectedIndex]] = [shuffled[selectedIndex], shuffled[index]];
+  }
+  return shuffled.slice(0, sampleSize);
+}
+
+function buildAuthorShelves(catalog: Work[]): AuthorShelf[] {
+  const grouped = new Map<string, Work[]>();
+  for (const work of catalog) {
+    const author = work.author.trim();
+    if (!author) continue;
+    const works = grouped.get(author) ?? [];
+    works.push(work);
+    grouped.set(author, works);
+  }
+
+  return sampleItems([...grouped.entries()], AUTHOR_SHELF_LIMIT).map(([author, works]) => ({
+    author,
+    workCount: works.length,
+    sampleTitles: sampleItems(works, AUTHOR_SAMPLE_TITLE_LIMIT).map((work) => work.title),
+  }));
+}
+
+function parseOffset(value: string | null): number | null {
+  if (value === null || value === "") return 0;
+  if (!/^\d{1,7}$/.test(value)) return null;
+  const offset = Number(value);
+  return Number.isSafeInteger(offset) ? offset : null;
+}
 
 function parseCsvLine(line: string): string[] {
   const values: string[] = [];
@@ -306,20 +350,51 @@ export async function GET(request: Request) {
 
   const query =
     searchParams.get("q")?.trim() ?? "";
+  const browse = searchParams.get("browse");
 
-  /*
-   * 検索文字がない場合
-   */
-
-  if (!query) {
-    return NextResponse.json({
+  if (!query && !browse) {
+    return Response.json({
       works: [],
     });
+  }
+
+  if (!query && browse && !["discover", "author", "works"].includes(browse)) {
+    return Response.json({ error: "作品棚を読み込めませんでした。" }, { status: 400 });
   }
 
   try {
     const catalog =
       await loadCatalog();
+
+    if (!query && browse === "discover") {
+      return Response.json({
+        authors: buildAuthorShelves(catalog),
+        works: sampleItems(catalog, WORK_SHELF_LIMIT),
+      });
+    }
+
+    if (!query && browse === "works") {
+      return Response.json({ works: sampleItems(catalog, WORK_SHELF_LIMIT) });
+    }
+
+    if (!query && browse === "author") {
+      const author = searchParams.get("author")?.trim() ?? "";
+      const offset = parseOffset(searchParams.get("offset"));
+      if (!author || author.length > 120 || offset === null) {
+        return Response.json({ error: "作家の作品を読み込めませんでした。" }, { status: 400 });
+      }
+
+      const authorWorks = catalog.filter((work) => work.author === author);
+      const works = authorWorks.slice(offset, offset + AUTHOR_WORK_PAGE_SIZE);
+      const nextOffset = offset + works.length;
+      return Response.json({
+        author,
+        works,
+        total: authorWorks.length,
+        nextOffset,
+        hasMore: nextOffset < authorWorks.length,
+      });
+    }
 
     /*
      * 検索時はスペースを無視する。
@@ -356,7 +431,7 @@ export async function GET(request: Request) {
       })
       .slice(0, 30);
 
-    return NextResponse.json({
+    return Response.json({
       works: results,
     });
   } catch (error) {
@@ -365,7 +440,7 @@ export async function GET(request: Request) {
       error
     );
 
-    return NextResponse.json(
+    return Response.json(
       {
         error:
           error instanceof Error

@@ -10,7 +10,6 @@ type CheckoutState = {
   filesVerified?: boolean;
   quotedAmountYen?: number | null;
   currency?: string | null;
-  livemode?: boolean | null;
 };
 
 export default function PaymentResult({ mode, orderId: rawOrderId }: { mode: "success" | "cancel"; orderId?: string }) {
@@ -79,9 +78,9 @@ export default function PaymentResult({ mode, orderId: rawOrderId }: { mode: "su
   return (
     <main className="mx-auto max-w-2xl px-6 py-16 text-stone-800">
       <h1 className="text-3xl font-bold">{paid ? "お支払いを確認しました" : mode === "success" ? "決済結果を確認しています" : "決済画面から戻りました"}</h1>
-      {!orderId && <p className="mt-5">注文情報を確認できません。注文画面から状態をご確認ください。</p>}
-      {orderId && !paid && <p className="mt-5 rounded-lg bg-amber-50 p-4">決済サービスから戻ったことだけでは支払済みになりません。署名を確認した決済通知を受信後、注文状況を更新します。</p>}
-      {paid && <p className="mt-5 rounded-lg bg-emerald-50 p-4">{state?.livemode === true ? "Stripeの本番決済成功" : state?.livemode === false ? "Stripeのテスト決済成功" : "Stripeの決済成功"}をサーバーで確認しました。製本会社への入稿・製本手配はまだ手動です。</p>}
+      {!orderId && <p className="mt-5">注文を確認できません。注文画面からもう一度お確かめください。</p>}
+      {orderId && !paid && <p className="mt-5 rounded-lg bg-amber-50 p-4">お支払いを確認しています。確認が完了すると、この画面が自動で切り替わります。</p>}
+      {paid && <p className="mt-5 rounded-lg bg-emerald-50 p-4">お支払いを確認しました。製本の手配状況は注文管理から確認できます。</p>}
       {state?.filesVerified && Number.isSafeInteger(state.quotedAmountYen) && (
         <p className="mt-4">本文 {state.pageCount}ページ・税込送料込み {new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" }).format(state.quotedAmountYen as number)}</p>
       )}
@@ -91,7 +90,7 @@ export default function PaymentResult({ mode, orderId: rawOrderId }: { mode: "su
           {retrying ? "決済画面を確認中……" : "同じ注文の決済を再開する"}
         </button>
       )}
-      {mode === "success" && orderId && !paid && <p className="mt-4 text-sm text-stone-600">決済通知を待っています。ページを閉じても、注文状態はサーバー側で確認されます。</p>}
+      {mode === "success" && orderId && !paid && <p className="mt-4 text-sm text-stone-600">確認には少し時間がかかることがあります。しばらくしても切り替わらない場合は、画面を再読み込みしてください。</p>}
       <Link className="mt-8 block underline" href="/">トップページへ戻る</Link>
     </main>
   );

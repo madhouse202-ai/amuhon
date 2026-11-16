@@ -42,6 +42,26 @@ test("search failures are shown separately from empty results and can be retried
   assert.match(createPage, /!searchError/);
 });
 
+test("work discovery opens on real author and work shelves while keeping search available", async () => {
+  const [createPage, catalogRoute] = await Promise.all([
+    source("../app/create/page.tsx"),
+    source("../app/api/works/route.ts"),
+  ]);
+
+  assert.match(createPage, /useState<"shelf" \| "search">\("shelf"\)/);
+  assert.match(createPage, /本棚から探す/);
+  assert.match(createPage, /作家の棚/);
+  assert.match(createPage, /作品の棚/);
+  assert.match(createPage, /検索する/);
+  assert.match(createPage, /この作家の作品を見る/);
+  assert.match(createPage, /この作家の作品をもっと見る/);
+  assert.match(createPage, /青空文庫の作品情報を見る/);
+  assert.match(createPage, /authorRequestIdRef/);
+  assert.match(catalogRoute, /workCount: works\.length/);
+  assert.match(catalogRoute, /sampleTitles: sampleItems/);
+  assert.doesNotMatch(catalogRoute, /rating|popularity|genre|紹介文/);
+});
+
 test("the compact progress indicator is responsive and marks the active stage accessibly", async () => {
   const [progress, finalPage] = await Promise.all([
     source("../app/creation-progress.tsx"),

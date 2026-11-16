@@ -8,8 +8,8 @@ test("the final review presents the actual composition, cover, pages, and a guar
   const finalPage = await source("../app/final/page.tsx");
 
   assert.match(finalPage, /本の完成を確認/);
-  assert.match(finalPage, /actualWorkBodyPageCount/);
   assert.match(finalPage, /submissionPageCount/);
+  assert.match(finalPage, /仕上がりページ数/);
   assert.match(finalPage, /収録作品（この順番）/);
   assert.match(finalPage, /表紙を確認・変更/);
   assert.match(finalPage, /注文内容を確認して進む/);
@@ -30,7 +30,9 @@ test("order review returns to final and shows server-confirmed price without per
   assert.match(orderPage, /ORDER_FLOW_STEPS = \["本の確認", "配送先", "価格確定", "決済"\]/);
   assert.match(orderPage, /価格：\{priceLabel\}/);
   assert.match(orderPage, /checkoutSummary\?\.filesVerified && Number\.isSafeInteger\(checkoutSummary\.quotedAmountYen\)/);
-  assert.match(orderPage, /確認中（ファイル検証後にサーバーで確定）/);
+  assert.match(orderPage, /確認中（本の内容を確認後に確定）/);
+  assert.match(orderPage, /<details[\s\S]{0,180}開発者向け診断情報/);
+  assert.doesNotMatch(orderPage, /注文ID：|checkoutState|TUSで一時アップロード中/);
   assert.match(orderPage, /checkoutSummary\?\.canCheckout/);
   assert.match(orderPage, /api\/orders\/\$\{encodeURIComponent\(draft\.id\)\}\/checkout/);
   assert.doesNotMatch(orderPage, /localStorage\.(?:setItem|getItem)\([^)]*customer/i);

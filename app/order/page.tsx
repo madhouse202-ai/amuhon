@@ -43,7 +43,6 @@ type CheckoutSummary = {
   filesVerified: boolean;
   quotedAmountYen?: number | null;
   canCheckout: boolean;
-  checkoutState?: string;
 };
 type DirectUploadIntent = {
   attemptId: string;
@@ -59,14 +58,6 @@ type DirectUploadIntent = {
   diagnostics?: { signerAndTusProjectMatch: boolean };
 };
 type ValidationJobState = "not_registered" | "registering" | "queued" | "validating" | "succeeded" | "registration_failed";
-const VALIDATION_JOB_LABELS: Record<ValidationJobState, string> = {
-  not_registered: "未登録",
-  registering: "登録中……",
-  queued: "登録済み・検証待ち",
-  validating: "検証中",
-  succeeded: "検証・正式ファイル確定済み",
-  registration_failed: "未登録（再試行が必要）",
-};
 type TusDiagnostic = {
   asset: "本文PDF" | "カバーPNG";
   signatureMatches: boolean;
@@ -124,7 +115,6 @@ export default function OrderPage() {
   const [checkingCheckoutStatus, setCheckingCheckoutStatus] = useState(false);
   const [validationJobState, setValidationJobState] = useState<ValidationJobState>("not_registered");
   const [uploadProgress, setUploadProgress] = useState<{ bodyPdf: number; coverPng: number } | null>(null);
-  const [directUploadExpiresAt, setDirectUploadExpiresAt] = useState<string | null>(null);
   const [tusDiagnostics, setTusDiagnostics] = useState<TusDiagnostic[]>([]);
   const [declaredPageCount, setDeclaredPageCount] = useState<number | null>(null);
   const idempotencyKeyRef = useRef<string | null>(null);
@@ -351,7 +341,7 @@ export default function OrderPage() {
     const publicCredential = getSupabasePublicCredential(
       process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
     );
-    if (!publicCredential) throw new Error("TUSアップロード用の公開Supabaseキーが設定されていません。");
+    if (!publicCredential) throw new Error("現在、本のデータを送信できません。時間をおいて再度お試しください。");
     if (file.size > MAX_ORDER_ASSET_BYTES) throw new Error("PDF・PNGはそれぞれ40,000,000バイト（40MB）以下にしてください。");
 
     const upload = new Upload(file, {
@@ -396,7 +386,7 @@ export default function OrderPage() {
     const previousUploads = await upload.findPreviousUploads();
     if (previousUploads.length > 0) upload.resumeFromPreviousUpload(previousUploads[0]);
     await new Promise<void>((resolve, reject) => {
-      upload.options.onError = reject;
+      upload.options.onError = () => reject(new Error("本のデータを送信できませんでした。通信状態を確認して、もう一度お試しください。"));
       upload.options.onSuccess = () => resolve();
       upload.start();
     });
@@ -442,7 +432,6 @@ export default function OrderPage() {
     const intent = result as DirectUploadIntent;
     directAttemptIdRef.current = intent.attemptId;
     persistDirectUploadState(target, intent.attemptId, false);
-    setDirectUploadExpiresAt(intent.expiresAt);
     await uploadTusFile(bodyPdfFile, intent, intent.bodyObjectKey, intent.bodyUploadSignature, "application/pdf", "本文PDF", (percent) => {
       setUploadProgress((current) => ({ bodyPdf: percent, coverPng: current?.coverPng ?? 0 }));
     });
@@ -585,8 +574,8 @@ export default function OrderPage() {
   const priceLabel = confirmedPrice
     ? `${confirmedPrice}（税込・送料込み）`
     : filesSaved
-      ? "確認中（サーバーの検証・価格確認中）"
-      : "確認中（ファイル検証後にサーバーで確定）";
+      ? "確認中（本の内容を確認しています）"
+      : "確認中（本の内容を確認後に確定）";
   const activeOrderStep: 1 | 2 | 3 | 4 = draft
     ? checkoutSummary?.canCheckout || checkoutSummary?.status === "paid" ? 4 : 3
     : step === "form" ? 2 : 3;
@@ -595,26 +584,25 @@ export default function OrderPage() {
     return (
       <main className="mx-auto w-full max-w-3xl px-4 py-8 text-stone-800 sm:px-6 sm:py-12">
         <OrderFlowSteps currentStep={activeOrderStep} />
-        <h1 className="text-3xl font-bold">{filesSaved
-          ? usesDirectUpload ? "注文下書きと一時アップロードを完了しました" : "注文下書きと入稿ファイルを保存しました"
-          : "注文下書きを作成しました"}</h1>
-        <p className="mt-5 break-all">注文ID：<span className="font-mono">{draft.id}</span></p>
-        <p className="mt-3 rounded-lg bg-amber-50 p-4">状態：{filesSaved
-          ? usesDirectUpload
-            ? validationJobState === "succeeded" ? "preparing（検証・正式ファイル確定済み）" : "preparing（一時保存済み・検証未完了）"
-            : checkoutSummary?.filesVerified ? `${checkoutSummary.status ?? "preparing"}（ファイル検証済み）` : "preparing（ファイル検証状態を確認中）"
-          : "ファイル未検証"}。{checkoutSummary?.status === "paid" ? "決済済みです。" : "支払済みの表示はサーバーの決済確認後に行います。"}</p>
+        <h1 className="text-3xl font-bold">{filesSaved ? "本のデータを受け取りました" : "本のデータを準備します"}</h1>
+        <p className="mt-3 rounded-lg bg-amber-50 p-4" aria-live="polite">
+          本の内容：{!filesSaved ? "未確認" : usesDirectUpload
+            ? validationJobState === "succeeded" ? "確認済み" : "確認しています"
+            : checkoutSummary?.filesVerified ? "確認済み" : "確認しています"}
+          <span className="mx-2" aria-hidden="true">·</span>
+          お支払い：{checkoutSummary?.status === "paid" ? "確認済み" : "未完了"}
+        </p>
         <p className="mt-3 font-semibold" aria-live="polite">価格：{priceLabel}</p>
         {!filesSaved && (
           <section className="mt-6 rounded-xl border border-stone-200 p-5">
-            <h2 className="text-lg font-bold">入稿ファイルを送信</h2>
+            <h2 className="text-lg font-bold">本のデータを準備する</h2>
             <p className="mt-2 text-sm text-stone-600">{usesDirectUpload
-              ? "実験モード：TUSで一時領域へ送信します。現在はアップロードのみで、実ファイル検証・確定保存はまだ行いません。再試行時は同じファイルを選び直してください。"
+              ? "この操作では一時的な送信を確認します。内容確認と価格確定が完了するまで、お支払いには進めません。"
               : uploadMode === "automatic"
-                ? "開発モード：/final の作品・並び順・組版ページ数を使って本文PDFを生成し、カバーPNGを作成してサーバー検証へ送ります。ファイルは端末に保存しません。"
-              : "PDFの実ページ数・A6寸法と、PNGの実寸・350dpiメタデータをサーバーで確認します。ファイル名とブラウザー申告のMIMEタイプは判定に使用しません。"}</p>
+                ? "選んだ作品と表紙から、本のデータをこの画面で作成します。端末への保存は不要です。"
+              : "本文と表紙を送信すると、本の内容を確認して価格を確定します。"}</p>
             {uploadMode === "automatic" ? (
-              <p className="mt-4 rounded-lg bg-stone-50 p-3 text-sm">本文PDFとカバーPNGはこの画面の送信操作で一時メモリ上に生成します。サーバーがページ数・寸法・解像度を再検証し、価格を確定するまでは決済できません。</p>
+              <p className="mt-4 rounded-lg bg-stone-50 p-3 text-sm">作成したデータの確認が完了すると、価格が表示され、お支払いへ進めます。</p>
             ) : (
               <>
                 <label className="mt-4 block font-medium">本文PDF（表紙なし）
@@ -627,55 +615,54 @@ export default function OrderPage() {
             )}
             {usesDirectUpload && uploadProgress && (
               <div className="mt-4 space-y-2 text-sm" aria-live="polite">
-                <p>本文PDF：{uploadProgress.bodyPdf}%</p>
+                <p>本文データ：{uploadProgress.bodyPdf}%</p>
                 <progress className="w-full" max={100} value={uploadProgress.bodyPdf} />
-                <p>カバーPNG：{uploadProgress.coverPng}%</p>
+                <p>表紙データ：{uploadProgress.coverPng}%</p>
                 <progress className="w-full" max={100} value={uploadProgress.coverPng} />
-                <p>各ファイル40,000,000バイト（40MB）以下。一時ファイルの期限：{directUploadExpiresAt ? new Date(directUploadExpiresAt).toLocaleString("ja-JP") : "取得中"}</p>
+                <p>送信が完了すると、本の内容を確認します。</p>
               </div>
             )}
             {TUS_AUTH_DIAGNOSTICS && (
-              <section className="mt-4 rounded-lg border border-sky-300 bg-sky-50 p-4 text-sm" aria-label="TUS認証の一時診断">
-                <h3 className="font-bold">開発用TUS認証診断</h3>
-                <p className="mt-1">値やトークンは表示せず、TUS開始POSTのヘッダー比較結果だけを表示します。</p>
+              <details className="mt-4 rounded-lg border border-sky-300 bg-sky-50 p-4 text-sm">
+                <summary className="cursor-pointer font-bold">開発者向け診断情報</summary>
+                <p className="mt-1">認証情報の値は表示せず、アップロード接続の確認結果だけを表示します。</p>
                 {(["本文PDF", "カバーPNG"] as const).map((asset) => {
                   const diagnostic = tusDiagnostics.find((item) => item.asset === asset);
                   const state = (value: boolean | null | undefined) => value === null || value === undefined ? "未確認" : value ? "一致／はい" : "不一致／いいえ";
                   return (
                     <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-1" key={asset}>
                       <dt className="col-span-2 mt-1 font-semibold">{asset}</dt>
-                      <dt>API署名とx-signature</dt><dd>{state(diagnostic?.signatureMatches)}</dd>
-                      <dt>x-signatureが空でない</dt><dd>{state(diagnostic?.signaturePresent)}</dd>
-                      <dt>x-signatureが3区分形式</dt><dd>{state(diagnostic?.signatureHasThreeParts)}</dd>
-                      <dt>公開キーとapikey</dt><dd>{state(diagnostic?.apiKeyMatches)}</dd>
-                      <dt>署名発行先とTUS先が同一プロジェクト</dt><dd>{state(diagnostic?.signerAndTusProjectMatch)}</dd>
+                      <dt>署名の一致</dt><dd>{state(diagnostic?.signatureMatches)}</dd>
+                      <dt>署名の形式</dt><dd>{state(diagnostic?.signatureHasThreeParts)}</dd>
+                      <dt>公開キーの一致</dt><dd>{state(diagnostic?.apiKeyMatches)}</dd>
+                      <dt>同一プロジェクトへの接続</dt><dd>{state(diagnostic?.signerAndTusProjectMatch)}</dd>
                     </dl>
                   );
                 })}
-              </section>
+              </details>
             )}
             {error && <p role="alert" className="mt-4 text-red-700">{error}</p>}
             <button className="mt-5 rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => void submitDraft()} disabled={saving || (uploadMode === "manual" && (!bodyPdfFile || !coverPngFile))}>
-              {saving ? usesDirectUpload ? "TUSで一時アップロード中……" : "検証・アップロード中……"
-                : usesDirectUpload ? "2ファイルをTUSで一時保存" : uploadMode === "automatic" ? "本を生成して検証・保存" : "2ファイルを検証して保存"}
+              {saving ? usesDirectUpload ? "本のデータを送信中……" : "本の内容を確認・保存中……"
+                : usesDirectUpload ? "本のデータを送信して確認" : uploadMode === "automatic" ? "本を生成して確認" : "2つのファイルを確認して保存"}
             </button>
           </section>
         )}
-        {filesSaved && <p className="mt-3 text-sm text-stone-600">{usesDirectUpload
-          ? `非公開の一時領域への送信は完了しました。検証ジョブ（登録API応答時点）：${VALIDATION_JOB_LABELS[validationJobState]}。この表示は自動更新されません。ジョブ登録だけでは検証完了・製本可能を意味しません。一時アップロード状態の注文は決済できません。`
-          : "配送先情報と検証済み入稿ファイルはサーバー側の注文に紐付いています。決済はStripeのテストモードでのみ開始します。"}</p>}
+        {filesSaved && <p className="mt-3 text-sm text-stone-600" role="status">{usesDirectUpload
+          ? "本のデータを受け取りました。内容確認が完了するまで、そのままお待ちください。"
+          : "本のデータを受け取りました。価格が表示されたら、お支払いに進めます。"}</p>}
         {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && checkoutSummary?.canCheckout && (
           <button className="mt-5 min-h-12 w-full break-words rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50 sm:w-auto" type="button" onClick={() => void beginStripeCheckout()} disabled={saving}>
-            {saving ? "Stripe決済画面を準備中……" : "税込・送料込み価格を確認して決済へ進む"}
+            {saving ? "お支払い画面を準備中……" : "税込・送料込み価格を確認して決済へ進む"}
           </button>
         )}
         {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && !checkoutSummary && (
           <button className="mt-4 rounded-lg border border-stone-400 px-5 py-3 disabled:opacity-50" type="button" onClick={() => void retryCheckoutStatus()} disabled={checkingCheckoutStatus}>
-            {checkingCheckoutStatus ? "注文状態を確認中……" : "検証状態と価格を再確認"}
+            {checkingCheckoutStatus ? "価格を確認中……" : "価格とお支払いの準備状況を再確認"}
           </button>
         )}
         {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && checkoutSummary && !checkoutSummary.canCheckout && (
-          <p className="mt-4 text-sm text-amber-800">この注文は現在決済できません。検証済みファイル、対象ページ数、価格状態をサーバーで確認してください（{checkoutSummary.checkoutState ?? "確認中"}）。</p>
+          <p className="mt-4 text-sm text-amber-800">お支払いの準備がまだできていません。本の内容を確認し、価格が表示されてからお進みください。</p>
         )}
         {filesSaved && !DIRECT_UPLOAD_EXPERIMENT && error && <p role="alert" className="mt-4 text-red-700">{error}</p>}
         {filesSaved && usesDirectUpload && error && <p role="alert" className="mt-3 text-red-700">{error}</p>}
@@ -687,7 +674,7 @@ export default function OrderPage() {
               onClick={() => void retryValidationJobRegistration()}
               disabled={saving}
             >
-              {saving ? "検証ジョブを登録中……" : "検証ジョブ登録を再試行"}
+              {saving ? "本の内容を確認中……" : "本の内容の確認を再試行"}
             </button>
           )}
       </main>
@@ -738,10 +725,10 @@ export default function OrderPage() {
           {book.works.map((work, index) => <li className="break-words" key={`${work.id}-${index}`}><span className="mr-1 text-stone-500">{index + 1}.</span>{work.title} — {work.author || "作者情報なし"}</li>)}
         </ol>
         <p className="mt-4 font-semibold" aria-live="polite">価格：{priceLabel}</p>
-        <p className="mt-2 break-words text-sm text-stone-600">
+      <p className="mt-2 break-words text-sm text-stone-600">
           {declaredPageCount
-            ? `本文PDFページ数（ブラウザー組版の申告値）：${declaredPageCount}ページ。サーバー検証前のため未確定です。`
-            : "本文PDFの最終ページ数は未確定です。/final で組版すると参考ページ数を引き継げます。"}
+            ? `仕上がりページ数（目安）：${declaredPageCount}ページ。内容確認後に確定します。`
+            : "仕上がりページ数を確認しています。"}
         </p>
       </section>
 
@@ -770,7 +757,7 @@ export default function OrderPage() {
         </form>
       ) : (
         <section className="mt-8" aria-labelledby="confirm-heading">
-          <p className="text-sm font-semibold text-stone-500">次の工程：ファイル検証・価格確定</p>
+          <p className="text-sm font-semibold text-stone-500">次の工程：本の内容を確認</p>
           <h2 id="confirm-heading" className="mt-1 text-xl font-bold">配送先を確認</h2>
           <dl className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-stone-50 p-5 sm:grid-cols-2">
             <dt>氏名</dt><dd className="break-words">{customer.name}</dd>
@@ -781,35 +768,35 @@ export default function OrderPage() {
             <dt>電話番号</dt><dd className="break-words">{customer.phone}</dd>
             <dt>メールアドレス</dt><dd className="break-words">{customer.email}</dd>
           </dl>
-          <p className="mt-4 rounded-lg bg-amber-50 p-4">入稿ファイルの検証完了後、ページ数に応じた税込・送料込み価格をサーバーで確定してStripe決済へ進みます。ファイル未検証の注文は決済できません。</p>
+          <p className="mt-4 rounded-lg bg-amber-50 p-4">本文と表紙の確認後に、税込・送料込みの価格が表示されます。確認が終わるまでお支払いには進めません。</p>
           {AUTO_FILE_GENERATION_ENABLED && (
             <fieldset className="mt-5 rounded-xl border border-stone-200 p-5">
               <legend className="px-2 font-bold">入稿ファイルの準備方法</legend>
               <label className="flex items-start gap-3 py-2">
                 <input type="radio" name="upload-mode" value="automatic" checked={uploadMode === "automatic"} onChange={() => setUploadMode("automatic")} disabled={saving} />
-                <span><strong>この画面で自動生成する</strong><span className="mt-1 block text-sm text-stone-600">ローカル開発専用。/final の組版を使い、ファイル保存・選択なしで送信します。</span></span>
+                <span><strong>この画面で作成する</strong><span className="mt-1 block text-sm text-stone-600">選んだ作品と表紙から本のデータを作成します。端末への保存は不要です。</span></span>
               </label>
               <label className="flex items-start gap-3 py-2">
                 <input type="radio" name="upload-mode" value="manual" checked={uploadMode === "manual"} onChange={() => setUploadMode("manual")} disabled={saving} />
-                <span><strong>保存済みファイルを手動選択する</strong><span className="mt-1 block text-sm text-stone-600">従来の手動アップロードを使用します。</span></span>
+                <span><strong>保存したファイルを選ぶ</strong><span className="mt-1 block text-sm text-stone-600">保存済みの本文と表紙を選択します。</span></span>
               </label>
             </fieldset>
           )}
           {uploadMode === "automatic" ? (
             <section className="mt-5 rounded-xl border border-stone-200 bg-stone-50 p-5" aria-label="自動ファイル生成">
               <h3 className="font-bold">本文PDFと見開きカバーを自動生成</h3>
-              <p className="mt-2 text-sm text-stone-700">本文PDFは同じ作品・並び順・組版ページ数を使って /final をローカルChromiumで再組版します。申告ページ数とPDFの実ページ数が一致しない場合は送信を中止します。カバーPNGも同じページ数と本の設定から生成します。</p>
-              {!isSubmissionPageCount(declaredPageCount ?? -1) && <p className="mt-3 text-sm text-amber-800">/final で本文を組版し、「注文手続きへ」から進んでください。対象ページ数が確認できるまで自動生成は利用できません。</p>}
+              <p className="mt-2 text-sm text-stone-700">選んだ作品の順番と表紙設定を使ってデータを作成します。内容の確認後、価格が表示されます。</p>
+              {!isSubmissionPageCount(declaredPageCount ?? -1) && <p className="mt-3 text-sm text-amber-800">完成した本の画面で本文を確認してから、もう一度お進みください。</p>}
             </section>
           ) : (
             <section className="mt-5 rounded-xl border border-stone-200 p-5" aria-label="入稿ファイル選択">
-              <h3 className="font-bold">{DIRECT_UPLOAD_EXPERIMENT ? "実験用：アップロードするファイルを選択" : "先に出力した入稿ファイルを選択してください"}</h3>
+              <h3 className="font-bold">本文と表紙を選択</h3>
               {DIRECT_UPLOAD_EXPERIMENT ? (
                 <p className="mt-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
-                  直接アップロード実験モードが有効です。送信時に注文下書きを作成し、TUSで非公開の一時領域へアップロードします。この実験ではファイル検証・確定保存は行わず、決済可能にもなりません。各ファイル40,000,000バイト（40MB）以下です。
+                  この操作は確認用の送信です。今回はお支払いに進めません。
                 </p>
               ) : (
-                <p className="mt-2 text-sm text-stone-600">/final で本文PDF（表紙なし）を保存し、見開きカバー作成画面でPNGを保存してから、この画面に戻って選択してください。各ファイル40,000,000バイト（40MB）以下、2ファイル合計約80MB以下です。</p>
+                <p className="mt-2 text-sm text-stone-600">完成した本の画面で保存した本文と、表紙画面で保存した見開き表紙を選択してください。各ファイルは40MB以下です。</p>
               )}
               <label className="mt-4 block font-medium">本文PDF（表紙なし）
                 <input className="mt-1 block w-full" type="file" accept="application/pdf,.pdf" onChange={(event) => setBodyPdfFile(event.target.files?.[0] ?? null)} disabled={saving} />
@@ -826,8 +813,8 @@ export default function OrderPage() {
             <button className="rounded-lg border border-stone-400 px-5 py-3" type="button" onClick={() => { setError(""); setStep("form"); }} disabled={saving}>戻って修正する</button>
             <button className="rounded-lg bg-stone-900 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => void submitDraft()} disabled={saving || (uploadMode === "manual" && (!bodyPdfFile || !coverPngFile)) || (uploadMode === "automatic" && !isSubmissionPageCount(declaredPageCount ?? -1))}>
               {saving
-                ? usesDirectUpload ? "下書き作成・TUS一時アップロード中……" : "下書き作成・生成・検証中……"
-                : usesDirectUpload ? "下書きを作成してTUSで一時アップロードする" : uploadMode === "automatic" ? "本を生成して検証・保存する" : "下書きを作成してファイルを送信する"}
+                ? usesDirectUpload ? "本のデータを送信中……" : "本のデータを準備・確認中……"
+                : usesDirectUpload ? "本のデータを送信して確認する" : uploadMode === "automatic" ? "本を生成して確認する" : "本のデータを送信する"}
             </button>
           </div>
         </section>

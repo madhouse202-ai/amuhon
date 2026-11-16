@@ -16,7 +16,6 @@ import {
   calculateCoverLayout,
   calculateSpineTextLayout,
   isSubmissionPageCount,
-  SPINE_WIDTH_MODEL,
 } from "@/lib/production";
 import { createSpreadCoverPngBlob } from "@/lib/cover-renderer";
 
@@ -24,7 +23,6 @@ const COVER_PAGE_COUNT_SESSION_KEY = "amuhon-cover-page-count";
 const BLEED_MM = BOOK_PRODUCTION.bleedMm;
 const TRIM_WIDTH_MM = BOOK_PRODUCTION.trimWidthMm;
 const TRIM_HEIGHT_MM = BOOK_PRODUCTION.trimHeightMm;
-const BODY_PAPER_LABEL = BOOK_PRODUCTION.bodyPaperLabel;
 
 type CoverPageCount = { bodyPdfPageCount: number; worksKey: string };
 
@@ -373,29 +371,25 @@ export default function CoverPage() {
         </div>
       </section>
 
-      {/* 製本直送.com 表紙作成コース */}
+      {/* 見開きカバー */}
       <section style={{ marginBottom: "45px", padding: "24px", background: "#f5f5f5", borderRadius: "8px" }}>
         <h2 style={{ fontSize: "20px", fontWeight: "bold", marginBottom: "12px" }}>
-          見開きカバー（表紙作成コース）
+          見開きカバー
         </h2>
         <p style={{ marginBottom: "16px", lineHeight: 1.7 }}>
-          `/final` から渡された本文PDFの最終ページ数（表紙・裏表紙を除き、末尾白紙を含む）に基づいて、背幅と見開き寸法を自動計算します。背幅式は公式公開式ではなく、A6・本文用紙06・右綴じ無線綴じの公式計算ツールで確認した20〜500ページの12実測値に一致するモデルです。
+          本文ページ数に合わせて背幅を調整します。タイトルや色を変えながら、表紙の見え方を確認してください。
         </p>
 
         {pageCountMatchesBook && coverPageCount ? (
           <p style={{ marginBottom: "12px", fontWeight: "bold" }}>本文PDFの最終ページ数：{coverPageCount.bodyPdfPageCount}ページ</p>
         ) : (
           <p role="status" style={{ marginBottom: "16px", color: "#8a3b12" }}>
-            現在の作品一覧に対応する本文ページ数がありません。`/final` で全作品を組版し、「見開きカバーを作成」から移動してください。
+            本文ページ数を確認できません。完成した本の画面から表紙作成へ進んでください。
           </p>
         )}
-        <p style={{ marginBottom: "12px" }}>本文条件：A6・右綴じ・無線綴じ・{BODY_PAPER_LABEL}・モノクロ</p>
         {pageCountMatchesBook && layout && (
           <div style={{ marginBottom: "16px", lineHeight: 1.7 }}>
-            <p>背幅（暫定モデル {SPINE_WIDTH_MODEL.version}）：{layout.spineWidthMm.toFixed(2)}mm</p>
-            <p>計算式：{SPINE_WIDTH_MODEL.millimetersPerPage} × {layout.pageCount} + {SPINE_WIDTH_MODEL.fixedMillimeters} mm</p>
-            <p>見開き全体（四辺3mm塗り足し込み）：{layout.coverWidthMm.toFixed(2)} × {layout.coverHeightMm.toFixed(2)}mm</p>
-            <p>PNG予定寸法：{layout.pixelWidth} × {layout.pixelHeight}px、350dpi相当（RGB）。実ファイルの寸法と解像度メタデータを出力時に検証します。</p>
+            <p>背幅：約{layout.spineWidthMm.toFixed(2)}mm</p>
           </div>
         )}
         <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
@@ -404,19 +398,17 @@ export default function CoverPage() {
         </label>
         {showSpineText && spreadReady && !spineTextLayout && (
           <p role="status" style={{ marginBottom: "14px", color: "#8a3b12" }}>
-            背幅が狭いか文字量が多いため、背表紙の文字を省略します。チェックを外してカバーを出力してください。
+            背表紙に文字が収まらないため、背表紙のタイトルと編者名を省略します。
           </p>
         )}
         {pageCountMatchesBook && !pageCountIsEligible && (
           <p role="alert" style={{ marginBottom: "16px", color: "#8a3b12" }}>
-            {layout
-              ? `カバー出力対象は20〜500ページの8ページ単位です（この調整による有効範囲は24〜496ページ）。現在は${coverPageCount?.bodyPdfPageCount}ページのため出力できません。`
-              : `背幅モデルの計算範囲は${SPINE_WIDTH_MODEL.minPageCount}〜${SPINE_WIDTH_MODEL.maxPageCount}ページで、出力対象は20〜500ページの8ページ単位（有効範囲24〜496ページ）です。現在のページ数では出力できません。`}
+            現在の本文ページ数では製本用の表紙を作成できません。作品を追加・調整して、完成した本の画面からもう一度お試しください。
           </p>
         )}
 
         <p style={{ marginBottom: "18px", fontSize: "14px", lineHeight: 1.6 }}>
-          右綴じの面順（左から表表紙・背表紙・裏表紙）です。塗り足しにも背景色を連続させます。RGB PNGで出力します。
+          表紙・背表紙・裏表紙を並べた仕上がりを確認できます。
         </p>
 
         {spreadReady ? (
@@ -457,7 +449,7 @@ export default function CoverPage() {
           </div>
         ) : (
           <div role="status" style={{ padding: "24px", background: "#fff", border: "1px dashed #aaa", marginBottom: "18px" }}>
-            有効な本文ページ数が渡されると、暫定モデルで見開き寸法を表示します。
+            本文ページ数が確認できると、見開きカバーを表示します。
           </div>
         )}
 

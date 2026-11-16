@@ -1078,7 +1078,6 @@ export default function FinalPage() {
 
   const submissionPageCount = bodyPages.length - 2;
   const submissionPageCountValid = isSubmissionPageCount(submissionPageCount);
-  const actualWorkBodyPageCount = workPageData.reduce((total, item) => total + item.pages.length, 0);
   const coverSummaryPalette = {
     red: { background: "#9e2f2f", foreground: "#fff8eb", label: "赤" },
     blue: { background: "#315f8f", foreground: "#f7f4e9", label: "青" },
@@ -1118,17 +1117,11 @@ export default function FinalPage() {
                 <div className="min-w-0">
                   <h2 className="break-words text-xl font-bold">{data.title}</h2>
                   <p className="mt-1 break-words text-sm text-stone-600">編者：{data.editor}</p>
-                  <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                    <div className="rounded-lg bg-white p-3">
-                      <dt className="text-stone-500">作品本文</dt>
-                      <dd className="mt-1 font-bold">{actualWorkBodyPageCount}ページ</dd>
-                    </div>
-                    <div className="rounded-lg bg-white p-3">
-                      <dt className="text-stone-500">注文用本文PDF</dt>
-                      <dd className="mt-1 font-bold">{submissionPageCount}ページ</dd>
-                    </div>
-                  </dl>
-                  <p className="mt-2 text-xs leading-5 text-stone-500">本文PDFには目次・作品タイトル・奥付・末尾白紙を含みます。ページ数は実際の組版結果です。</p>
+                  <div className="mt-4 rounded-lg bg-white p-3 text-sm">
+                    <p className="text-stone-500">仕上がりページ数</p>
+                    <p className="mt-1 text-lg font-bold">{submissionPageCount}ページ</p>
+                    <p className="mt-1 text-xs leading-5 text-stone-500">目次や作品タイトルなどを含む、実際の組版結果です。</p>
+                  </div>
                 </div>
                 <div className="flex min-w-0 items-center gap-3 rounded-lg bg-white p-3 sm:w-64 sm:flex-col sm:items-start">
                   <div
@@ -1171,10 +1164,10 @@ export default function FinalPage() {
           )}
           {works.some((work) => work.error) && (
             <div role="alert" className="print-errors mt-4 rounded-lg border border-red-200 bg-red-50 p-4 text-red-900">
-              <p>本文を取得できなかった作品があります。全作品の本文を取得するまでPDFを保存できません。</p>
+              <p>作品の本文を読み込めませんでした。全作品を読み込むまで、注文へ進めません。</p>
               <ul>
                 {works.filter((work) => work.error).map((work) => (
-                  <li key={work.id}><strong>{work.title}</strong>：{work.error}</li>
+                  <li key={work.id}><strong>{work.title}</strong>：読み込みに失敗しました。</li>
                 ))}
               </ul>
               <button className="mt-3 rounded bg-stone-800 px-4 py-2 text-white disabled:opacity-50" type="button" onClick={retryFailedWorks} disabled={loading}>
@@ -1230,7 +1223,7 @@ export default function FinalPage() {
           )}
           {canPrint && !submissionPageCountValid && (
             <p role="alert" className="mt-4 text-red-800">
-              標準入稿データは、末尾白紙を含め20〜500ページの範囲です。既存の8ページ単位調整を維持するため実際の出力範囲は24〜496ページです。現在の本文PDFは{submissionPageCount}ページのため、本文PDFとカバーの出力を停止しています。
+              現在のページ数では製本用データを準備できません。作品を追加・削除してページ数を調整してください。
             </p>
           )}
         </section>
