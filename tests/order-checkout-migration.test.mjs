@@ -46,6 +46,8 @@ test("success and cancel pages can only display the order status returned by the
   const successPage = await readFile(new URL("../app/order/success/page.tsx", import.meta.url), "utf8");
   const cancelPage = await readFile(new URL("../app/order/cancel/page.tsx", import.meta.url), "utf8");
   assert.match(resultUi, /\/api\/orders\/\$\{encodeURIComponent\(orderId\)\}\/status/);
+  assert.match(resultUi, /checkoutHost\?: unknown/);
+  assert.match(resultUi, /url\.hostname\.toLowerCase\(\) !== result\.checkoutHost/);
   assert.match(resultUi, /state\?\.status === "paid"/);
   assert.doesNotMatch(resultUi, /payment_status|apply_amuhon_stripe_checkout_paid|session_id/);
   assert.match(successPage, /order_id/);

@@ -16,19 +16,19 @@ const bodyKey = `${orderId}/${attemptId}/body.pdf`;
 const coverKey = `${orderId}/${attemptId}/cover.png`;
 const baseUrl = "https://test-project.supabase.co";
 
-function setup() {
+function setup({ secretKey } = {}) {
   const previous = {
     url: process.env.SUPABASE_URL,
-    key: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    secretKey: process.env.SUPABASE_SECRET_KEY,
   };
   process.env.SUPABASE_URL = baseUrl;
-  process.env.SUPABASE_SERVICE_ROLE_KEY = "mock-only-service-role-key";
+  process.env.SUPABASE_SECRET_KEY = secretKey ?? "sb_secret_mock-only-service-key";
   return {
     restore() {
       if (previous.url === undefined) delete process.env.SUPABASE_URL;
       else process.env.SUPABASE_URL = previous.url;
-      if (previous.key === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-      else process.env.SUPABASE_SERVICE_ROLE_KEY = previous.key;
+      if (previous.secretKey === undefined) delete process.env.SUPABASE_SECRET_KEY;
+      else process.env.SUPABASE_SECRET_KEY = previous.secretKey;
     },
   };
 }
@@ -86,9 +86,32 @@ test("claim uses exact RPC contract, validates keys, and never calls legacy comp
     p_attempt_id: attemptId,
     p_lease_seconds: 300,
   });
-  assert.equal(calls[0].init.headers.get("apikey"), "mock-only-service-role-key");
-  assert.equal(calls[0].init.headers.get("authorization"), "Bearer mock-only-service-role-key");
+  assert.equal(calls[0].init.headers.get("apikey"), "sb_secret_mock-only-service-key");
+  assert.equal(calls[0].init.headers.has("authorization"), false);
   assert.equal(calls.some((call) => call.url.includes("complete_amuhon_order_validation_job")), false);
+});
+
+test("new secret key authorizes validation RPC and Storage requests through apikey only", async (t) => {
+  const env = setup({ secretKey: "sb_secret_mock-only-not-a-real-key" });
+  t.after(env.restore);
+  const requests = [];
+  const adapters = createSupabaseOrderValidationAdapters({
+    fetchImpl: async (input, init) => {
+      requests.push({ url: String(input), headers: new Headers(init.headers) });
+      return String(input).includes("/storage/v1/object/")
+        ? new Response(Buffer.from("mock-asset"), { status: 200 })
+        : rpcResponse(claimPayload());
+    },
+  });
+
+  await adapters.rpc.claimForAttempt({ orderId, attemptId, leaseSeconds: 300 });
+  await adapters.storage.downloadTemporaryObject({ bucket: "amuhon-order-temp-files", key: bodyKey });
+
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    assert.equal(request.headers.get("apikey"), "sb_secret_mock-only-not-a-real-key");
+    assert.equal(request.headers.has("authorization"), false);
+  }
 });
 
 test("claim requires an explicit valid declaredPageCount contract", async (t) => {

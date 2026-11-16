@@ -5,7 +5,7 @@ import { POST as cleanupTemp } from "../app/api/internal/cleanup-order-temp-uplo
 
 const ORDER_ID = "d9d71ea0-115c-4b26-8c1d-86bead2aecc4";
 process.env.SUPABASE_URL = "https://staging-project-ref.supabase.co";
-process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-server-key";
+process.env.SUPABASE_SECRET_KEY = "sb_secret_test-only-server-key";
 process.env.ORDER_UPLOAD_CLEANUP_SECRET = "test-only-cleanup-secret-with-more-than-32-chars";
 
 async function invoke(request, mockFetch, handler = POST) {

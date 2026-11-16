@@ -1,5 +1,10 @@
 import { hashOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
 import { readOrderUploadCookie } from "../../../../../lib/order-upload-cookie.ts";
+import {
+  createSupabaseServiceHeaders,
+  getSupabaseServiceCredential,
+  type SupabaseServiceCredential,
+} from "../../../../../lib/supabase-service-credential.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,14 +66,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function getSupabaseConfig(): { url: URL; serviceRoleKey: string } | null {
+function getSupabaseConfig(): { url: URL; serviceCredential: SupabaseServiceCredential } | null {
   const rawUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!rawUrl || !serviceRoleKey) return null;
+  const serviceCredential = getSupabaseServiceCredential();
+  if (!rawUrl || !serviceCredential) return null;
   try {
     const url = new URL(rawUrl);
     if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") return null;
-    return { url, serviceRoleKey };
+    return { url, serviceCredential };
   } catch {
     return null;
   }
@@ -109,12 +114,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     const response = await fetch(`${config.url.origin}/rest/v1/rpc/enqueue_amuhon_order_validation_job`, {
       method: "POST",
-      headers: {
-        apikey: config.serviceRoleKey,
-        Authorization: `Bearer ${config.serviceRoleKey}`,
+      headers: createSupabaseServiceHeaders(config.serviceCredential, {
         "Content-Type": "application/json",
         Accept: "application/json",
-      },
+      }),
       body: JSON.stringify({
         p_order_id: orderId.toLowerCase(),
         p_upload_token_hash: hashOrderUploadToken(uploadToken),

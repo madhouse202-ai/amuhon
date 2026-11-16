@@ -152,6 +152,10 @@ body {
     overflow: visible !important;
   }
 
+  .print-root--body-only .print-page {
+    background: transparent !important;
+  }
+
   .body-content > div {
     line-height: 1 !important;
     letter-spacing: 0 !important;

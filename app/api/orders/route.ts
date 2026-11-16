@@ -3,6 +3,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { validateOrderCustomer, type OrderBookSnapshot, type OrderDraftRequest } from "../../../lib/order.ts";
 import { hashOrderUploadToken } from "../../../lib/order-upload-token.ts";
 import { serializeOrderUploadCookie } from "../../../lib/order-upload-cookie.ts";
+import { createSupabaseServiceHeaders, getSupabaseServiceCredential } from "../../../lib/supabase-service-credential.ts";
 import type { BookWork } from "../../../lib/book.ts";
 
 export const runtime = "nodejs";
@@ -147,10 +148,10 @@ export async function POST(request: Request) {
   }
 
   const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const serviceCredential = getSupabaseServiceCredential();
   const rateLimitSecret = process.env.ORDER_RATE_LIMIT_SECRET;
   const retentionDays = Number(process.env.ORDER_DRAFT_RETENTION_DAYS ?? "30");
-  if (!supabaseUrl || !serviceRoleKey || !rateLimitSecret || rateLimitSecret.length < 32 || !Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 365) {
+  if (!supabaseUrl || !serviceCredential || !rateLimitSecret || rateLimitSecret.length < 32 || !Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 365) {
     return errorResponse("注文保存サービスが未設定です。入力内容は保存されていません。", 503);
   }
 
@@ -184,12 +185,10 @@ export async function POST(request: Request) {
   try {
     const rpcResponse = await fetch(`${databaseUrl.origin}/rest/v1/rpc/create_amuhon_order_draft_with_upload_token`, {
       method: "POST",
-      headers: {
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
+      headers: createSupabaseServiceHeaders(serviceCredential, {
         "Content-Type": "application/json",
         Accept: "application/json",
-      },
+      }),
       body: JSON.stringify(args),
       cache: "no-store",
       signal: AbortSignal.timeout(10_000),

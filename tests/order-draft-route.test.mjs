@@ -5,12 +5,12 @@ import { hashOrderUploadToken } from "../lib/order-upload-token.ts";
 
 const originalEnv = {
   SUPABASE_URL: process.env.SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  SUPABASE_SECRET_KEY: process.env.SUPABASE_SECRET_KEY,
   ORDER_RATE_LIMIT_SECRET: process.env.ORDER_RATE_LIMIT_SECRET,
   ORDER_APP_ORIGIN: process.env.ORDER_APP_ORIGIN,
 };
 process.env.SUPABASE_URL = "https://staging-project-ref.supabase.co";
-process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-server-key";
+process.env.SUPABASE_SECRET_KEY = "sb_secret_test-only-server-key";
 process.env.ORDER_RATE_LIMIT_SECRET = "test-only-rate-limit-secret-with-32-characters";
 process.env.ORDER_APP_ORIGIN = "https://app.test";
 

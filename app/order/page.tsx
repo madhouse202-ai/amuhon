@@ -9,6 +9,7 @@ import { bookLayoutKey, loadBookData, type BookData } from "@/lib/book";
 import { createSpreadCoverPngBlob } from "@/lib/cover-renderer";
 import { isSubmissionPageCount } from "@/lib/production";
 import { createOrderTusHeaders, inspectOrderTusCredentials } from "@/lib/order-tus";
+import { getSupabasePublicCredential } from "@/lib/supabase-public-credential";
 import {
   JAPANESE_PREFECTURES,
   validateOrderCustomer,
@@ -156,14 +157,16 @@ export default function OrderPage() {
         body: "{}",
         credentials: "same-origin",
       });
-      const result = await response.json() as { checkoutUrl?: unknown; alreadyPaid?: boolean; error?: string };
+      const result = await response.json() as { checkoutUrl?: unknown; checkoutHost?: unknown; alreadyPaid?: boolean; error?: string };
       if (response.ok && result.alreadyPaid === true) {
         router.replace(`/order/success?order_id=${encodeURIComponent(draft.id)}`);
         return;
       }
       if (!response.ok || typeof result.checkoutUrl !== "string") throw new Error(result.error ?? "決済を開始できませんでした。");
       const checkoutUrl = new URL(result.checkoutUrl);
-      if (checkoutUrl.protocol !== "https:" || checkoutUrl.hostname !== "checkout.stripe.com") {
+      if (checkoutUrl.protocol !== "https:" || checkoutUrl.username !== "" || checkoutUrl.password !== "" ||
+          checkoutUrl.port !== "" || typeof result.checkoutHost !== "string" ||
+          checkoutUrl.hostname.toLowerCase() !== result.checkoutHost) {
         throw new Error("決済画面の接続先を確認できませんでした。");
       }
       window.location.assign(checkoutUrl.toString());
@@ -345,13 +348,15 @@ export default function OrderPage() {
     asset: TusDiagnostic["asset"],
     onProgress: (percent: number) => void,
   ) {
-    const publicApiKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!publicApiKey) throw new Error("TUSアップロード用の公開Supabaseキーが設定されていません。");
+    const publicCredential = getSupabasePublicCredential(
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+    );
+    if (!publicCredential) throw new Error("TUSアップロード用の公開Supabaseキーが設定されていません。");
     if (file.size > MAX_ORDER_ASSET_BYTES) throw new Error("PDF・PNGはそれぞれ40,000,000バイト（40MB）以下にしてください。");
 
     const upload = new Upload(file, {
       endpoint: intent.tusEndpoint,
-      headers: createOrderTusHeaders(publicApiKey, signature),
+      headers: createOrderTusHeaders(publicCredential.apiKey, signature),
       metadata: {
         bucketName: intent.bucket,
         objectName: objectKey,
@@ -373,7 +378,7 @@ export default function OrderPage() {
           const result = inspectOrderTusCredentials(
             signature,
             request.getHeader("x-signature"),
-            publicApiKey,
+            publicCredential.apiKey,
             request.getHeader("apikey"),
           );
           setTusDiagnostics((current) => [

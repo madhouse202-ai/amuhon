@@ -1,14 +1,20 @@
-export type SupabaseServerConfig = { url: URL; serviceRoleKey: string };
+import {
+  createSupabaseServiceHeaders,
+  getSupabaseServiceCredential,
+  type SupabaseServiceCredential,
+} from "./supabase-service-credential.ts";
+
+export type SupabaseServerConfig = { url: URL; serviceCredential: SupabaseServiceCredential };
 export type RpcResult = { ok: boolean; status: number; data: Record<string, unknown> | null };
 
 export function getSupabaseServerConfig(): SupabaseServerConfig | null {
   const rawUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!rawUrl || !serviceRoleKey) return null;
+  const serviceCredential = getSupabaseServiceCredential();
+  if (!rawUrl || !serviceCredential) return null;
   try {
     const url = new URL(rawUrl);
     if ((url.protocol !== "https:" && url.hostname !== "localhost") || url.username || url.password || url.search || url.hash) return null;
-    return { url, serviceRoleKey };
+    return { url, serviceCredential };
   } catch {
     return null;
   }
@@ -21,14 +27,13 @@ export async function callOrderRpc(
 ): Promise<RpcResult> {
   const response = await fetch(`${config.url.origin}/rest/v1/rpc/${name}`, {
     method: "POST",
-    headers: {
-      apikey: config.serviceRoleKey,
-      Authorization: `Bearer ${config.serviceRoleKey}`,
+    headers: createSupabaseServiceHeaders(config.serviceCredential, {
       "Content-Type": "application/json",
       Accept: "application/json",
-    },
+    }),
     body: JSON.stringify(args),
     cache: "no-store",
+    redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
   const data = await response.json().catch(() => null) as Record<string, unknown> | null;

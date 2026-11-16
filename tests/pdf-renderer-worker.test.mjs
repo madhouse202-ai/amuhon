@@ -51,7 +51,7 @@ test("render job rejects arbitrary render targets, mismatched text, unknown fiel
 });
 
 test("container and worker keep the browser, font, output, and DB boundaries explicit", async () => {
-  const [dockerfile, fontScript, worker, renderer, localPdf, finalPage, docs, gitignore] = await Promise.all([
+  const [dockerfile, fontScript, worker, renderer, localPdf, finalPage, docs, cloudHandoff, gitignore, packageJson, packageLock] = await Promise.all([
     readFile(new URL("../Dockerfile.pdf-renderer", import.meta.url), "utf8"),
     readFile(new URL("../scripts/fetch-pinned-pdf-font.mjs", import.meta.url), "utf8"),
     readFile(new URL("../scripts/render-order-assets-worker.mjs", import.meta.url), "utf8"),
@@ -59,11 +59,22 @@ test("container and worker keep the browser, font, output, and DB boundaries exp
     readFile(new URL("../lib/local-final-pdf.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/final/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../docs/PDF_RENDERER_WORKER.md", import.meta.url), "utf8"),
+    readFile(new URL("../docs/CLOUD_RUN_HANDOFF.md", import.meta.url), "utf8"),
     readFile(new URL("../.gitignore", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../package-lock.json", import.meta.url), "utf8"),
   ]);
 
   assert.match(dockerfile, /mcr\.microsoft\.com\/playwright:v1\.65\.0-noble/);
-  assert.match(dockerfile, /npm ci[\s\S]*npm run build/);
+  assert.match(dockerfile, /npm ci --include=dev[\s\S]*npm run build[\s\S]*npm prune --omit=dev[\s\S]*require\('playwright-core'\)/);
+  const parsedPackage = JSON.parse(packageJson);
+  const parsedLock = JSON.parse(packageLock);
+  assert.equal(parsedPackage.dependencies["playwright-core"], "1.65.0");
+  assert.equal(parsedPackage.devDependencies["playwright-core"], undefined);
+  assert.equal(parsedLock.packages[""].dependencies["playwright-core"], "1.65.0");
+  assert.equal(parsedLock.packages[""].devDependencies["playwright-core"], undefined);
+  assert.equal(parsedLock.packages["node_modules/playwright-core"].version, "1.65.0");
+  assert.equal(parsedLock.packages["node_modules/playwright-core"].dev, undefined);
   assert.match(fontScript, /const VERSION = "2\.003"/);
   assert.match(fontScript, /noto-cjk\/Serif\$\{VERSION\}/);
   assert.match(fontScript, new RegExp(NOTO_SERIF_JP_FONT_SHA256));
@@ -72,10 +83,19 @@ test("container and worker keep the browser, font, output, and DB boundaries exp
   assert.match(worker, /process\.env\.ORDER_PDF_RENDER_URL = `http:\/\/127\.0\.0\.1:\$\{port\}\/final`/);
   assert.match(worker, /HOSTNAME: "127\.0\.0\.1"/);
   assert.match(worker, /passage\.repeat\(140\)/);
+  assert.match(worker, /if \(selfTest && result\.rubyCount <= 0\) throw new Error\("self_test_ruby_missing"\)/);
   assert.match(worker, /minimalServerEnvironment/);
+  assert.match(worker, /--run-queue-once/);
+  assert.match(worker, /AMUHON_PDF_QUEUE_ENABLED !== "true"/);
+  assert.match(worker, /AMUHON_PDF_WORKER_BROWSER_MODE !== "pinned"/);
+  assert.match(worker, /claimedQueueJob\.leaseId,[\s\S]*?"worker_unavailable"[\s\S]*?PDF_QUEUE_FAILURE_RECORDING_PENDING/);
+  assert.ok(worker.indexOf("queueAdapter.claim(PDF_RENDER_LEASE_SECONDS)") < worker.indexOf("server = await startAppServer(port)"),
+    "idle queue executions must not start the app server/browser runtime");
+  const isolatedEnvironment = worker.slice(worker.indexOf("function minimalServerEnvironment"), worker.indexOf("async function waitForLocalServer"));
+  assert.doesNotMatch(isolatedEnvironment, /SUPABASE_URL|SUPABASE_SECRET_KEY|STRIPE_SECRET|AMUHON_ADMIN_USER_ID/);
   assert.match(worker, /path\.relative\(ROOT, saved\.pdfPath\)/);
   assert.doesNotMatch(worker, /console\.log\(`Body PDF: \$\{saved\.pdfPath\}`\)/);
-  assert.match(renderer, /renderLocalFinalBodyPdf\(input\.book, null/);
+  assert.match(renderer, /renderLocalFinalBodyPdf\(input\.book, expectedBodyPdfPageCount/);
   assert.match(finalPage, /data-final-layout-ready=\{canPrint \? "true" : "false"\}/);
   assert.match(finalPage, /data-submission-page-count=\{submissionPageCount\}/);
   assert.match(localPdf, /data-final-layout-ready="true"/);
@@ -85,7 +105,22 @@ test("container and worker keep the browser, font, output, and DB boundaries exp
   assert.match(renderer, /onDiagnosticCode,/);
   assert.match(renderer, /validateCoverPng\(coverPngBytes, body\.pageCount\)/);
   assert.doesNotMatch(worker + renderer, /SUPABASE_SERVICE_ROLE_KEY|STRIPE_SECRET_KEY|checkout\.sessions|supabase\.co/);
-  assert.match(docs, /not yet a production order worker/i);
+  assert.match(docs, /Paid-order queue \(implementation present; not deployed\)/i);
+  assert.match(docs, /AMUHON_PDF_QUEUE_PROJECT_REF/);
+  assert.match(docs, /docker run --rm --network none --mount[\s\S]*--self-test/);
+  assert.match(docs, /target=\/app\/tmp\/pdf-renderer-worker/);
+  assert.match(docs, /Test-Path -LiteralPath \$bodyPdf -PathType Leaf/);
+  assert.match(docs, /Test-Path -LiteralPath \$coverPng -PathType Leaf/);
+  assert.match(docs, /Invoke-Item \$bodyPdf[\s\S]*Invoke-Item \$coverPng/);
+  assert.match(cloudHandoff, /--platform linux\/amd64/);
+  assert.match(cloudHandoff, /--run-queue-once/);
+  assert.match(cloudHandoff, /--tasks=1 --parallelism=1 --max-retries=0 --task-timeout=20m/);
+  assert.match(cloudHandoff, /35 \* \* \* \*/);
+  assert.match(cloudHandoff, /`\/app\/tmp\/pdf-renderer-worker`/);
+  assert.match(cloudHandoff, /--max-retry-attempts=0/);
+  const jobCreateExample = cloudHandoff.match(/gcloud run jobs create[\s\S]*?```/)?.[0] ?? "";
+  assert.ok(jobCreateExample);
+  assert.doesNotMatch(jobCreateExample, /--execute-now/);
   assert.match(gitignore, /\/tmp\/pdf-renderer-worker\//);
 });
 

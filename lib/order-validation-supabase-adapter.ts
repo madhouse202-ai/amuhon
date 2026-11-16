@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+  createSupabaseServiceHeaders,
+  getSupabaseServiceCredential,
+  type SupabaseServiceCredential,
+} from "./supabase-service-credential.ts";
 
 import {
   FINAL_ORDER_FILES_BUCKET,
@@ -24,7 +29,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 type AdapterOptions = { fetchImpl?: typeof fetch };
-type SupabaseConfig = { origin: string; serviceRoleKey: string };
+type SupabaseConfig = { origin: string; serviceCredential: SupabaseServiceCredential };
 
 class SupabaseAdapterError extends Error {
   constructor(message = "supabase_adapter_error") {
@@ -43,8 +48,8 @@ class FinalObjectConflictError extends Error {
 function serverConfig(): SupabaseConfig {
   if (typeof window !== "undefined") throw new Error("server_only_module");
   const rawUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!rawUrl || !serviceRoleKey) throw new Error("order_validation_worker_not_configured");
+  const serviceCredential = getSupabaseServiceCredential();
+  if (!rawUrl || !serviceCredential) throw new Error("order_validation_worker_not_configured");
 
   let url: URL;
   try {
@@ -55,7 +60,7 @@ function serverConfig(): SupabaseConfig {
   if (!(["http:", "https:"].includes(url.protocol)) || url.username || url.password) {
     throw new Error("order_validation_worker_not_configured");
   }
-  return { origin: url.origin, serviceRoleKey };
+  return { origin: url.origin, serviceCredential };
 }
 
 function validateAttemptObjectKey(key: string, bucket: string): void {
@@ -75,10 +80,7 @@ function objectUrl(config: SupabaseConfig, bucket: string, key: string): string 
 }
 
 function serviceHeaders(config: SupabaseConfig, extra?: HeadersInit): Headers {
-  const headers = new Headers(extra);
-  headers.set("apikey", config.serviceRoleKey);
-  headers.set("authorization", `Bearer ${config.serviceRoleKey}`);
-  return headers;
+  return createSupabaseServiceHeaders(config.serviceCredential, extra);
 }
 
 async function readBoundedText(response: Response, maxBytes: number): Promise<string> {

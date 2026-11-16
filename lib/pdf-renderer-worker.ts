@@ -14,7 +14,7 @@ import {
   type LocalFinalPdfDiagnosticCode,
 } from "./local-final-pdf.ts";
 import { MAX_ORDER_ASSET_BYTES, validateCoverPng } from "./order-assets.ts";
-import { calculateSpineTextLayout } from "./production.ts";
+import { calculateSpineTextLayout, isSubmissionPageCount } from "./production.ts";
 import { createHash } from "node:crypto";
 
 export type PdfRendererStage =
@@ -126,14 +126,19 @@ export async function renderPdfRendererJob(
   notoFontBytes: Uint8Array,
   onStage?: (stage: PdfRendererStage) => void,
   onDiagnosticCode?: (code: LocalFinalPdfDiagnosticCode) => void,
+  expectedBodyPdfPageCount: number | null = null,
 ): Promise<PdfRendererAssetResult> {
+  if (expectedBodyPdfPageCount !== null &&
+      (!isSubmissionPageCount(expectedBodyPdfPageCount) || expectedBodyPdfPageCount > 300)) {
+    throw new Error("expected_page_count_invalid");
+  }
   if (notoFontBytes.byteLength !== NOTO_SERIF_JP_FONT_SIZE_BYTES ||
       digest(notoFontBytes).toUpperCase() !== NOTO_SERIF_JP_FONT_SHA256) {
     throw new Error("pinned_font_invalid");
   }
 
   onStage?.("BODY_RENDER_START");
-  const body = await renderLocalFinalBodyPdf(input.book, null, {
+  const body = await renderLocalFinalBodyPdf(input.book, expectedBodyPdfPageCount, {
     bodyTypography: "noto-serif-jp",
     preloadedWorks: input.works,
     verifyNotoFontUsage: true,

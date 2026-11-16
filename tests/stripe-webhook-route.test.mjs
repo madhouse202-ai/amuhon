@@ -33,7 +33,7 @@ async function invoke(event, { signatureHeader, mockFetch, mode = "test", stripe
   process.env.STRIPE_SECRET_KEY = stripeKey ?? (mode === "live" ? "sk_live_server-only-test-key" : "sk_test_server-only-test-key");
   process.env.STRIPE_WEBHOOK_SECRET = webhookSecret;
   process.env.SUPABASE_URL = "https://mock-project.supabase.co";
-  process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-test-only";
+  process.env.SUPABASE_SECRET_KEY = "sb_secret_mock-only-not-a-real-key";
   const raw = Buffer.from(JSON.stringify(event));
   globalThis.fetch = mockFetch ?? (async () => { throw new Error("unexpected RPC"); });
   try {

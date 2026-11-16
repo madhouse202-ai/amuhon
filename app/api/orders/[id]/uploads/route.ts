@@ -3,6 +3,11 @@ import { createHmac, randomUUID } from "node:crypto";
 import { hashOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
 import { readOrderUploadCookie } from "../../../../../lib/order-upload-cookie.ts";
 import { isOrderTusProjectMatch, tusEndpoint } from "../../../../../lib/order-tus.ts";
+import {
+  createSupabaseServiceHeaders,
+  getSupabaseServiceCredential,
+  type SupabaseServiceCredential,
+} from "../../../../../lib/supabase-service-credential.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,29 +51,27 @@ function getClientIp(request: Request): string | null {
   return ip && ip.length <= 100 ? ip : null;
 }
 
-function getSupabaseConfig(): { url: URL; serviceRoleKey: string; rateLimitSecret: string } | null {
+function getSupabaseConfig(): { url: URL; serviceCredential: SupabaseServiceCredential; rateLimitSecret: string } | null {
   const rawUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const serviceCredential = getSupabaseServiceCredential();
   const rateLimitSecret = process.env.ORDER_RATE_LIMIT_SECRET;
-  if (!rawUrl || !serviceRoleKey || !rateLimitSecret || rateLimitSecret.length < 32) return null;
+  if (!rawUrl || !serviceCredential || !rateLimitSecret || rateLimitSecret.length < 32) return null;
   try {
     const url = new URL(rawUrl);
     if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") return null;
-    return { url, serviceRoleKey, rateLimitSecret };
+    return { url, serviceCredential, rateLimitSecret };
   } catch {
     return null;
   }
 }
 
-async function callRpc(url: URL, key: string, name: string, args: Record<string, unknown>): Promise<RpcResult> {
+async function callRpc(url: URL, credential: SupabaseServiceCredential, name: string, args: Record<string, unknown>): Promise<RpcResult> {
   const response = await fetch(`${url.origin}/rest/v1/rpc/${name}`, {
     method: "POST",
-    headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
+    headers: createSupabaseServiceHeaders(credential, {
       "Content-Type": "application/json",
       Accept: "application/json",
-    },
+    }),
     body: JSON.stringify(args),
     cache: "no-store",
     signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
@@ -85,14 +88,14 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 async function registerAttempt(
   url: URL,
-  key: string,
+  credential: SupabaseServiceCredential,
   orderId: string,
   tokenHash: string,
   leaseId: string,
   requestedAttemptId: string,
 ): Promise<{ attemptId: string; data: Record<string, unknown> }> {
   let attemptId = requestedAttemptId;
-  let result = await callRpc(url, key, "register_amuhon_order_temp_upload_attempt", {
+  let result = await callRpc(url, credential, "register_amuhon_order_temp_upload_attempt", {
     p_order_id: orderId,
     p_upload_token_hash: tokenHash,
     p_lease_id: leaseId,
@@ -103,7 +106,7 @@ async function registerAttempt(
   // DB confirms the old attempt cannot be reused; never overwrite its object.
   if (!result.response.ok && asRecord(result.data)?.message === "UPLOAD_ATTEMPT_NOT_REUSABLE") {
     attemptId = randomUUID();
-    result = await callRpc(url, key, "register_amuhon_order_temp_upload_attempt", {
+    result = await callRpc(url, credential, "register_amuhon_order_temp_upload_attempt", {
       p_order_id: orderId,
       p_upload_token_hash: tokenHash,
       p_lease_id: leaseId,
@@ -153,16 +156,14 @@ async function readLimitedBody(request: Request, maxBytes: number): Promise<stri
   return new TextDecoder().decode(joined);
 }
 
-async function createSignedUploadToken(url: URL, key: string, objectKey: string): Promise<string> {
+async function createSignedUploadToken(url: URL, credential: SupabaseServiceCredential, objectKey: string): Promise<string> {
   const encodedKey = objectKey.split("/").map(encodeURIComponent).join("/");
   const response = await fetch(`${url.origin}/storage/v1/object/upload/sign/${BUCKET}/${encodedKey}`, {
     method: "POST",
-    headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
+    headers: createSupabaseServiceHeaders(credential, {
       "Content-Type": "application/json",
       Accept: "application/json",
-    },
+    }),
     body: JSON.stringify({ upsert: false }),
     cache: "no-store",
     signal: AbortSignal.timeout(STORAGE_TIMEOUT_MS),
@@ -197,9 +198,9 @@ async function createSignedUploadToken(url: URL, key: string, objectKey: string)
   return token;
 }
 
-async function abortLease(url: URL, key: string, orderId: string, tokenHash: string, leaseId: string) {
+async function abortLease(url: URL, credential: SupabaseServiceCredential, orderId: string, tokenHash: string, leaseId: string) {
   try {
-    await callRpc(url, key, "abort_amuhon_order_asset_upload", {
+    await callRpc(url, credential, "abort_amuhon_order_asset_upload", {
       p_order_id: orderId,
       p_upload_token_hash: tokenHash,
       p_lease_id: leaseId,
@@ -252,7 +253,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     // A retry with the same non-secret attempt ID can re-issue short-lived
     // storage signatures for the same unique keys without creating new objects.
-    const recovered = await callRpc(config.url, config.serviceRoleKey, "get_amuhon_order_temp_upload_attempt", {
+    const recovered = await callRpc(config.url, config.serviceCredential, "get_amuhon_order_temp_upload_attempt", {
       p_order_id: orderId,
       p_upload_token_hash: tokenHash,
       p_attempt_id: attemptId,
@@ -269,7 +270,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
     if (!attempt) {
       leaseId = randomUUID();
-      const begun = await callRpc(config.url, config.serviceRoleKey, "begin_amuhon_order_asset_upload", {
+      const begun = await callRpc(config.url, config.serviceCredential, "begin_amuhon_order_asset_upload", {
         p_order_id: orderId,
         p_upload_token_hash: tokenHash,
         p_rate_limit_key_hash: rateKeyHash,
@@ -287,13 +288,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       beginClaimed = true;
 
       registrationStarted = true;
-      const registered = await registerAttempt(config.url, config.serviceRoleKey, orderId, tokenHash, leaseId, attemptId);
+      const registered = await registerAttempt(config.url, config.serviceCredential, orderId, tokenHash, leaseId, attemptId);
       effectiveAttemptId = registered.attemptId;
       attempt = { ...registered.data, leaseId } as Attempt;
     } else {
       // Re-enter the existing rate-limit/lease RPC for resumable intent retries.
       if (!leaseId) return fail("アップロード状態を確認できませんでした。", 502);
-      const begun = await callRpc(config.url, config.serviceRoleKey, "begin_amuhon_order_asset_upload", {
+      const begun = await callRpc(config.url, config.serviceCredential, "begin_amuhon_order_asset_upload", {
         p_order_id: orderId,
         p_upload_token_hash: tokenHash,
         p_rate_limit_key_hash: rateKeyHash,
@@ -303,7 +304,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       if (!begun.response.ok || beginData?.state !== "claimed") {
         return fail("この注文では一時アップロードを再開できない状態です。", 409);
       }
-      const registered = await registerAttempt(config.url, config.serviceRoleKey, orderId, tokenHash, leaseId, attemptId);
+      const registered = await registerAttempt(config.url, config.serviceCredential, orderId, tokenHash, leaseId, attemptId);
       effectiveAttemptId = registered.attemptId;
       attempt = { ...registered.data, leaseId } as Attempt;
     }
@@ -314,8 +315,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       throw new Error("attempt_path_mismatch");
     }
     const [bodyUploadSignature, coverUploadSignature] = await Promise.all([
-      createSignedUploadToken(config.url, config.serviceRoleKey, attempt.bodyObjectKey),
-      createSignedUploadToken(config.url, config.serviceRoleKey, attempt.coverObjectKey),
+      createSignedUploadToken(config.url, config.serviceCredential, attempt.bodyObjectKey),
+      createSignedUploadToken(config.url, config.serviceCredential, attempt.coverObjectKey),
     ]);
     const endpoint = tusEndpoint(config.url);
     return Response.json({
@@ -334,7 +335,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         : {}),
     }, { headers: { "Cache-Control": "no-store" } });
   } catch {
-    if (beginClaimed && !registrationStarted && leaseId) await abortLease(config.url, config.serviceRoleKey, orderId, tokenHash, leaseId);
+    if (beginClaimed && !registrationStarted && leaseId) await abortLease(config.url, config.serviceCredential, orderId, tokenHash, leaseId);
     return fail("一時アップロード権限を発行できませんでした。同じ画面から再試行してください。", 502);
   }
 }

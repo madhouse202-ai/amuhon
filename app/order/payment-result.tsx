@@ -57,14 +57,17 @@ export default function PaymentResult({ mode, orderId: rawOrderId }: { mode: "su
       const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/checkout`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", credentials: "same-origin",
       });
-      const result = await response.json() as { checkoutUrl?: unknown; alreadyPaid?: boolean; error?: string };
+      const result = await response.json() as { checkoutUrl?: unknown; checkoutHost?: unknown; alreadyPaid?: boolean; error?: string };
       if (response.ok && result.alreadyPaid === true) {
         router.replace(`/order/success?order_id=${encodeURIComponent(orderId)}`);
         return;
       }
       if (!response.ok || typeof result.checkoutUrl !== "string") throw new Error(result.error ?? "決済画面を開けませんでした。");
       const url = new URL(result.checkoutUrl);
-      if (url.protocol !== "https:" || url.hostname !== "checkout.stripe.com") throw new Error("決済画面の接続先を確認できません。");
+      if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "" ||
+          typeof result.checkoutHost !== "string" || url.hostname.toLowerCase() !== result.checkoutHost) {
+        throw new Error("決済画面の接続先を確認できません。");
+      }
       window.location.assign(url.toString());
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "決済画面を開けませんでした。");

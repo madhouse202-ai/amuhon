@@ -9,7 +9,7 @@ const TOKEN = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
 const ENV_KEYS = [
   "NEXT_PUBLIC_ORDER_DIRECT_UPLOAD_EXPERIMENT",
   "SUPABASE_URL",
-  "SUPABASE_SERVICE_ROLE_KEY",
+  "SUPABASE_SECRET_KEY",
   "ORDER_APP_ORIGIN",
 ];
 const originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -17,7 +17,7 @@ const originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[k
 function configure(enabled = true) {
   process.env.NEXT_PUBLIC_ORDER_DIRECT_UPLOAD_EXPERIMENT = enabled ? "true" : "false";
   process.env.SUPABASE_URL = "https://staging-project-ref.supabase.co";
-  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-service-role-secret";
+  process.env.SUPABASE_SECRET_KEY = "sb_secret_test-only-service-role-secret";
   process.env.ORDER_APP_ORIGIN = "https://app.test";
 }
 
@@ -79,7 +79,7 @@ test("authorized request sends only server-derived token hash and returns safe j
   const response = await invoke(request(), async (url, init) => {
     rpcUrl = String(url);
     rpcArgs = JSON.parse(String(init.body));
-    rpcHeaders = init.headers;
+    rpcHeaders = new Headers(init.headers);
     return Response.json({ attemptId: ATTEMPT_ID, state: "queued", attemptCount: 0, createdAt: "2026-10-25T00:00:00Z" });
   });
 
@@ -94,9 +94,9 @@ test("authorized request sends only server-derived token hash and returns safe j
   });
   assert.match(rpcArgs.p_upload_token_hash, /^[a-f0-9]{64}$/);
   assert.notEqual(rpcArgs.p_upload_token_hash, TOKEN);
-  assert.equal(rpcHeaders.apikey, "test-only-service-role-secret");
-  assert.equal(rpcHeaders.Authorization, "Bearer test-only-service-role-secret");
-  assert.doesNotMatch(JSON.stringify(responseBody), /test-only-service-role-secret|0123456789abcdefghijklmnopqrstuvwxyzABCDEFG/);
+  assert.equal(rpcHeaders.get("apikey"), "sb_secret_test-only-service-role-secret");
+  assert.equal(rpcHeaders.has("authorization"), false);
+  assert.doesNotMatch(JSON.stringify(responseBody), /sb_secret_test-only-service-role-secret|0123456789abcdefghijklmnopqrstuvwxyzABCDEFG/);
 });
 
 test("duplicate registration requests use the same attempt and accept the idempotent existing job", async () => {

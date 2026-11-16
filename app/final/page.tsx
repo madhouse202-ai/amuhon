@@ -49,6 +49,10 @@ const NOTO_PREVIEW_DIAGNOSTIC_CODES = new Set([
   "NOTO_USAGE_CHECK_FAILURE",
 ]);
 
+function printFontFamily(bodyTypography: FinalBodyTypography): string {
+  return bodyTypography === "noto-serif-jp" ? '"Noto Serif JP", serif' : "serif";
+}
+
 const PAGE_WIDTH = "105mm";
 const PAGE_HEIGHT = "148mm";
 
@@ -164,9 +168,11 @@ function CoverPage({
 function VerticalPage({
   children,
   pageNumber,
+  bodyTypography = "serif",
 }: {
   children?: ReactNode;
   pageNumber?: number;
+  bodyTypography?: FinalBodyTypography;
 }) {
   return (
     <div
@@ -178,7 +184,7 @@ function VerticalPage({
         boxSizing: "border-box",
         position: "relative",
         overflow: "visible",
-        fontFamily: "serif",
+        fontFamily: printFontFamily(bodyTypography),
       }}
     >
       {children}
@@ -186,6 +192,7 @@ function VerticalPage({
       {pageNumber !== undefined ? (
         <div
           className="print-page__number"
+          data-noto-inspection-kind={bodyTypography === "noto-serif-jp" ? "page-number" : undefined}
         >
           {pageNumber}
         </div>
@@ -202,16 +209,20 @@ function TitlePage({
   title,
   author,
   pageNumber,
+  bodyTypography,
 }: {
   title: string;
   author?: string;
   pageNumber?: number;
+  bodyTypography: FinalBodyTypography;
 }) {
   return (
     <VerticalPage
       pageNumber={pageNumber}
+      bodyTypography={bodyTypography}
     >
       <div
+        className="print-title-page__content"
         style={{
           width: CONTENT_WIDTH,
           height: CONTENT_HEIGHT,
@@ -223,10 +234,10 @@ function TitlePage({
           gap: "8mm",
           writingMode: "vertical-rl",
           textOrientation: "mixed",
-          fontFamily: "serif",
         }}
       >
         <div
+          data-noto-inspection-kind={bodyTypography === "noto-serif-jp" ? "title" : undefined}
           style={{
             fontSize: "13pt",
             lineHeight: 1.8,
@@ -238,6 +249,7 @@ function TitlePage({
 
         {author ? (
           <div
+            data-noto-inspection-kind={bodyTypography === "noto-serif-jp" ? "title" : undefined}
             style={{
               fontSize: "8pt",
               color: "#555",
@@ -261,13 +273,16 @@ function TitlePage({
 function TableOfContents({
   works,
   entries,
+  bodyTypography,
 }: {
   works: WorkText[];
   entries: TocEntry[];
+  bodyTypography: FinalBodyTypography;
 }) {
   return (
-    <VerticalPage>
+    <VerticalPage bodyTypography={bodyTypography}>
       <div
+        className="print-toc-page__content"
         style={{
           position: "absolute",
           inset: 0,
@@ -278,7 +293,7 @@ function TableOfContents({
           gap: "3mm",
           writingMode: "vertical-rl",
           textOrientation: "upright",
-          fontFamily: "serif",
+          fontFamily: printFontFamily(bodyTypography),
           boxSizing: "border-box",
           padding: "12mm",
         }}
@@ -310,15 +325,19 @@ function TableOfContents({
                   flex: "0 0 auto",
                 }}
               >
-                <span>
+                <span data-noto-inspection-kind={bodyTypography === "noto-serif-jp" ? "toc" : undefined}>
                   {work.title}
                   {work.author?.trim() ? `　${work.author.trim()}` : ""}
                   {"　"}
                 </span>
                 <span
+                  data-noto-inspection-kind={bodyTypography === "noto-serif-jp" ? "page-number" : undefined}
                   style={{
                     fontSize: "7.5pt",
                     color: "#a15b46",
+                    textOrientation: "mixed",
+                    textCombineUpright: "all",
+                    whiteSpace: "nowrap",
                   }}
                 >
                   {pageNumber}
@@ -360,6 +379,7 @@ function BodyPage({
   return (
     <VerticalPage
       pageNumber={pageNumber}
+      bodyTypography={bodyTypography}
     >
       <div
         className="body-content"
@@ -472,14 +492,18 @@ function BodyPage({
 
 function ColophonPage({
   pageNumber,
+  bodyTypography,
 }: {
   pageNumber: number;
+  bodyTypography: FinalBodyTypography;
 }) {
   return (
     <VerticalPage
       pageNumber={pageNumber}
+      bodyTypography={bodyTypography}
     >
       <div
+        className="print-colophon-page__content"
         style={{
           width: CONTENT_WIDTH,
           height: CONTENT_HEIGHT,
@@ -489,14 +513,14 @@ function ColophonPage({
           justifyContent: "center",
           writingMode: "vertical-rl",
           textOrientation: "mixed",
-          fontFamily: "serif",
+          fontFamily: printFontFamily(bodyTypography),
           fontSize: "7.5pt",
           lineHeight: 1.8,
           paddingTop: "15mm",
           boxSizing: "border-box",
         }}
       >
-        <div>
+        <div data-noto-inspection-kind={bodyTypography === "noto-serif-jp" ? "colophon" : undefined}>
           編む本
         </div>
       </div>
@@ -894,6 +918,7 @@ export default function FinalPage() {
       title={data.title}
       author={data.editor}
       pageNumber={1}
+      bodyTypography={bodyTypography}
     />,
   );
 
@@ -929,6 +954,7 @@ export default function FinalPage() {
         key={`toc-${tocPageIndex}`}
         works={works}
         entries={tocLayout.pages[tocPageIndex]}
+        bodyTypography={bodyTypography}
       />,
     );
   }
@@ -966,6 +992,7 @@ export default function FinalPage() {
             workIndex
           ]
         }
+        bodyTypography={bodyTypography}
       />,
     );
 
@@ -1013,6 +1040,7 @@ export default function FinalPage() {
       pageNumber={
         colophonPageNumber
       }
+      bodyTypography={bodyTypography}
     />,
   );
 

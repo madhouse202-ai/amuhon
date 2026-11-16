@@ -15,6 +15,11 @@ type AdminOrderDetail = {
   canDownloadAssets: boolean;
   fulfillmentStatus: string;
   submittedAt: string | null;
+  pdfRenderJob?: {
+    state: "not_applicable" | "not_queued" | "queued" | "rendering" | "succeeded" | "failed" | "unavailable";
+    attemptCount?: number;
+    errorCode?: string;
+  };
   customer: { name: string; postalCode: string; prefecture: string; city: string; address: string; phone: string; email: string };
 };
 
@@ -90,6 +95,20 @@ export function AdminOrderDetailClient({ orderId }: { orderId: string }) {
         <address className="mt-3 not-italic leading-7">
           {order.customer.name}<br />〒{order.customer.postalCode}<br />{order.customer.prefecture}{order.customer.city}{order.customer.address}<br />電話：{order.customer.phone}<br />メール：{order.customer.email}
         </address>
+      </section>
+      <section className="rounded border border-stone-200 bg-white p-5">
+        <h2 className="font-semibold">決済後の製本データ生成</h2>
+        <p className="mt-3" role="status">
+          {order.pdfRenderJob?.state === "queued" ? "生成待ち" :
+            order.pdfRenderJob?.state === "rendering" ? "生成中" :
+              order.pdfRenderJob?.state === "succeeded" ? "生成完了" :
+                order.pdfRenderJob?.state === "failed" ? `生成に失敗しました（${order.pdfRenderJob.errorCode ?? "原因コード未取得"}）` :
+                  order.pdfRenderJob?.state === "not_queued" ? "生成ジョブがありません。適用済みの注文は自動で再登録されません。" :
+                    order.pdfRenderJob?.state === "not_applicable" ? "決済後に生成します。" :
+                      "生成状態を確認できません。キュー機能の設定を確認してください。"}
+        </p>
+        {order.pdfRenderJob?.attemptCount !== undefined &&
+          <p className="mt-1 text-sm text-stone-600">試行回数：{order.pdfRenderJob.attemptCount}</p>}
       </section>
       <section className="rounded border border-stone-200 bg-white p-5">
         <h2 className="font-semibold">製本ファイル</h2>

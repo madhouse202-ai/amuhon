@@ -1,6 +1,11 @@
 import "server-only";
 
 import { createClient } from "@supabase/supabase-js";
+import {
+  createSupabaseServiceFetch,
+  createSupabaseServiceHeaders,
+  getSupabaseServiceCredential,
+} from "./supabase-service-credential.ts";
 
 const ORDER_FILES_BUCKET = "amuhon-order-files";
 const MAX_ADMIN_DOWNLOAD_BYTES = 40_000_000;
@@ -14,14 +19,15 @@ function isExpectedOrderAssetPath(orderId: string, path: string, fileName: strin
 
 export function createAdminServiceClient() {
   const rawUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!rawUrl || !serviceRoleKey) return null;
+  const serviceCredential = getSupabaseServiceCredential();
+  if (!rawUrl || !serviceCredential) return null;
   try {
     const url = new URL(rawUrl);
     const allowedProtocol = url.protocol === "https:" || (url.protocol === "http:" && url.hostname === "localhost");
     if (!allowedProtocol || url.username || url.password || url.search || url.hash || url.origin !== rawUrl.replace(/\/$/, "")) return null;
-    return createClient(url.origin, serviceRoleKey, {
+    return createClient(url.origin, serviceCredential.apiKey, {
       auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+      global: { fetch: createSupabaseServiceFetch(serviceCredential) },
     });
   } catch {
     return null;
@@ -48,12 +54,12 @@ export async function fetchVerifiedAdminAsset(
       typeof info.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(info.sha256)) return null;
 
   const rawUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!rawUrl || !serviceRoleKey) return null;
+  const serviceCredential = getSupabaseServiceCredential();
+  if (!rawUrl || !serviceCredential) return null;
   const url = new URL(rawUrl);
   const storageUrl = `${url.origin}/storage/v1/object/${ORDER_FILES_BUCKET}/${info.storagePath.split("/").map(encodeURIComponent).join("/")}`;
   const response = await fetch(storageUrl, {
-    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+    headers: createSupabaseServiceHeaders(serviceCredential),
     cache: "no-store",
     redirect: "error",
     signal: AbortSignal.timeout(30_000),

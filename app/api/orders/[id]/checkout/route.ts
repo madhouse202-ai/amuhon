@@ -5,6 +5,8 @@ import { hashOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
 import { quoteOrderPrice } from "../../../../../lib/order-pricing.ts";
 import { callOrderRpc, getSupabaseServerConfig, isValidOrderId, validOrderPostOrigin } from "../../../../../lib/order-checkout-server.ts";
 import { getStripeServerConfig, isCheckoutSessionIdForMode } from "../../../../../lib/stripe-mode.ts";
+import { checkoutRecordExceptionCode, checkoutRecordFailureCode } from "../../../../../lib/order-checkout-diagnostics.ts";
+import { isTrustedStripeCheckoutUrl, parseTrustedStripeCheckoutHosts, validateCheckoutSessionResponse } from "../../../../../lib/stripe-checkout-session-validation.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,14 +19,23 @@ function fail(message: string, status: number) {
   return Response.json({ error: message }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
-function validCheckoutUrl(value: unknown, sessionId: string): value is string {
-  if (typeof value !== "string") return false;
+function checkoutRedirectResponse(checkoutUrl: string) {
+  const checkoutHost = new URL(checkoutUrl).hostname.toLowerCase();
+  return Response.json({ checkoutUrl, checkoutHost }, { headers: { "Cache-Control": "no-store" } });
+}
+
+async function readTrustedCheckoutHosts(supabase: NonNullable<ReturnType<typeof getSupabaseServerConfig>>) {
   try {
-    const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "checkout.stripe.com" &&
-      url.pathname === `/c/pay/${sessionId}`;
-  } catch {
-    return false;
+    const result = await callOrderRpc(supabase, "get_amuhon_stripe_checkout_allowed_hosts_v1", {});
+    if (!result.ok) return { hosts: null, diagnostic: result.status === 401 ? "CHECKOUT_HOST_ALLOWLIST_AUTH_FAILURE" :
+      result.status === 403 ? "CHECKOUT_HOST_ALLOWLIST_PERMISSION_FAILURE" :
+      result.status === 404 ? "CHECKOUT_HOST_ALLOWLIST_RPC_UNAVAILABLE" : "CHECKOUT_HOST_ALLOWLIST_RPC_FAILURE" };
+    const hosts = result.data ? parseTrustedStripeCheckoutHosts(result.data) : null;
+    return hosts ? { hosts, diagnostic: null } : { hosts: null, diagnostic: "CHECKOUT_HOST_ALLOWLIST_RESPONSE_INVALID" };
+  } catch (error) {
+    const timedOut = typeof error === "object" && error !== null && "name" in error &&
+      ((error as { name?: unknown }).name === "TimeoutError" || (error as { name?: unknown }).name === "AbortError");
+    return { hosts: null, diagnostic: timedOut ? "CHECKOUT_HOST_ALLOWLIST_TIMEOUT" : "CHECKOUT_HOST_ALLOWLIST_TRANSPORT_FAILURE" };
   }
 }
 
@@ -37,6 +48,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const stripe = getStripeServerConfig();
   const supabase = getSupabaseServerConfig();
   if (!stripe || !supabase) return fail("決済サービスの設定を確認できません。", 503);
+
+  // Load the database-owned allowlist before begin_v2, which may bind an attempt and
+  // move a verified order into ready_for_payment. A missing allowlist must not strand it.
+  const allowlist = await readTrustedCheckoutHosts(supabase);
+  if (allowlist.diagnostic || !allowlist.hosts) {
+    console.error("[checkout] CHECKOUT_HOST_ALLOWLIST_FAILED", allowlist.diagnostic ?? "CHECKOUT_HOST_ALLOWLIST_RESPONSE_INVALID");
+    return fail("決済サービスの接続先を確認できませんでした。時間をおいて再試行してください。", 503);
+  }
+  const trustedHosts = allowlist.hosts;
 
   const tokenHash = hashOrderUploadToken(token);
   let begin: Awaited<ReturnType<typeof callOrderRpc>>;
@@ -52,10 +72,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
   if (!begin.ok || !begin.data) return fail("この注文は決済を開始できません。ファイル検証・ページ数・価格を確認してください。", 409);
   if (begin.data.state === "paid") return fail("この注文の決済はすでに確認されています。", 409);
-  if (begin.data.state === "session_available" && typeof begin.data.sessionId === "string" &&
-      isCheckoutSessionIdForMode(begin.data.sessionId, stripe.mode) && begin.data.livemode === stripe.livemode &&
-      validCheckoutUrl(begin.data.checkoutUrl, begin.data.sessionId)) {
-    return Response.json({ checkoutUrl: begin.data.checkoutUrl }, { headers: { "Cache-Control": "no-store" } });
+
+  if (begin.data.state === "session_available") {
+    if (typeof begin.data.sessionId === "string" &&
+        isCheckoutSessionIdForMode(begin.data.sessionId, stripe.mode) && begin.data.livemode === stripe.livemode &&
+        isTrustedStripeCheckoutUrl(begin.data.checkoutUrl, trustedHosts)) {
+      return checkoutRedirectResponse(begin.data.checkoutUrl as string);
+    }
+    return fail("既存の決済画面を安全に確認できませんでした。注文状況を確認してください。", 409);
   }
   const attemptId = begin.data.attemptId;
   const pageCount = begin.data.pageCount;
@@ -110,6 +134,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       },
       body: params,
       cache: "no-store",
+      redirect: "error",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!stripeResponse.ok) return fail("決済画面を作成できませんでした。時間をおいて注文状況を確認してください。", 502);
@@ -118,18 +143,24 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return fail("決済画面への接続を確認できませんでした。注文状況を確認してから再試行してください。", 502);
   }
 
-  const sessionId = stripeSession.id;
-  const checkoutUrl = stripeSession.url;
-  const stripeExpiry = stripeSession.expires_at;
-  if (!isCheckoutSessionIdForMode(sessionId, stripe.mode) || stripeSession.object !== "checkout.session" ||
-      !validCheckoutUrl(checkoutUrl, sessionId) || !Number.isSafeInteger(stripeExpiry) ||
-      (stripeExpiry as number) <= Math.floor(Date.now() / 1000) || (stripeExpiry as number) > expiresAt + 5 ||
-      stripeSession.livemode !== stripe.livemode || stripeSession.status !== "open" || stripeSession.mode !== "payment" || stripeSession.currency !== "jpy" || stripeSession.amount_total !== quote.amountYen ||
-      stripeSession.client_reference_id !== orderId || !stripeSession.metadata || typeof stripeSession.metadata !== "object" ||
-      (stripeSession.metadata as Record<string, unknown>).order_id !== orderId ||
-      (stripeSession.metadata as Record<string, unknown>).checkout_attempt_id !== attemptId) {
+  const validationFailures = validateCheckoutSessionResponse(stripeSession, {
+    mode: stripe.mode,
+    livemode: stripe.livemode,
+    amountYen: quote.amountYen,
+    orderId,
+    attemptId,
+    expiresAt,
+    nowEpochSeconds: Math.floor(Date.now() / 1000),
+  }, trustedHosts);
+  if (validationFailures.length > 0) {
+    // Log only a fixed allowlisted diagnostic code list. Never include response values or request data.
+    console.error("[checkout] STRIPE_SESSION_RESPONSE_REJECTED", validationFailures.join(","));
     return fail("決済サービスの応答を安全に確認できませんでした。注文状況を確認してください。", 502);
   }
+
+  const sessionId = stripeSession.id as string;
+  const checkoutUrl = stripeSession.url as string;
+  const stripeExpiry = stripeSession.expires_at as number;
 
   try {
     const recorded = await callOrderRpc(supabase, "record_amuhon_order_checkout_session_v2", {
@@ -141,15 +172,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       p_expires_at_epoch: stripeExpiry,
       p_livemode: stripe.livemode,
     });
-    if (!recorded.ok || !recorded.data || !["recorded", "paid"].includes(String(recorded.data.state))) {
+    const recordFailureCode = checkoutRecordFailureCode(recorded);
+    if (recordFailureCode) {
+      console.error("[checkout] CHECKOUT_SESSION_RECORD_FAILED", recordFailureCode);
       return fail("決済画面は作成されましたが、注文への記録を確認できませんでした。注文状況を確認してください。", 503);
     }
-    if (recorded.data.state === "paid") {
+    if (recorded.data?.state === "paid") {
       return Response.json({ alreadyPaid: true }, { headers: { "Cache-Control": "no-store" } });
     }
-  } catch {
+  } catch (error) {
+    console.error("[checkout] CHECKOUT_SESSION_RECORD_FAILED", checkoutRecordExceptionCode(error));
     return fail("決済画面は作成されましたが、注文への記録を確認できませんでした。注文状況を確認してください。", 503);
   }
 
-  return Response.json({ checkoutUrl }, { headers: { "Cache-Control": "no-store" } });
+  return checkoutRedirectResponse(checkoutUrl);
 }

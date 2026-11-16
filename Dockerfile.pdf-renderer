@@ -9,11 +9,12 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     NODE_ENV=production
 
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --include=dev
 COPY --chown=pwuser:pwuser . .
 RUN node scripts/fetch-pinned-pdf-font.mjs /opt/amuhon/fonts \
-    && node -e "const { chromium } = require('playwright-core'); require('node:fs').accessSync(chromium.executablePath())" \
     && npm run build \
+    && npm prune --omit=dev \
+    && node -e "const { chromium } = require('playwright-core'); require('node:fs').accessSync(chromium.executablePath())" \
     && chown -R pwuser:pwuser /app
 
 USER pwuser

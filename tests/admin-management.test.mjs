@@ -42,6 +42,17 @@ test("every admin data API verifies the server-side admin before service-role ac
     assert.match(source, /adminAuthFailureResponse\(auth\)/, path);
     assert.match(source, /Cache-Control/, path);
   }
+  const orderDetail = await read("app/api/admin/orders/[id]/route.ts");
+  assert.match(orderDetail, /get_amuhon_admin_order_pdf_render_status/);
+  assert.match(orderDetail, /let pdfRenderJob: Record<string, unknown> = \{ state: "unavailable" \}/);
+  assert.match(orderDetail, /await requireAdmin\(\)[\s\S]*?createAdminServiceClient\(\)[\s\S]*?get_amuhon_admin_order_pdf_render_status/);
+  const detailClient = await read("app/admin/orders/[id]/order-detail-client.tsx");
+  assert.match(detailClient, /決済後の製本データ生成/);
+  assert.match(detailClient, /state === "queued" \? "生成待ち"/);
+  assert.match(detailClient, /state === "rendering" \? "生成中"/);
+  assert.match(detailClient, /生成完了/);
+  assert.match(detailClient, /state === "failed" \? `生成に失敗しました/);
+  assert.match(detailClient, /state === "not_queued" \? "生成ジョブがありません/);
 });
 
 test("Auth uses verified claims and never treats email or service_role as administrator identity", async () => {
@@ -60,8 +71,47 @@ test("login has no signup path and admin browser code contains no server-only se
   const browserClient = await read("lib/supabase/client.ts");
   assert.match(login, /signInWithPassword/);
   assert.doesNotMatch(login, /signUp/);
-  assert.doesNotMatch(browserClient, /SUPABASE_SERVICE_ROLE_KEY|AMUHON_ADMIN_USER_ID/);
+  assert.doesNotMatch(browserClient, /SUPABASE_(?:SERVICE_ROLE_KEY|SECRET_KEY)|AMUHON_ADMIN_USER_ID/);
   assert.doesNotMatch(login, /SUPABASE_SERVICE_ROLE_KEY|AMUHON_ADMIN_USER_ID/);
+});
+
+test("server Supabase calls share new-key header handling without changing admin authorization", async () => {
+  const credential = await read("lib/supabase-service-credential.ts");
+  const adminData = await read("lib/admin-data.ts");
+  const serviceRoutes = [
+    "app/api/orders/route.ts",
+    "app/api/orders/[id]/uploads/route.ts",
+    "app/api/orders/[id]/files/route.ts",
+    "app/api/orders/[id]/validation/route.ts",
+    "app/api/internal/cleanup-order-uploads/route.ts",
+    "app/api/internal/cleanup-order-temp-uploads/route.ts",
+  ];
+  assert.match(credential, /SUPABASE_SECRET_KEY/);
+  assert.doesNotMatch(credential, /SUPABASE_SERVICE_ROLE_KEY|legacy_service_role/);
+  assert.match(credential, /headers\.delete\("authorization"\)/);
+  assert.match(adminData, /createSupabaseServiceFetch\(serviceCredential\)/);
+  assert.match(adminData, /createSupabaseServiceHeaders\(serviceCredential\)/);
+  for (const path of ["lib/supabase/client.ts", "lib/supabase/server.ts", "lib/supabase/proxy.ts", "app/order/page.tsx", "app/admin/login/login-form.tsx"]) {
+    const source = await read(path);
+    assert.doesNotMatch(source, /SUPABASE_SECRET_KEY|SUPABASE_SERVICE_ROLE_KEY|supabase-service-credential/,
+      `${path} must not reference server-only service credentials`);
+  }
+  for (const path of serviceRoutes) {
+    const source = await read(path);
+    assert.match(source, /getSupabaseServiceCredential\(\)/, path);
+    assert.match(source, /createSupabaseServiceHeaders\((?:serviceCredential|credential|config\.serviceCredential)/, path);
+    assert.doesNotMatch(source, /Authorization:\s*`Bearer \$\{(?:serviceRoleKey|key|config\.serviceRoleKey)\}`/, path);
+  }
+
+  for (const path of [
+    "app/api/admin/orders/route.ts",
+    "app/api/admin/orders/[id]/route.ts",
+    "app/api/admin/orders/[id]/files/[asset]/route.ts",
+    "app/api/admin/orders/[id]/submission/route.ts",
+  ]) {
+    const source = await read(path);
+    assert.ok(source.indexOf("await requireAdmin()") < source.indexOf("createAdminServiceClient()"), path);
+  }
 });
 
 test("fulfillment migration keeps payment status separate and makes updates atomic and idempotent", async () => {

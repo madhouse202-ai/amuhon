@@ -50,7 +50,7 @@ function safeNotoDiagnosticCounts(counts: LocalFinalPdfNotoDiagnosticCounts): Lo
 }
 
 const NOTO_CATEGORIES = new Set(["kanji", "hiragana", "katakana", "punctuation", "other"]);
-const NOTO_KINDS = new Set(["column", "body-cell", "ruby"]);
+const NOTO_KINDS = new Set(["column", "body-cell", "ruby", "title", "toc", "colophon", "page-number"]);
 
 function safeDiagnosticInteger(value: unknown): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Math.min(Number(value), 1_000_000) : 0;
@@ -79,6 +79,7 @@ function safeNotoDiagnosticDetails(details: LocalFinalPdfNotoDiagnosticDetails):
     fallbackColumnRootCount: safeDiagnosticInteger(details.fallbackColumnRootCount),
     fallbackBodyCellRootCount: safeDiagnosticInteger(details.fallbackBodyCellRootCount),
     fallbackRubyRootCount: safeDiagnosticInteger(details.fallbackRubyRootCount),
+    fallbackLayoutTextRootCount: safeDiagnosticInteger(details.fallbackLayoutTextRootCount),
     uniqueFallbackTextNodeCount: safeDiagnosticInteger(details.uniqueFallbackTextNodeCount),
     textNodesObservedByMultipleRoots: safeDiagnosticInteger(details.textNodesObservedByMultipleRoots),
     leafScanComplete: details.leafScanComplete === true,

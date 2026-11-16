@@ -215,6 +215,8 @@ test("local PDF diagnostic stages emit only fixed start, success, and failure co
   assert.doesNotMatch(renderer, /page\.locator\('\[role="alert"\]'\)/);
   assert.doesNotMatch(renderer, /console\.(?:log|info|error)\([^\n]*(?:message\.text|request\.url|error\.message)/);
   assert.match(renderer, /selector: "\.body-content > div"/);
+  assert.match(renderer, /selector: "\[data-noto-inspection-kind\]"/);
+  assert.match(renderer, /fallbackLayoutTextRootCount/);
   assert.match(renderer, /const targets = await page\.evaluate/);
   assert.match(renderer, /CSS\.getPlatformFontsForNode/);
   assert.match(renderer, /DOM\.getDocument", \{ depth: -1, pierce: true \}/);
@@ -263,6 +265,16 @@ test("D toggle is development-only, starts at serif, and keeps ordinary order PD
   assert.match(page, /function isIsolatedPdfRenderer\(\): boolean[\s\S]*?__AMUHON_PDF_RENDERER_V1__/);
   assert.match(page, /const allowRendererSnapshot = process\.env\.NODE_ENV === "development" \|\| isIsolatedPdfRenderer\(\);[\s\S]*?if \(allowRendererSnapshot && previewSessionSnapshot === null\)[\s\S]*?sessionStorage\.removeItem\(FINAL_TYPOGRAPHY_SESSION_KEY\)/);
   assert.match(page, /bodyTypography === "noto-serif-jp" \? '\"Noto Serif JP\", serif' : "serif"/);
+  assert.match(page, /function printFontFamily\(bodyTypography: FinalBodyTypography\)/);
+  assert.match(page, /className="print-title-page__content"[\s\S]*?<div\s+data-noto-inspection-kind=\{bodyTypography === "noto-serif-jp" \? "title"/);
+  assert.match(page, /<span data-noto-inspection-kind=\{bodyTypography === "noto-serif-jp" \? "toc" : undefined\}>[\s\S]*?\{work\.title\}/);
+  assert.match(page, /<span\s+data-noto-inspection-kind=\{bodyTypography === "noto-serif-jp" \? "page-number" : undefined\}[\s\S]*?\{pageNumber\}/);
+  assert.match(page, /className="print-colophon-page__content"[\s\S]*?<div data-noto-inspection-kind=\{bodyTypography === "noto-serif-jp" \? "colophon" : undefined\}>/);
+  assert.match(page, /className="print-page__number"\s+data-noto-inspection-kind=\{bodyTypography === "noto-serif-jp" \? "page-number"/);
+  assert.doesNotMatch(page, /className="print-toc-page__content"\s+data-noto-inspection-kind/);
+  assert.doesNotMatch(page, /className="print-colophon-page__content"\s+data-noto-inspection-kind/);
+  assert.match(page, /textCombineUpright: "all"/);
+  assert.match(page, /bodyTypography=\{bodyTypography\}/);
   assert.match(page, /works\.map\(\(\{ id, title, author, text \}\)/);
   assert.match(page, /X-Body-Pdf-Page-Count/);
   assert.match(page, /reportedRubyCount <= 0/);

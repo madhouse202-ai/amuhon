@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createSupabaseServiceHeaders, getSupabaseServiceCredential } from "../../../../lib/supabase-service-credential.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,8 +26,8 @@ export async function POST(request: Request) {
   }
 
   const rawUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!rawUrl || !serviceRoleKey) return response("清掃サービスが未設定です。", 503);
+  const serviceCredential = getSupabaseServiceCredential();
+  if (!rawUrl || !serviceCredential) return response("清掃サービスが未設定です。", 503);
   let supabaseUrl: URL;
   try {
     supabaseUrl = new URL(rawUrl);
@@ -41,11 +42,9 @@ export async function POST(request: Request) {
   try {
     claimResponse = await fetch(`${supabaseUrl.origin}/rest/v1/rpc/claim_stale_amuhon_order_asset_cleanup`, {
       method: "POST",
-      headers: {
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
+      headers: createSupabaseServiceHeaders(serviceCredential, {
         "Content-Type": "application/json",
-      },
+      }),
       body: JSON.stringify({ p_cleanup_lease_id: cleanupLeaseId, p_limit: 50 }),
       cache: "no-store",
       signal: AbortSignal.timeout(12_000),
@@ -65,11 +64,9 @@ export async function POST(request: Request) {
   try {
     storageResponse = await fetch(`${supabaseUrl.origin}/storage/v1/object/${BUCKET}`, {
       method: "DELETE",
-      headers: {
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
+      headers: createSupabaseServiceHeaders(serviceCredential, {
         "Content-Type": "application/json",
-      },
+      }),
       body: JSON.stringify({ prefixes }),
       cache: "no-store",
       signal: AbortSignal.timeout(45_000),
@@ -82,11 +79,9 @@ export async function POST(request: Request) {
   try {
     releaseResponse = await fetch(`${supabaseUrl.origin}/rest/v1/rpc/release_stale_amuhon_order_asset_cleanup`, {
       method: "POST",
-      headers: {
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
+      headers: createSupabaseServiceHeaders(serviceCredential, {
         "Content-Type": "application/json",
-      },
+      }),
       body: JSON.stringify({ p_cleanup_lease_id: cleanupLeaseId, p_order_ids: orderIds }),
       cache: "no-store",
       signal: AbortSignal.timeout(12_000),

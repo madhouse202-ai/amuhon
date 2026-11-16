@@ -59,7 +59,7 @@ export type LocalFinalPdfNotoDiagnosticCounts = {
 };
 
 export type LocalFinalPdfNotoCategory = "kanji" | "hiragana" | "katakana" | "punctuation" | "other";
-export type LocalFinalPdfNotoInspectionKind = "column" | "body-cell" | "ruby";
+export type LocalFinalPdfNotoInspectionKind = "column" | "body-cell" | "ruby" | "title" | "toc" | "colophon" | "page-number";
 
 export type LocalFinalPdfNotoFallbackFont = {
   family: string;
@@ -93,6 +93,7 @@ export type LocalFinalPdfNotoDiagnosticDetails = {
   fallbackColumnRootCount: number;
   fallbackBodyCellRootCount: number;
   fallbackRubyRootCount: number;
+  fallbackLayoutTextRootCount: number;
   uniqueFallbackTextNodeCount: number;
   textNodesObservedByMultipleRoots: number;
   leafScanComplete: boolean;
@@ -720,6 +721,12 @@ export async function renderLocalFinalBodyPdf(
                   .map((ruby) => ruby.textContent ?? "").join(" ")}`)
                 .join(" "),
             ));
+            const layoutTextRoots = [...document.querySelectorAll<HTMLElement>("[data-noto-inspection-kind]")]
+              .map((element, index) => ({
+                index,
+                kind: element.dataset.notoInspectionKind ?? "title",
+                categories: classifyText(element.textContent ?? ""),
+              }));
             return {
               bodyGlyphCellCount: cellText.filter(hasGlyphText).length,
               nonEmptyRubyNodeCount: nonEmptyRubyIndexes.length,
@@ -737,6 +744,7 @@ export async function renderLocalFinalBodyPdf(
               cellCount: cells.length,
               rubyNodeCount: rubyNodes.length,
               columnCount: columns.length,
+              layoutTextRoots,
             };
           });
           counts.bodyGlyphCellCount = targets.bodyGlyphCellCount;
@@ -765,8 +773,13 @@ export async function renderLocalFinalBodyPdf(
             nodeId: root.nodeId,
             selector: ".print-character-cell__ruby",
           });
+          const { nodeIds: layoutTextNodeIds } = await activeSession.send("DOM.querySelectorAll", {
+            nodeId: root.nodeId,
+            selector: "[data-noto-inspection-kind]",
+          });
           if (columnNodeIds.length !== targets.columnCount || cellNodeIds.length !== targets.cellCount ||
               rubyNodeIds.length !== targets.rubyNodeCount ||
+              layoutTextNodeIds.length !== targets.layoutTextRoots.length ||
               targets.glyphColumnIndexes.some((index) => index >= columnNodeIds.length) ||
               targets.representativeCellIndexes.some((index) => index >= cellNodeIds.length) ||
               targets.representativeCellIndexes.some((index) => targets.cellColumnIndexes[index] < 0) ||
@@ -800,6 +813,16 @@ export async function renderLocalFinalBodyPdf(
               nodeId: rubyNodeIds[targets.representativeRubyIndex], kind: "ruby",
               index: targets.representativeRubyIndex, columnIndex: targets.rubyColumnIndexes[targets.representativeRubyIndex],
               categories: targets.rubyCategories[targets.representativeRubyIndex] as LocalFinalPdfNotoCategory[],
+            });
+          }
+          for (const [index, target] of targets.layoutTextRoots.entries()) {
+            const kind = target.kind as LocalFinalPdfNotoInspectionKind;
+            if (!(new Set(["title", "toc", "colophon", "page-number"])).has(kind)) {
+              throw new Error("noto_layout_text_kind_invalid");
+            }
+            inspectionTargets.set(layoutTextNodeIds[index], {
+              nodeId: layoutTextNodeIds[index], kind, index: target.index, columnIndex: 0,
+              categories: target.categories as LocalFinalPdfNotoCategory[],
             });
           }
           const fallbackRoots: LocalFinalPdfNotoFallbackRoot[] = [];
@@ -836,6 +859,8 @@ export async function renderLocalFinalBodyPdf(
               fallbackColumnRootCount: fallbackRoots.filter((root) => root.kind === "column").length,
               fallbackBodyCellRootCount: fallbackRoots.filter((root) => root.kind === "body-cell").length,
               fallbackRubyRootCount: fallbackRoots.filter((root) => root.kind === "ruby").length,
+              fallbackLayoutTextRootCount: fallbackRoots.filter((root) =>
+                ["title", "toc", "colophon", "page-number"].includes(root.kind)).length,
               uniqueFallbackTextNodeCount: 0,
               textNodesObservedByMultipleRoots: 0,
               leafScanComplete: false,

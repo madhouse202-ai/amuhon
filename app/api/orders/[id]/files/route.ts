@@ -9,6 +9,11 @@ import {
 } from "../../../../../lib/order-assets.ts";
 import { equalHexDigest, hashOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
 import { readOrderUploadCookie } from "../../../../../lib/order-upload-cookie.ts";
+import {
+  createSupabaseServiceHeaders,
+  getSupabaseServiceCredential,
+  type SupabaseServiceCredential,
+} from "../../../../../lib/supabase-service-credential.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,15 +45,15 @@ function validOrigin(request: Request): boolean {
   return Boolean(origin && origin === expectedOrigin);
 }
 
-function getSupabaseConfig(): { url: URL; key: string; rateLimitSecret: string } | null {
+function getSupabaseConfig(): { url: URL; serviceCredential: SupabaseServiceCredential; rateLimitSecret: string } | null {
   const rawUrl = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const serviceCredential = getSupabaseServiceCredential();
   const rateLimitSecret = process.env.ORDER_RATE_LIMIT_SECRET;
-  if (!rawUrl || !key || !rateLimitSecret || rateLimitSecret.length < 32) return null;
+  if (!rawUrl || !serviceCredential || !rateLimitSecret || rateLimitSecret.length < 32) return null;
   try {
     const url = new URL(rawUrl);
     if (url.protocol !== "https:" && url.hostname !== "localhost") return null;
-    return { url, key, rateLimitSecret };
+    return { url, serviceCredential, rateLimitSecret };
   } catch {
     return null;
   }
@@ -56,18 +61,16 @@ function getSupabaseConfig(): { url: URL; key: string; rateLimitSecret: string }
 
 async function rpc(
   baseUrl: URL,
-  key: string,
+  credential: SupabaseServiceCredential,
   name: string,
   args: Record<string, unknown>,
 ): Promise<RpcResult> {
   const response = await fetch(`${baseUrl.origin}/rest/v1/rpc/${name}`, {
     method: "POST",
-    headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
+    headers: createSupabaseServiceHeaders(credential, {
       "Content-Type": "application/json",
       Accept: "application/json",
-    },
+    }),
     body: JSON.stringify(args),
     cache: "no-store",
     signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
@@ -150,32 +153,28 @@ function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return buffer;
 }
 
-async function uploadObject(baseUrl: URL, key: string, path: string, contentType: string, bytes: Uint8Array) {
+async function uploadObject(baseUrl: URL, credential: SupabaseServiceCredential, path: string, contentType: string, bytes: Uint8Array) {
   return fetch(`${baseUrl.origin}/storage/v1/object/${BUCKET}/${path.split("/").map(encodeURIComponent).join("/")}`, {
     method: "POST",
-    headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
+    headers: createSupabaseServiceHeaders(credential, {
       "Content-Type": contentType,
       "Cache-Control": "no-store",
       "x-upsert": "true",
-    },
+    }),
     body: new Blob([asArrayBuffer(bytes)], { type: contentType }),
     cache: "no-store",
     signal: AbortSignal.timeout(STORAGE_TIMEOUT_MS),
   });
 }
 
-async function deleteObjects(baseUrl: URL, key: string, paths: string[]) {
+async function deleteObjects(baseUrl: URL, credential: SupabaseServiceCredential, paths: string[]) {
   if (!paths.length) return;
   try {
     await fetch(`${baseUrl.origin}/storage/v1/object/${BUCKET}`, {
       method: "DELETE",
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`,
+      headers: createSupabaseServiceHeaders(credential, {
         "Content-Type": "application/json",
-      },
+      }),
       body: JSON.stringify({ prefixes: paths }),
       cache: "no-store",
       signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
@@ -185,9 +184,9 @@ async function deleteObjects(baseUrl: URL, key: string, paths: string[]) {
   }
 }
 
-async function abortLease(baseUrl: URL, key: string, orderId: string, tokenHash: string, leaseId: string) {
+async function abortLease(baseUrl: URL, credential: SupabaseServiceCredential, orderId: string, tokenHash: string, leaseId: string) {
   try {
-    await rpc(baseUrl, key, "abort_amuhon_order_asset_upload", {
+    await rpc(baseUrl, credential, "abort_amuhon_order_asset_upload", {
       p_order_id: orderId,
       p_upload_token_hash: tokenHash,
       p_lease_id: leaseId,
@@ -214,7 +213,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     .update(`asset-upload\0${clientIp}`).digest("hex");
   let begin: RpcResult;
   try {
-    begin = await rpc(config.url, config.key, "begin_amuhon_order_asset_upload", {
+    begin = await rpc(config.url, config.serviceCredential, "begin_amuhon_order_asset_upload", {
       p_order_id: orderId,
       p_upload_token_hash: tokenHash,
       p_rate_limit_key_hash: rateLimitKeyHash,
@@ -245,7 +244,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     coverValidation = await validateCoverPng(files.coverPng, bodyValidation.pageCount);
     assertDeclaredPdfPageCount(bodyValidation.pageCount, begin.data.declaredPageCount);
   } catch (error) {
-    if (begin.data.state === "claimed") await abortLease(config.url, config.key, orderId, tokenHash, leaseId);
+    if (begin.data.state === "claimed") await abortLease(config.url, config.serviceCredential, orderId, tokenHash, leaseId);
     const message = error instanceof Error ? error.message : "ファイルを検証できませんでした。";
     const status = ["too_large", "file_size"].includes(message) ? 413 : message === "timeout" ? 408 : 400;
     if (["invalid_multipart", "invalid_fields", "missing_files", "bad_length", "invalid_body", "timeout"].includes(message)) {
@@ -273,9 +272,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const coverPath = `${orderId}/cover.png`;
   let finalizationStarted = false;
   try {
-    const bodyResponse = await uploadObject(config.url, config.key, bodyPath, "application/pdf", files.bodyPdf);
+    const bodyResponse = await uploadObject(config.url, config.serviceCredential, bodyPath, "application/pdf", files.bodyPdf);
     if (!bodyResponse.ok) throw new Error("storage_upload_failed");
-    const coverResponse = await uploadObject(config.url, config.key, coverPath, "image/png", files.coverPng);
+    const coverResponse = await uploadObject(config.url, config.serviceCredential, coverPath, "image/png", files.coverPng);
     if (!coverResponse.ok) throw new Error("storage_upload_failed");
 
     const finishArgs = {
@@ -292,7 +291,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     // the database may have committed even if its response was lost upstream.
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        finished = await rpc(config.url, config.key, "finish_amuhon_order_asset_upload", finishArgs);
+        finished = await rpc(config.url, config.serviceCredential, "finish_amuhon_order_asset_upload", finishArgs);
       } catch {
         finished = null;
       }
@@ -309,8 +308,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     // rolled back. A 5xx, transport failure, or malformed success is ambiguous:
     // never delete objects that may already be referenced by a committed row.
     if (finished && !finished.response.ok && finished.response.status < 500) {
-      await deleteObjects(config.url, config.key, [bodyPath, coverPath]);
-      await abortLease(config.url, config.key, orderId, tokenHash, leaseId);
+      await deleteObjects(config.url, config.serviceCredential, [bodyPath, coverPath]);
+      await abortLease(config.url, config.serviceCredential, orderId, tokenHash, leaseId);
       const detail = typeof finished.data?.message === "string" ? finished.data.message : "";
       return fail(detail === "UPLOAD_LEASE_EXPIRED"
         ? "ファイル処理に時間がかかりました。もう一度アップロードしてください。"
@@ -319,8 +318,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return fail("保存結果を確認できませんでした。同じファイルで再試行してください。処理中の場合は数分待ってください。", 503, { "Retry-After": "30" });
   } catch {
     if (!finalizationStarted) {
-      await deleteObjects(config.url, config.key, [bodyPath, coverPath]);
-      await abortLease(config.url, config.key, orderId, tokenHash, leaseId);
+      await deleteObjects(config.url, config.serviceCredential, [bodyPath, coverPath]);
+      await abortLease(config.url, config.serviceCredential, orderId, tokenHash, leaseId);
       return fail("ファイルを非公開ストレージへ保存できませんでした。時間をおいて再試行してください。", 502);
     }
     // An ambiguous database timeout may have committed. Keep the deterministic objects for safe retry.

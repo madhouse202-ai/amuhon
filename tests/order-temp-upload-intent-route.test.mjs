@@ -9,7 +9,7 @@ const LEASE_ID = "b9d71ea0-115c-4b26-8c1d-86bead2aecc4";
 const TOKEN = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
 const SIGNED_JWS = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.dGVzdHNpZw";
 const originalEnv = Object.fromEntries([
-  "NEXT_PUBLIC_ORDER_DIRECT_UPLOAD_EXPERIMENT", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY",
+  "NEXT_PUBLIC_ORDER_DIRECT_UPLOAD_EXPERIMENT", "SUPABASE_URL", "SUPABASE_SECRET_KEY",
   "NEXT_PUBLIC_ORDER_UPLOAD_DIAGNOSTICS", "NODE_ENV", "ORDER_RATE_LIMIT_SECRET", "ORDER_APP_ORIGIN",
 ].map((name) => [name, process.env[name]]));
 
@@ -18,7 +18,7 @@ function configure(enabled = true, diagnostics = false, nodeEnv = "test") {
   process.env.NEXT_PUBLIC_ORDER_UPLOAD_DIAGNOSTICS = diagnostics ? "true" : "false";
   process.env.NODE_ENV = nodeEnv;
   process.env.SUPABASE_URL = "https://staging-project-ref.supabase.co";
-  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-service-role-secret";
+  process.env.SUPABASE_SECRET_KEY = "sb_secret_test-only-service-role-secret";
   process.env.ORDER_RATE_LIMIT_SECRET = "test-only-rate-limit-secret-that-is-long-enough";
   process.env.ORDER_APP_ORIGIN = "https://app.test";
 }
@@ -123,14 +123,15 @@ test("authorized intent returns only short-lived signed temp-object capabilities
   assert.equal(tusHeaders["x-signature"], SIGNED_JWS);
   assert.equal(Object.hasOwn(tusHeaders, "Authorization"), false);
   assert.equal(tusHeaders["x-signature"].startsWith("Bearer "), false);
-  assert.doesNotMatch(JSON.stringify(body), /test-only-service-role-secret|0123456789abcdefghijklmnopqrstuvwxyzABCDEFG/);
+  assert.doesNotMatch(JSON.stringify(body), /sb_secret_test-only-service-role-secret|0123456789abcdefghijklmnopqrstuvwxyzABCDEFG/);
   const begin = calls.find(({ url }) => url.includes("begin_amuhon_order_asset_upload"));
   const beginArgs = JSON.parse(String(begin.init.body));
   assert.match(beginArgs.p_upload_token_hash, /^[a-f0-9]{64}$/);
   assert.notEqual(beginArgs.p_upload_token_hash, TOKEN);
   assert.equal(calls.filter(({ url }) => url.includes("/storage/v1/object/upload/sign/")).length, 2);
   const signatureCalls = calls.filter(({ url }) => url.includes("/storage/v1/object/upload/sign/"));
-  assert.ok(signatureCalls.every(({ init }) => init.headers.Authorization === "Bearer test-only-service-role-secret"));
+  assert.ok(signatureCalls.every(({ init }) => new Headers(init.headers).get("apikey") === "sb_secret_test-only-service-role-secret"));
+  assert.ok(signatureCalls.every(({ init }) => !new Headers(init.headers).has("authorization")));
   assert.ok(signatureCalls.every(({ init }) => JSON.parse(String(init.body)).upsert === false));
   assert.equal(calls.some(({ url }) => url.includes("/storage/v1/upload/resumable")), false);
 });
