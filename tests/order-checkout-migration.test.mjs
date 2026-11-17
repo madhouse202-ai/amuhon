@@ -49,9 +49,12 @@ test("success and cancel pages can only display the order status returned by the
   assert.match(resultUi, /checkoutHost\?: unknown/);
   assert.match(resultUi, /url\.hostname\.toLowerCase\(\) !== result\.checkoutHost/);
   assert.match(resultUi, /state\?\.status === "paid"/);
-  assert.doesNotMatch(resultUi, /payment_status|apply_amuhon_stripe_checkout_paid|session_id/);
-  assert.match(successPage, /order_id/);
-  assert.doesNotMatch(successPage, /session_id|paid/);
+  assert.match(resultUi, /reconcile-payment/);
+  assert.match(resultUi, /JSON\.stringify\(\{ sessionId \}\)/);
+  assert.doesNotMatch(resultUi, /payment_status|apply_amuhon_stripe_checkout_paid/);
+  assert.match(successPage, /session_id/);
+  assert.match(successPage, /sessionId=/);
+  assert.doesNotMatch(successPage, /paid/);
   assert.match(cancelPage, /order_id/);
   assert.doesNotMatch(cancelPage, /session_id|paid/);
 });

@@ -1,6 +1,6 @@
 # staging E2E: テスト決済から製本データ生成まで
 
-更新日: 2026-11-16
+更新日: 2026-11-17
 
 この手順は `amuhon-staging` と Stripe のテストモードだけを対象にします。Cloud Run Job の手動実行はキューをClaimし、注文とStorageを書き換えるため、前提確認後に運営者が明示的に実行してください。この文書の作成・テストでは外部サービス、DB、Storage、Stripe、Cloud Runに接続していません。
 
@@ -9,7 +9,7 @@
 1. `/api/orders` が注文ドラフトを作り、注文用の限定Cookieを返します。価格はクライアント値を信用しません。
 2. `/api/orders/[id]/files` と検証APIが、本文PDF・表紙PNGを既存の非公開 `amuhon-order-files` バケットへ保存し、固定RPCで検証結果を確定します。
 3. `/api/orders/[id]/checkout` は検証済み注文だけをCheckout可能にし、DBのCheckout許可ホスト、Stripe応答、注文価格・通貨・モードを確認します。
-4. Webhook受信先は `/api/webhooks/stripe` です。raw bodyの署名、テスト/ライブモード、支払済み状態、金額・通貨・注文・試行・Session参照を確認し、`apply_amuhon_stripe_checkout_paid_v2` を呼びます。成功画面への戻りだけでは支払い確定になりません。
+4. Webhook受信先は `/api/webhooks/stripe` です。raw bodyの署名、テスト/ライブモード、支払済み状態、金額・通貨・注文・試行・Session参照を確認し、`apply_amuhon_stripe_checkout_paid_v2` を呼びます。Webhookを主要経路とし、成功画面への戻りだけでは支払い確定になりません。Webhookが届かなかった場合は、完了画面が保護されたAPI経由でDB記録済みSessionをStripeへ照会し、一致を検証して同じ `paid` 遷移を復旧できます。
 5. `20261115000200_order_pdf_render_jobs.sql` のトリガーが、注文の状態が新たに `paid` へ変わった同じDBトランザクションで注文あたり1件の生成ジョブを登録します。過去のpaid注文は自動登録されません。
 6. `scripts/render-order-assets-worker.mjs --run-queue-once` がClaim RPCを一度呼び、対象を最大1件処理します。service-role-only RPCがpaid・検証済み・有効なSnapshot・30分以内のleaseを確認し、テーブルへの直接権限は引き続き拒否します。
 7. ワーカーはAozoraの固定許可URLから本文を取得し、既存 `/final` と `/cover`、Playwright/Chromium、固定Noto Serif CJK JP、CDPフォント確認、A6/PDF/PNG品質検査を使用します。
@@ -22,14 +22,14 @@
 
 1. Supabase Dashboardのプロジェクト選択が `amuhon-staging` であることを画面上で確認します。SQLだけでは開いているDashboardのProject Refを保証できません。本番 `amuhon` ならここで中止します。
 2. Stripe Dashboardでテストデータ表示が有効であることを目視します。Checkout APIの設定も `STRIPE_MODE=test` とテスト用キーであることを、値を表示・コピーせず設定画面で確認します。ライブキー・ライブCheckout URLなら中止します。
-3. stagingアプリとCloud Run JobのSupabase URL/Project Refが同じstagingを示すことを確認します。Cloud Runワーカーが外部から受け取る必須設定は `SUPABASE_URL`、Secret Managerからの `SUPABASE_SECRET_KEY`、`AMUHON_PDF_QUEUE_PROJECT_REF`、`AMUHON_PDF_QUEUE_ENABLED=true` です。Dockerfileは `NODE_ENV=production`、`AMUHON_PDF_WORKER_BROWSER_MODE=pinned`、port `3000`、固定フォントpathを既定設定します。Job設定でこれらをoverrideしていないか確認してください。秘密値は画面共有・ログ・コマンド出力に出しません。`NEXT_PUBLIC_SUPABASE_URL` だけではワーカーの `SUPABASE_URL` を満たしません。
+3. stagingアプリとCloud Run JobのSupabase URL/Project Refが同じstagingを示すことを確認します。Cloud Runワーカーが外部から受け取る必須設定は `SUPABASE_URL`、Secret Managerからの `SUPABASE_SECRET_KEY`、`AMUHON_PDF_QUEUE_PROJECT_REF`、`AMUHON_PDF_QUEUE_ENABLED=true` です。Dockerfileは `NODE_ENV=production`、`AMUHON_PDF_WORKER_BROWSER_MODE=pinned`、port `3000`、固定フォントpathを既定設定します。Job設定でこれらをoverrideしていないか確認してください。秘密値は画面共有・ログ・コマンド出力に出しません。`NEXT_PUBLIC_SUPABASE_URL` だけではワーカーの `SUPABASE_URL` を満たしません。決済完了画面からの復旧には `20261117000100_order_stripe_payment_reconciliation.sql` の適用が必要です。この変更ではファイルを作成しただけで適用していないため、対象stagingでレビュー・適用・RPC権限確認を終えるまでは新しい復旧経路を実DBで使えません。
    - Next.jsの `NEXT_PUBLIC_*` はクライアントbundleのbuild時に埋め込まれます。workerが開く `/final`、`/cover`、`/api/aozora` はSupabaseブラウザークライアントを使わないため、このキュー経路には公開URL/キーを渡す必要はありません。実行時に `NEXT_PUBLIC_SUPABASE_URL` を追加しても、build済みbundleの値は変わりません。
 4. ワーカーJobのimageが意図した `linux/amd64` のdigestで、コンテナ引数が `--run-queue-once`、コンテナコマンドが空欄、タスク1/並列1/再試行0/timeout 20分であることをCloud Run画面で確認します。`Dockerfile.pdf-renderer` のENTRYPOINTは `node --experimental-strip-types scripts/render-order-assets-worker.mjs` なので、Job引数が正しくENTRYPOINTへ渡されます。空キューでの成功は設定・Claim RPC到達の確認にはなりますが、Chromium起動、Next.jsレンダリング、Storage、完了RPCの確認にはなりません。
 5. Jobのサービスアカウントがstaging用Secret Manager Secretだけを読み取れること、Secretのversionが有効であることを確認します。Secret参照が `latest` の場合、実行ごとに解決されるversionが変わり得ます。再現性を優先する運用では、Secretの実際の値を表示せずversion番号だけを確認し、Jobが数値versionを固定参照することを推奨します。Stripeキーはレンダーワーカーへ与えません。Storageバケット `amuhon-order-files` が非公開であることもDashboardで確認します。
 6. アプリ、worker、renderer、固定フォント取得処理を含むソースが、登録済みdigestを作成したソースと一致することを確認します。digest作成後に上記のいずれかを変更していたら、そのdigestを使いません。CI/build・self-test後に新しいdigestを登録し、Job設定を更新してから続行します。
 7. Stripe Webhookの受信経路を一つだけ選びます。
    - stagingサイト: Stripe Dashboardのテスト用Webhook endpointに `checkout.session.completed` が登録され、配信先がstagingの `/api/webhooks/stripe` であること、最近のテストイベントが成功応答を受けたことを確認します。
-   - localhostで注文フローを試す場合: 開発サーバーを起動したPCでStripe CLIを使い、`stripe listen --forward-to http://localhost:3000/api/webhooks/stripe --events checkout.session.completed` を実行します。CLIが表示する署名Secretはローカルの秘密設定にだけ登録し、画面共有・チャット・ログへ貼りません。CLI転送先をCloud Runや本番URLと混在させないでください。
+   - localhostで注文フローを試す場合: 既存の開発サーバーを停止し、プロジェクトルートで `npm run dev:webhook` を一度実行します。開発用ランナーがテストモード・staging Supabase・localhost設定を確認し、固定のStripe CLI転送先とイベントを起動します。CLIのWebhook signing secretはメモリ上で受け取り、同じコマンドが起動するNext.js開発プロセスだけへ渡します。ファイル・環境設定・端末出力には保存しません。Stripe CLIは事前にインストール・ログインしておきます。終了はCtrl+Cです。通常の `npm run dev` と同時に起動しないでください。
 
 Stripe CLIの転送方法は[Stripe CLI: listen for events](https://docs.stripe.com/stripe-cli/use-cli#forward-events)、署名検証は[Webhook signatures](https://docs.stripe.com/webhooks/signature)、テスト用カードは[Testing](https://docs.stripe.com/testing)を参照してください。
 
@@ -37,7 +37,7 @@ Stripe CLIの転送方法は[Stripe CLI: listen for events](https://docs.stripe.
 
 1. stagingのWebアプリを使い、短編を選び、表紙を作り、完成ページ数を確認します。ページ数は本番の対応範囲かつ8ページ単位である必要があります。注文画面で本文PDF・表紙PNGの両方が検証済み、サーバー確定価格が表示されてからCheckoutへ進みます。最初の価格帯を試す場合は実際の見積りが1,980円であることを画面で確認し、クライアント値は指定しません。
 2. Checkout画面がStripeテストモードのものであることを目視します。現行Checkoutはカード決済のみを要求するため、Stripe公式のテストカードを使い、実カード情報を入力しません。テストカード番号・日付・CVCは[Stripe Testing](https://docs.stripe.com/testing)を参照します。テスト決済はStripe test dataに記録されますが、実際の請求・製本発注は行いません。支払い方法を非同期方式へ広げる前に、対応するWebhookイベントと状態遷移の実装・テストが別途必要です。
-3. Checkoutから戻っただけでは成功扱いにしません。Webhookの配信履歴で `checkout.session.completed` が署名検証を通って成功応答になり、管理画面で支払いが `paid`、生成状態が `queued` になるまで待ちます。失敗イベントや`payment_status`未払いでは進みません。
+3. Checkoutから戻ると、Webhookを主経路として注文状態を確認します。Webhookが届かなかった場合、成功画面はブラウザーから渡された値を信用せず、注文用HttpOnly Cookieで認可した後、サーバーが注文に保存済みのSession IDだけをStripeから取得して照合します。Stripe上の `status=complete` と `payment_status=paid`、注文・試行・モード・金額・通貨・期限がすべて一致した場合だけ、注文を `paid` に復旧します。復旧RPCは注文行をロックし、Webhookとの競合・画面再読込でも同じ支払いを二重確定しません。画面の戻りだけでは支払い済みになりません。
 
 このworkerは製本直送.comへの注文・入稿を呼び出しません。E2E確認中に管理画面の「入稿済みにする」も押しません。
 

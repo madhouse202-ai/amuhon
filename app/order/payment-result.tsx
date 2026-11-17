@@ -12,18 +12,25 @@ type CheckoutState = {
   currency?: string | null;
 };
 
-export default function PaymentResult({ mode, orderId: rawOrderId }: { mode: "success" | "cancel"; orderId?: string }) {
+export default function PaymentResult({ mode, orderId: rawOrderId, sessionId: rawSessionId }: {
+  mode: "success" | "cancel";
+  orderId?: string;
+  sessionId?: string;
+}) {
   const router = useRouter();
   const orderId = rawOrderId && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawOrderId)
     ? rawOrderId : null;
+  const sessionId = rawSessionId && /^cs_(?:test|live)_[A-Za-z0-9]+$/.test(rawSessionId) ? rawSessionId : null;
   const [state, setState] = useState<CheckoutState | null>(null);
   const [message, setMessage] = useState("");
-  const [retrying, setRetrying] = useState(false);
+  const [retrying, setRetrying] = useState(mode === "success" && Boolean(sessionId));
+  const [reconcileVersion, setReconcileVersion] = useState(0);
 
   useEffect(() => {
     if (!orderId) return;
     let active = true;
     let attempts = 0;
+    let paidSeen = false;
     const load = async () => {
       try {
         const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
@@ -31,22 +38,52 @@ export default function PaymentResult({ mode, orderId: rawOrderId }: { mode: "su
         });
         if (!response.ok) throw new Error("status_unavailable");
         const result = await response.json() as CheckoutState;
-        if (active) setState(result);
+        if (active) {
+          setState(result);
+          paidSeen = result.status === "paid";
+          if (paidSeen) setMessage("");
+        }
       } catch {
         if (active) setMessage("注文状況を確認できません。画面を再読み込みしてください。");
       }
     };
     void load();
+    if (mode === "success" && sessionId) {
+      void fetch(`/api/orders/${encodeURIComponent(orderId)}/reconcile-payment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+        cache: "no-store",
+        credentials: "same-origin",
+      }).then(async (response) => {
+        if (!response.ok) throw new Error("reconciliation_unavailable");
+        if (active) setMessage("");
+      }).catch(() => {
+        if (active) setMessage("Stripeとの照合がまだ完了していません。Webhookによる確認を待つか、下のボタンから再確認してください。");
+      }).finally(() => {
+        if (active) {
+          setRetrying(false);
+          void load();
+        }
+      });
+    }
     const timer = window.setInterval(() => {
       attempts += 1;
-      if (state?.status === "paid" || attempts >= 20) {
+      if (paidSeen || attempts >= 20) {
         window.clearInterval(timer);
         return;
       }
       void load();
     }, 3000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [orderId, state?.status]);
+  }, [mode, orderId, sessionId, reconcileVersion]);
+
+  function retryPaymentReconciliation() {
+    if (retrying) return;
+    setMessage("");
+    setRetrying(true);
+    setReconcileVersion((version) => version + 1);
+  }
 
   async function reopenCheckout() {
     if (!orderId || retrying) return;
@@ -90,7 +127,14 @@ export default function PaymentResult({ mode, orderId: rawOrderId }: { mode: "su
           {retrying ? "決済画面を確認中……" : "同じ注文の決済を再開する"}
         </button>
       )}
-      {mode === "success" && orderId && !paid && <p className="mt-4 text-sm text-stone-600">確認には少し時間がかかることがあります。しばらくしても切り替わらない場合は、画面を再読み込みしてください。</p>}
+      {mode === "success" && orderId && !paid && (
+        <>
+          <p className="mt-4 text-sm text-stone-600">WebhookとStripeの照合で確認します。画面の表示だけで支払い済みにはなりません。</p>
+          {sessionId && <button className="mt-4 rounded-lg border border-stone-400 px-5 py-3 font-bold disabled:opacity-50" type="button" onClick={retryPaymentReconciliation} disabled={retrying}>
+            {retrying ? "Stripeへ確認中……" : "決済状況を再確認する"}
+          </button>}
+        </>
+      )}
       <Link className="mt-8 block underline" href="/">トップページへ戻る</Link>
     </main>
   );
