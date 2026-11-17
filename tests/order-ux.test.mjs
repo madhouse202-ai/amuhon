@@ -13,9 +13,13 @@ test("the final review presents the actual composition, cover, pages, and a guar
   assert.match(finalPage, /収録作品（この順番）/);
   assert.match(finalPage, /表紙を確認・変更/);
   assert.match(finalPage, /注文内容を確認して進む/);
+  assert.match(finalPage, /<CoverFrontPreview/);
   assert.match(finalPage, /onClick=\{openOrder\} disabled=\{isPrinting \|\| !submissionPageCountValid\}/);
   assert.match(finalPage, /if \(!canPrint \|\| !data \|\| !submissionPageCountValid\) return/);
-  assert.match(finalPage, /印刷用データを保存（任意）/);
+  assert.match(finalPage, /本のデータを手元で確認・用意する/);
+  assert.match(finalPage, /本文データを保存/);
+  assert.match(finalPage, /表紙データを保存/);
+  assert.doesNotMatch(finalPage, /印刷用データを保存（任意）/);
   assert.match(finalPage, /開発者向け：本文書体の検証/);
 });
 
@@ -34,12 +38,18 @@ test("order review returns to final and shows server-confirmed price without per
   assert.match(orderPage, /<details[\s\S]{0,180}開発者向け診断情報/);
   assert.doesNotMatch(orderPage, /注文ID：|checkoutState|TUSで一時アップロード中/);
   assert.match(orderPage, /checkoutSummary\?\.canCheckout/);
+  assert.doesNotMatch(orderPage, /入稿ファイルの準備方法|保存したファイルを選ぶ/);
+  assert.match(orderPage, /すでに作成した本のデータを使う/);
+  assert.match(orderPage, /open=\{!AUTO_FILE_GENERATION_ENABLED\}/);
+  assert.match(orderPage, /本文のデータ（PDF）/);
   assert.match(orderPage, /api\/orders\/\$\{encodeURIComponent\(draft\.id\)\}\/checkout/);
   assert.doesNotMatch(orderPage, /localStorage\.(?:setItem|getItem)\([^)]*customer/i);
   assert.match(orderPage, /入力中の配送先情報はブラウザーへ保存しません/);
   assert.match(createPage, /if \(!flushDraft\(\{ \.\.\.draft, works: selectedWorks \}\)\) return;\s*router\.push\("\/cover"\)/);
   assert.match(coverPage, /if \(!flushDraft\(normalizedDraft\)\) return false/);
   assert.match(coverPage, /function handleSave\(\) \{\s*if \(!saveCoverSettings\(\)\) return;[\s\S]*?router\.push\("\/final"\)/);
+  assert.match(coverPage, /<CoverFrontPreview/);
+  assert.doesNotMatch(coverPage, /見開きカバーPNGをダウンロード|見開きカバープレビュー/);
   assert.match(orderPage, /const currentBook = loadBookData\(\)/);
 });
 

@@ -7,9 +7,11 @@ import { CreationProgress } from "@/app/creation-progress";
 import { DraftSaveStatus } from "@/app/draft-save-status";
 import { useBookDraftAutosave } from "@/lib/use-book-draft-autosave";
 
-type Work = BookWork;
+type WorkContributor = { name: string; role: string; reading: string };
+type Work = BookWork & { contributors?: WorkContributor[] };
 type PageEstimate = { status: "idle" | "loading" | "ready" | "error"; pages?: number };
 type AuthorShelf = { author: string; workCount: number; sampleTitles: string[] };
+type ListPage = { nextOffset: number; hasMore: boolean };
 
 const pageEstimateCache = new Map<string, number>();
 const pageEstimateRequests = new Map<string, Promise<number>>();
@@ -49,6 +51,35 @@ function PageEstimateLabel({ estimate, onRetry }: { estimate: PageEstimate; onRe
     return <p className="mt-2 text-sm text-amber-800" role="status">ページ数を取得できませんでした。<button type="button" className="ml-2 underline" onClick={onRetry}>再試行</button></p>;
   }
   return <p className="mt-2 text-sm text-stone-400" role="status">ページ数：未計算</p>;
+}
+
+function groupShelfRows(works: Work[], maxRows = 4): Work[][] {
+  if (works.length === 0) return [];
+  const rowCount = Math.min(maxRows, works.length);
+  const rowSize = Math.ceil(works.length / rowCount);
+  return Array.from({ length: rowCount }, (_, index) => works.slice(index * rowSize, (index + 1) * rowSize)).filter((row) => row.length > 0);
+}
+
+function spineStyle(work: Work, index: number): { backgroundColor: string; height: number; width: number } {
+  const palettes = ["#7f3f37", "#3d6255", "#4a5878", "#9a7548", "#58465f", "#506d79"];
+  const hash = Array.from(work.id).reduce((sum, character) => sum + character.charCodeAt(0), index * 17);
+  return {
+    backgroundColor: palettes[hash % palettes.length],
+    height: 166 + (hash % 5) * 11,
+    width: 50 + (hash % 4) * 5,
+  };
+}
+
+function safeAozoraUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.username === "" && url.password === "" && url.port === "" &&
+      ["aozora.gr.jp", "www.aozora.gr.jp"].includes(url.hostname) && url.pathname.startsWith("/cards/")
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function EstimateWhenVisible({
@@ -96,6 +127,7 @@ function WorkChoiceCard({
   onAdd,
   onEstimate,
   onRetryEstimate,
+  onDetails,
 }: {
   work: Work;
   estimate: PageEstimate;
@@ -104,16 +136,16 @@ function WorkChoiceCard({
   onAdd: (work: Work) => void;
   onEstimate: (work: Work) => void;
   onRetryEstimate: (work: Work) => void;
+  onDetails: (work: Work, trigger: HTMLButtonElement) => void;
 }) {
-  const cardUrl = /^https?:\/\/(?:www\.)?aozora\.gr\.jp\//i.test(work.cardUrl)
-    ? work.cardUrl
-    : null;
+  const cardUrl = safeAozoraUrl(work.cardUrl);
 
   return (
     <article className="flex min-w-0 flex-col justify-between gap-4 rounded-2xl bg-white p-5 shadow-sm sm:flex-row sm:items-center">
       <div className="min-w-0">
         <h3 className="break-words text-xl font-bold">{work.title}</h3>
         <p className="mt-1 text-stone-600">{work.author || "作者情報なし"}</p>
+        <button type="button" onClick={(event) => onDetails(work, event.currentTarget)} className="mt-2 min-h-11 text-left text-sm font-medium underline underline-offset-4">作品の詳細を見る</button>
         {cardUrl && (
           <a className="mt-2 inline-flex min-h-11 items-center text-sm underline underline-offset-4" href={cardUrl} target="_blank" rel="noopener noreferrer">
             青空文庫の作品情報を見る
@@ -148,9 +180,12 @@ export default function CreatePage() {
   const [query, setQuery] = useState("");
   const [works, setWorks] = useState<Work[]>([]);
   const [discoveryMode, setDiscoveryMode] = useState<"shelf" | "search">("shelf");
-  const [shelfMode, setShelfMode] = useState<"authors" | "works" | "author-works">("authors");
+  const [shelfMode, setShelfMode] = useState<"bookshelf" | "authors" | "works" | "author-works">("bookshelf");
   const [authorShelves, setAuthorShelves] = useState<AuthorShelf[]>([]);
   const [shelfWorks, setShelfWorks] = useState<Work[]>([]);
+  const [listedWorks, setListedWorks] = useState<Work[]>([]);
+  const [workListPage, setWorkListPage] = useState<ListPage>({ nextOffset: 0, hasMore: false });
+  const [authorListPage, setAuthorListPage] = useState<ListPage>({ nextOffset: 0, hasMore: false });
   const [activeAuthor, setActiveAuthor] = useState("");
   const [authorWorks, setAuthorWorks] = useState<Work[]>([]);
   const [authorOffset, setAuthorOffset] = useState(0);
@@ -159,7 +194,16 @@ export default function CreatePage() {
   const [isLoadingShelf, setIsLoadingShelf] = useState(true);
   const [isLoadingAuthorWorks, setIsLoadingAuthorWorks] = useState(false);
   const [shelfError, setShelfError] = useState("");
+  const [refreshShelfError, setRefreshShelfError] = useState("");
   const [authorError, setAuthorError] = useState("");
+  const [authorListError, setAuthorListError] = useState("");
+  const [workListError, setWorkListError] = useState("");
+  const [isLoadingAuthorList, setIsLoadingAuthorList] = useState(false);
+  const [isLoadingWorkList, setIsLoadingWorkList] = useState(false);
+  const [isRefreshingShelf, setIsRefreshingShelf] = useState(false);
+  const [detailWork, setDetailWork] = useState<Work | null>(null);
+  const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const detailDialogRef = useRef<HTMLElement | null>(null);
   const selectedWorks = draft.works;
   const [isSearching, setIsSearching] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -167,6 +211,7 @@ export default function CreatePage() {
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [pageEstimates, setPageEstimates] = useState<Record<string, PageEstimate>>({});
   const estimatedSelectedIdsRef = useRef(new Set<string>());
+  const shelfWorkIdsRef = useRef<string[]>([]);
 
   const requestDiscovery = useCallback(async () => {
     setShelfError("");
@@ -174,14 +219,69 @@ export default function CreatePage() {
     try {
       const response = await fetch("/api/works?browse=discover", { cache: "no-store" });
       if (!response.ok) throw new Error("shelf_unavailable");
-      const result = await response.json() as { authors?: unknown; works?: unknown };
-      if (!Array.isArray(result.authors) || !Array.isArray(result.works)) throw new Error("shelf_invalid");
-      setAuthorShelves(result.authors as AuthorShelf[]);
+      const result = await response.json() as { works?: unknown };
+      if (!Array.isArray(result.works)) throw new Error("shelf_invalid");
       setShelfWorks(result.works as Work[]);
+      shelfWorkIdsRef.current = (result.works as Work[]).map((work) => work.id);
     } catch {
       setShelfError("本棚を読み込めませんでした。通信状態を確認して、もう一度お試しください。");
     } finally {
       setIsLoadingShelf(false);
+    }
+  }, []);
+
+  const requestAnotherBookshelf = useCallback(async () => {
+    setRefreshShelfError("");
+    setIsRefreshingShelf(true);
+    try {
+      const params = new URLSearchParams({ browse: "discover" });
+      if (shelfWorkIdsRef.current.length > 0) params.set("exclude", shelfWorkIdsRef.current.join(","));
+      const response = await fetch(`/api/works?${params.toString()}`, { cache: "no-store" });
+      if (!response.ok) throw new Error("shelf_unavailable");
+      const result = await response.json() as { works?: unknown };
+      if (!Array.isArray(result.works) || result.works.some((work) => !work || typeof work.id !== "string")) throw new Error("shelf_invalid");
+      const nextWorks = result.works as Work[];
+      if (new Set(nextWorks.map((work) => work.id)).size !== nextWorks.length) throw new Error("shelf_duplicate");
+      shelfWorkIdsRef.current = nextWorks.map((work) => work.id);
+      setShelfWorks(nextWorks);
+    } catch {
+      setRefreshShelfError("本棚を入れ替えられませんでした。通信状態を確認して、もう一度お試しください。");
+    } finally {
+      setIsRefreshingShelf(false);
+    }
+  }, []);
+
+  const requestAuthorList = useCallback(async (offset = 0, append = false) => {
+    setAuthorListError("");
+    setIsLoadingAuthorList(true);
+    try {
+      const response = await fetch(`/api/works?browse=authors&offset=${offset}`, { cache: "no-store" });
+      if (!response.ok) throw new Error("authors_unavailable");
+      const result = await response.json() as { authors?: unknown; nextOffset?: unknown; hasMore?: unknown };
+      if (!Array.isArray(result.authors) || !Number.isSafeInteger(result.nextOffset) || typeof result.hasMore !== "boolean") throw new Error("authors_invalid");
+      setAuthorShelves((current) => append ? [...current, ...(result.authors as AuthorShelf[])] : result.authors as AuthorShelf[]);
+      setAuthorListPage({ nextOffset: result.nextOffset as number, hasMore: result.hasMore });
+    } catch {
+      setAuthorListError("作家一覧を読み込めませんでした。通信状態を確認して、再試行してください。");
+    } finally {
+      setIsLoadingAuthorList(false);
+    }
+  }, []);
+
+  const requestWorkList = useCallback(async (offset = 0, append = false) => {
+    setWorkListError("");
+    setIsLoadingWorkList(true);
+    try {
+      const response = await fetch(`/api/works?browse=works&offset=${offset}`, { cache: "no-store" });
+      if (!response.ok) throw new Error("works_unavailable");
+      const result = await response.json() as { works?: unknown; nextOffset?: unknown; hasMore?: unknown };
+      if (!Array.isArray(result.works) || !Number.isSafeInteger(result.nextOffset) || typeof result.hasMore !== "boolean") throw new Error("works_invalid");
+      setListedWorks((current) => append ? [...current, ...(result.works as Work[])] : result.works as Work[]);
+      setWorkListPage({ nextOffset: result.nextOffset as number, hasMore: result.hasMore });
+    } catch {
+      setWorkListError("作品一覧を読み込めませんでした。通信状態を確認して、再試行してください。");
+    } finally {
+      setIsLoadingWorkList(false);
     }
   }, []);
 
@@ -290,7 +390,14 @@ export default function CreatePage() {
     if (!alreadySelected) {
       setSelectedWorks([
         ...selectedWorks,
-        work,
+        {
+          id: work.id,
+          title: work.title,
+          author: work.author,
+          cardUrl: work.cardUrl,
+          textUrl: work.textUrl,
+          xhtmlUrl: work.xhtmlUrl,
+        },
       ]);
     }
   };
@@ -369,6 +476,55 @@ export default function CreatePage() {
     router.push("/cover");
   };
 
+  useEffect(() => {
+    if (!detailWork) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDetailWork(null);
+        window.requestAnimationFrame(() => detailTriggerRef.current?.focus());
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = detailDialogRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1'])");
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [detailWork]);
+
+  function showWorkDetails(work: Work, trigger: HTMLButtonElement) {
+    detailTriggerRef.current = trigger;
+    setDetailWork(work);
+  }
+
+  function closeWorkDetails() {
+    setDetailWork(null);
+    window.requestAnimationFrame(() => detailTriggerRef.current?.focus());
+  }
+
+  const renderWorkCard = (work: Work) => (
+    <WorkChoiceCard
+      key={work.id}
+      work={work}
+      estimate={pageEstimates[work.id] ?? { status: "idle" }}
+      selected={isSelected(work.id)}
+      disabled={loadState !== "ready"}
+      onAdd={addWork}
+      onEstimate={requestEstimate}
+      onRetryEstimate={retryEstimate}
+      onDetails={showWorkDetails}
+    />
+  );
+
   return (
     <main className="min-h-screen bg-stone-50 px-4 py-8 text-stone-800 sm:px-6 sm:py-16">
       <div className="mx-auto max-w-3xl">
@@ -412,19 +568,31 @@ export default function CreatePage() {
 
           {discoveryMode === "shelf" ? (
             <div className="mt-6">
-              <div className="flex flex-wrap gap-2" aria-label="本棚の種類">
+              <div className="flex flex-wrap gap-2" aria-label="作品の見つけ方">
+                <button
+                  type="button"
+                  aria-pressed={shelfMode === "bookshelf"}
+                  onClick={() => setShelfMode("bookshelf")}
+                  className={`min-h-11 rounded-lg px-4 py-2 ${shelfMode === "bookshelf" ? "bg-amber-100 text-amber-950" : "bg-white text-stone-700"}`}
+                >本棚</button>
                 <button
                   type="button"
                   aria-pressed={shelfMode === "authors" || shelfMode === "author-works"}
-                  onClick={() => setShelfMode("authors")}
+                  onClick={() => {
+                    setShelfMode("authors");
+                    if (authorShelves.length === 0 && !isLoadingAuthorList) void requestAuthorList();
+                  }}
                   className={`min-h-11 rounded-lg px-4 py-2 ${shelfMode === "authors" || shelfMode === "author-works" ? "bg-amber-100 text-amber-950" : "bg-white text-stone-700"}`}
-                >作家の棚</button>
+                >作家一覧</button>
                 <button
                   type="button"
                   aria-pressed={shelfMode === "works"}
-                  onClick={() => setShelfMode("works")}
+                  onClick={() => {
+                    setShelfMode("works");
+                    if (listedWorks.length === 0 && !isLoadingWorkList) void requestWorkList();
+                  }}
                   className={`min-h-11 rounded-lg px-4 py-2 ${shelfMode === "works" ? "bg-amber-100 text-amber-950" : "bg-white text-stone-700"}`}
-                >作品の棚</button>
+                >作品一覧</button>
               </div>
 
               {shelfError && (
@@ -435,16 +603,63 @@ export default function CreatePage() {
               )}
               {isLoadingShelf && <p className="mt-5 rounded-xl bg-white p-5 text-stone-600" role="status">本棚を準備しています…</p>}
 
+              {!isLoadingShelf && !shelfError && shelfMode === "bookshelf" && (
+                <div className="mt-5 rounded-2xl border border-amber-950/10 bg-[#eee5d4] p-3 shadow-inner sm:p-5">
+                  <div className="mb-4 flex flex-wrap items-end justify-between gap-3 px-1">
+                    <div>
+                      <h3 className="text-lg font-bold text-stone-800">青空文庫の本棚</h3>
+                      <p className="mt-1 text-sm text-stone-600">背表紙を選ぶと、作品のことを詳しく見られます。</p>
+                    </div>
+                    <button type="button" onClick={() => void requestAnotherBookshelf()} disabled={isRefreshingShelf} className="min-h-12 rounded-xl bg-amber-950 px-5 py-3 font-semibold text-white shadow-sm hover:bg-amber-900 disabled:opacity-60">
+                      {isRefreshingShelf ? "本棚を整えています…" : "ほかの本棚を見る"}
+                    </button>
+                  </div>
+                  {refreshShelfError && <p className="mb-3 text-sm text-red-800" role="alert">{refreshShelfError}</p>}
+                  {shelfWorks.length > 0 ? (
+                    <div className="space-y-5" aria-label="作品の本棚">
+                      {groupShelfRows(shelfWorks).map((row, rowIndex) => (
+                        <div key={`shelf-${rowIndex}`} className="overflow-x-auto overscroll-x-contain pb-1" aria-label={`${rowIndex + 1}段目の本棚`}>
+                          <div className="flex min-w-max items-end gap-1.5 px-2 pt-3">
+                            {row.map((work, index) => {
+                              const style = spineStyle(work, index + rowIndex * row.length);
+                              const selected = isSelected(work.id);
+                              return (
+                                <button
+                                  key={work.id}
+                                  type="button"
+                                  onClick={(event) => showWorkDetails(work, event.currentTarget)}
+                                  aria-label={`${work.title}、${work.author || "作者情報なし"}${selected ? "、本に追加済み" : ""}。作品の詳細を開く`}
+                                  aria-pressed={selected}
+                                  className="relative flex shrink-0 items-start justify-center overflow-hidden rounded-t-md border-x border-t border-black/20 px-2 pb-16 pt-3 text-left text-[#fff8e9] shadow-[2px_2px_5px_rgba(36,24,13,.28)] transition hover:-translate-y-1 hover:brightness-110 focus-visible:z-10 focus-visible:outline focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-amber-700"
+                                  style={{ backgroundColor: style.backgroundColor, height: style.height, width: style.width }}
+                                >
+                                  <span aria-hidden="true" className="absolute inset-y-0 left-1 w-px bg-white/20" />
+                                  {selected && <span aria-hidden="true" className="absolute left-1 top-1 grid size-5 place-items-center rounded-full bg-white text-xs font-bold text-emerald-900 shadow">✓</span>}
+                                  <span className="overflow-hidden text-ellipsis text-center text-[15px] font-semibold leading-5 [text-orientation:upright] [writing-mode:vertical-rl]" style={{ maxHeight: style.height - 82 }}>{work.title}</span>
+                                  <span className="absolute bottom-1 right-1 max-h-12 overflow-hidden text-ellipsis text-[10px] leading-3 [text-orientation:upright] [writing-mode:vertical-rl]">{work.author}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div aria-hidden="true" className="h-3 rounded-sm border-t-2 border-[#bd9a69] bg-gradient-to-b from-[#9a7145] to-[#76512d] shadow-[0_5px_6px_rgba(50,31,13,.25)]" />
+                        </div>
+                      ))}
+                    </div>
+                  ) : <p className="rounded-xl bg-white/70 p-5 text-stone-600">本棚に表示できる作品がありません。</p>}
+                  {shelfError && <p className="mt-3 text-sm text-red-800" role="alert">{shelfError}</p>}
+                </div>
+              )}
+
               {!isLoadingShelf && !shelfError && shelfMode === "authors" && (
-                authorShelves.length > 0 ? (
-                  <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <div className="mt-5">
+                  {authorShelves.length > 0 ? (
+                    <>
+                    <p className="mb-3 text-sm text-stone-600">青空文庫カタログに登録された著者名を読み順で表示します。</p>
+                    <div className="grid gap-2 sm:grid-cols-2">
                     {authorShelves.map((shelf) => (
-                      <article key={shelf.author} className="flex min-w-0 flex-col rounded-2xl border border-stone-200 bg-white p-5">
-                        <h3 className="break-words text-lg font-bold">{shelf.author}</h3>
-                        <p className="mt-2 text-sm text-stone-600">作品：{shelf.workCount}作</p>
-                        <p className="mt-2 text-sm text-stone-700">{shelf.sampleTitles.join("・")}</p>
-                        <button
+                      <button
                           type="button"
+                          key={shelf.author}
                           onClick={() => {
                             setActiveAuthor(shelf.author);
                             setAuthorWorks([]);
@@ -452,36 +667,29 @@ export default function CreatePage() {
                             setShelfMode("author-works");
                             void requestAuthorWorks(shelf.author);
                           }}
-                          className="mt-4 min-h-11 rounded-lg border border-stone-300 px-4 py-2 text-left font-medium hover:bg-stone-50"
-                        >この作家の作品を見る</button>
-                      </article>
+                          className="flex min-h-14 min-w-0 items-center justify-between gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-left hover:bg-stone-50"
+                        ><span className="min-w-0"><strong className="block break-words">{shelf.author}</strong><span className="mt-1 block text-sm text-stone-600">{shelf.workCount}作品 · {shelf.sampleTitles.slice(0, 2).join("・")}</span></span><span aria-hidden="true" className="text-xl">›</span></button>
                     ))}
+                    </div>
+                    </>
+                  ) : !isLoadingAuthorList && !authorListError ? <p className="rounded-xl bg-white p-5 text-stone-600">作家を表示できる作品がありません。</p> : null}
+                    {isLoadingAuthorList && <p className="mt-4 text-sm text-stone-600" role="status">作家一覧を読み込んでいます…</p>}
+                    {authorListError && <div className="mt-4 rounded-xl bg-red-50 p-4 text-red-900" role="alert"><p>{authorListError}</p><button type="button" onClick={() => void requestAuthorList()} className="mt-2 min-h-11 underline">再試行</button></div>}
+                    {authorListPage.hasMore && <button type="button" onClick={() => void requestAuthorList(authorListPage.nextOffset, true)} disabled={isLoadingAuthorList} className="mt-4 min-h-11 rounded-lg border border-stone-300 bg-white px-4 py-2">{isLoadingAuthorList ? "読み込み中…" : "作家をもっと見る"}</button>}
                   </div>
-                ) : <p className="mt-5 rounded-xl bg-white p-5 text-stone-600">作家の棚を表示できる作品がありません。</p>
               )}
 
               {!isLoadingShelf && !shelfError && shelfMode === "works" && (
                 <div className="mt-5">
-                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                    <p className="text-sm text-stone-600">青空文庫の作品から、いくつかをランダムに並べています。</p>
-                    <button type="button" onClick={() => void requestDiscovery()} disabled={isLoadingShelf} className="min-h-11 rounded-lg border border-stone-300 bg-white px-4 py-2 font-medium disabled:opacity-50">別の作品を見る</button>
-                  </div>
-                  {shelfWorks.length > 0 ? (
+                  <p className="mb-3 text-sm text-stone-600">カタログの作品名順です。作品を選ぶと同じ詳細を開きます。</p>
+                  {listedWorks.length > 0 ? (
                     <div className="grid gap-3">
-                      {shelfWorks.map((work) => (
-                        <WorkChoiceCard
-                          key={work.id}
-                          work={work}
-                          estimate={pageEstimates[work.id] ?? { status: "idle" }}
-                          selected={isSelected(work.id)}
-                          disabled={loadState !== "ready"}
-                          onAdd={addWork}
-                          onEstimate={requestEstimate}
-                          onRetryEstimate={retryEstimate}
-                        />
-                      ))}
+                      {listedWorks.map(renderWorkCard)}
                     </div>
-                  ) : <p className="rounded-xl bg-white p-5 text-stone-600">本棚に表示できる作品がありません。</p>}
+                  ) : !isLoadingWorkList && !workListError ? <p className="rounded-xl bg-white p-5 text-stone-600">作品一覧を表示できる作品がありません。</p> : null}
+                  {isLoadingWorkList && <p className="mt-4 text-sm text-stone-600" role="status">作品一覧を読み込んでいます…</p>}
+                  {workListError && <div className="mt-4 rounded-xl bg-red-50 p-4 text-red-900" role="alert"><p>{workListError}</p><button type="button" onClick={() => void requestWorkList()} className="mt-2 min-h-11 underline">再試行</button></div>}
+                  {workListPage.hasMore && <button type="button" onClick={() => void requestWorkList(workListPage.nextOffset, true)} disabled={isLoadingWorkList} className="mt-4 min-h-11 rounded-lg border border-stone-300 bg-white px-4 py-2">{isLoadingWorkList ? "読み込み中…" : "作品をもっと見る"}</button>}
                 </div>
               )}
 
@@ -497,20 +705,7 @@ export default function CreatePage() {
                     </div>
                   )}
                   {!isLoadingAuthorWorks && !authorError && authorWorks.length === 0 && <p className="mt-4 text-stone-600">この作家の作品は見つかりませんでした。</p>}
-                  <div className="mt-4 grid gap-3">
-                    {authorWorks.map((work) => (
-                      <WorkChoiceCard
-                        key={work.id}
-                        work={work}
-                        estimate={pageEstimates[work.id] ?? { status: "idle" }}
-                        selected={isSelected(work.id)}
-                        disabled={loadState !== "ready"}
-                        onAdd={addWork}
-                        onEstimate={requestEstimate}
-                        onRetryEstimate={retryEstimate}
-                      />
-                    ))}
-                  </div>
+                  <div className="mt-4 grid gap-3">{authorWorks.map(renderWorkCard)}</div>
                   {authorHasMore && (
                     <button type="button" onClick={() => void requestAuthorWorks(activeAuthor, authorOffset, true)} disabled={isLoadingAuthorWorks} className="mt-4 min-h-11 rounded-lg border border-stone-300 bg-white px-4 py-2 disabled:opacity-50">
                       {isLoadingAuthorWorks ? "読み込み中…" : "この作家の作品をもっと見る"}
@@ -547,18 +742,7 @@ export default function CreatePage() {
               )}
               {works.length > 0 && (
                 <div className="mt-5 grid gap-3">
-                  {works.map((work) => (
-                    <WorkChoiceCard
-                      key={work.id}
-                      work={work}
-                      estimate={pageEstimates[work.id] ?? { status: "idle" }}
-                      selected={isSelected(work.id)}
-                      disabled={loadState !== "ready"}
-                      onAdd={addWork}
-                      onEstimate={requestEstimate}
-                      onRetryEstimate={retryEstimate}
-                    />
-                  ))}
+                  {works.map(renderWorkCard)}
                 </div>
               )}
             </div>
@@ -700,6 +884,48 @@ export default function CreatePage() {
         </button>
 
       </div>
+      {detailWork && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-stone-950/55 p-0 sm:items-center sm:p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) closeWorkDetails(); }}>
+          <section
+            ref={detailDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="work-detail-title"
+            className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-t-2xl bg-[#fffdf8] p-5 shadow-2xl sm:rounded-2xl sm:p-7"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-sm text-stone-500">青空文庫の作品</p>
+                <h2 id="work-detail-title" className="mt-1 break-words text-2xl font-bold">{detailWork.title}</h2>
+                <p className="mt-2 break-words text-stone-700">著者：{detailWork.author || "カタログに著者情報がありません"}</p>
+              </div>
+              <button type="button" autoFocus onClick={closeWorkDetails} aria-label="作品詳細を閉じる" className="grid size-11 shrink-0 place-items-center rounded-full border border-stone-300 text-2xl leading-none hover:bg-stone-100">×</button>
+            </div>
+            {detailWork.contributors && detailWork.contributors.some((person) => person.role && !["著者", "作者", "原著者"].includes(person.role)) && (
+              <section className="mt-5 rounded-xl bg-stone-100 p-4" aria-label="関係者">
+                <h3 className="font-semibold">関係者</h3>
+                <ul className="mt-2 space-y-1 text-sm text-stone-700">
+                  {detailWork.contributors.filter((person) => person.role && !["著者", "作者", "原著者"].includes(person.role)).map((person) => (
+                    <li key={`${person.role}-${person.name}`}>{person.role}：{person.name}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            <div className="mt-5 rounded-xl border border-stone-200 p-4">
+              <h3 className="font-semibold">作品情報</h3>
+              <PageEstimateLabel estimate={pageEstimates[detailWork.id] ?? { status: "idle" }} onRetry={() => retryEstimate(detailWork)} />
+              <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+                {safeAozoraUrl(detailWork.cardUrl) && <a className="min-h-11 inline-flex items-center underline underline-offset-4" href={safeAozoraUrl(detailWork.cardUrl) ?? undefined} target="_blank" rel="noopener noreferrer">図書カードを見る</a>}
+                {safeAozoraUrl(detailWork.xhtmlUrl) && <a className="min-h-11 inline-flex items-center underline underline-offset-4" href={safeAozoraUrl(detailWork.xhtmlUrl) ?? undefined} target="_blank" rel="noopener noreferrer">青空文庫で本文を読む</a>}
+              </div>
+            </div>
+            <button type="button" onClick={() => addWork(detailWork)} disabled={isSelected(detailWork.id) || loadState !== "ready"} aria-pressed={isSelected(detailWork.id)} className="mt-5 min-h-12 w-full rounded-xl bg-emerald-900 px-5 py-3 font-semibold text-white disabled:bg-stone-300 disabled:text-stone-600">
+              {isSelected(detailWork.id) ? "この作品は本に入っています" : "この作品を本に追加"}
+            </button>
+            <button type="button" onClick={closeWorkDetails} className="mt-3 min-h-11 w-full rounded-xl border border-stone-300 px-4 py-2 font-medium">本棚に戻る</button>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

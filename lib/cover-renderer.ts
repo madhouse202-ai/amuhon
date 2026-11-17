@@ -35,6 +35,18 @@ function wrapCanvasText(context: CanvasRenderingContext2D, text: string, maxWidt
   return lines;
 }
 
+export function getFrontCoverSourceRect(layout: ReturnType<typeof calculateCoverLayout>, sourceWidth: number, sourceHeight: number) {
+  if (!layout || !Number.isInteger(sourceWidth) || !Number.isInteger(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) {
+    throw new Error("表紙画像の寸法を確認できません。");
+  }
+  return {
+    x: layout.panels.front.xMm / layout.coverWidthMm * sourceWidth,
+    y: layout.panels.trimTopMm / layout.coverHeightMm * sourceHeight,
+    width: layout.panels.front.widthMm / layout.coverWidthMm * sourceWidth,
+    height: layout.panels.trimHeightMm / layout.coverHeightMm * sourceHeight,
+  };
+}
+
 /** Create the same print-ready spread PNG used by the cover download button. */
 export async function createSpreadCoverPngBlob(
   book: Pick<BookData, "title" | "editor" | "coverStyle" | "coverColor">,
@@ -149,4 +161,30 @@ export async function createSpreadCoverPngBlob(
   const printBuffer = new ArrayBuffer(printBytes.byteLength);
   new Uint8Array(printBuffer).set(printBytes);
   return new Blob([printBuffer], { type: "image/png" });
+}
+
+/**
+ * Make a screen preview from the exact front-cover pixels in the print-ready
+ * spread. This keeps the buyer-facing artwork aligned with the submitted PNG.
+ */
+export async function createFrontCoverPreviewBlob(
+  book: Pick<BookData, "title" | "editor" | "coverStyle" | "coverColor">,
+  bodyPdfPageCount: number,
+): Promise<Blob> {
+  const layout = calculateCoverLayout(bodyPdfPageCount);
+  if (!layout) throw new Error("本文ページ数から表紙を確認できません。");
+  const spreadBlob = await createSpreadCoverPngBlob(book, bodyPdfPageCount, true);
+  const bitmap = await createImageBitmap(spreadBlob);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 420;
+    canvas.height = 592;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("表紙プレビューを表示できません。");
+    const source = getFrontCoverSourceRect(layout, bitmap.width, bitmap.height);
+    context.drawImage(bitmap, source.x, source.y, source.width, source.height, 0, 0, canvas.width, canvas.height);
+    return await canvasBlob(canvas);
+  } finally {
+    bitmap.close();
+  }
 }

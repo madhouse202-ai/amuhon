@@ -23,6 +23,8 @@ import {
 } from "@/lib/final-typography-preview";
 import { ensureNotoSerifJpLoaded } from "@/lib/noto-serif-jp-preview";
 import { CreationProgress } from "@/app/creation-progress";
+import { CoverFrontPreview } from "@/app/cover-front-preview";
+import { createSpreadCoverPngBlob } from "@/lib/cover-renderer";
 import { isSubmissionPageCount, padPerfectBindingBodyPageCount } from "@/lib/production";
 import {
   BODY_RUBY_ENABLED,
@@ -558,6 +560,7 @@ export default function FinalPage() {
 
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const [isPrinting, setIsPrinting] = useState(false);
+  const [coverExportError, setCoverExportError] = useState("");
   const [pdfOutputMode, setPdfOutputMode] = useState<PdfOutputMode>("all-pages");
   const [bodyTypography, setBodyTypography] = useState<FinalBodyTypography>("serif");
   const [typographyError, setTypographyError] = useState("");
@@ -821,6 +824,25 @@ export default function FinalPage() {
     setPdfOutputMode(mode);
     setIsPrinting(true);
     window.requestAnimationFrame(() => window.print());
+  };
+
+  const saveCoverPng = async () => {
+    if (!canPrint || !data || !submissionPageCountValid) return;
+    setCoverExportError("");
+    try {
+      const blob = await createSpreadCoverPngBlob(data, submissionPageCount);
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = "amuhon-cover-spread.png";
+        anchor.click();
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      }
+    } catch {
+      setCoverExportError("表紙データを作成できませんでした。少し待ってからもう一度お試しください。");
+    }
   };
 
   const openSpreadCover = () => {
@@ -1123,16 +1145,15 @@ export default function FinalPage() {
                     <p className="mt-1 text-xs leading-5 text-stone-500">目次や作品タイトルなどを含む、実際の組版結果です。</p>
                   </div>
                 </div>
-                <div className="flex min-w-0 items-center gap-3 rounded-lg bg-white p-3 sm:w-64 sm:flex-col sm:items-start">
-                  <div
-                    role="img"
-                    aria-label={`表紙の簡易プレビュー：${data.title}、${coverSummaryPalette.label}、${data.coverStyle === "classic" ? "基本デザイン" : "自由デザイン"}`}
-                    className="relative flex h-24 w-16 shrink-0 items-center justify-center overflow-hidden rounded-sm shadow-sm sm:h-32 sm:w-[5.5rem]"
-                    style={{ background: coverSummaryPalette.background, color: coverSummaryPalette.foreground }}
-                  >
-                    {data.coverStyle === "classic" && <span aria-hidden="true" className="absolute inset-1 border border-current opacity-60" />}
-                    <span className="relative max-h-full overflow-hidden px-2 text-center text-xs font-semibold [writing-mode:vertical-rl]">{data.title}</span>
-                  </div>
+                  <div className="flex min-w-0 items-center gap-3 rounded-lg bg-white p-3 sm:w-64 sm:flex-col sm:items-start">
+                  <CoverFrontPreview
+                    title={data.title}
+                    editor={data.editor}
+                    coverStyle={data.coverStyle}
+                    coverColor={data.coverColor}
+                    pageCount={submissionPageCount}
+                    className="w-16 shrink-0 sm:w-[5.5rem]"
+                  />
                   <div className="min-w-0">
                     <h3 className="font-semibold">表紙</h3>
                     <p className="mt-1 break-words text-sm text-stone-600">{data.coverStyle === "classic" ? "基本デザイン" : "自由デザイン"}・{coverSummaryPalette.label}</p>
@@ -1176,22 +1197,22 @@ export default function FinalPage() {
             </div>
           )}
           {canPrint ? (
-            <section className="mt-5 border-t border-stone-200 pt-4" aria-label="印刷用PDFとカバー出力">
-              <h2 className="font-semibold">印刷用データを保存（任意）</h2>
-              <p className="mt-1 text-sm text-stone-600">注文には不要です。手元で内容を確認したい場合に使えます。</p>
+            <details className="mt-5 border-t border-stone-200 pt-4" aria-label="完成した本のデータ">
+              <summary className="min-h-11 cursor-pointer py-2 text-sm font-medium text-stone-600">本のデータを手元で確認・用意する</summary>
+              <p className="mt-2 text-sm text-stone-600">注文の自動作成が利用できない場合は、本文と表紙のデータをここから保存できます。</p>
               <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-              <button className="min-h-11 rounded-lg bg-stone-800 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => savePdf("all-pages")} disabled={isPrinting}>
-                {isPrinting && pdfOutputMode === "all-pages" ? "印刷画面を準備しています…" : "全ページPDFを保存"}
+              <button className="min-h-11 rounded-lg bg-stone-800 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => savePdf("body-only")} disabled={isPrinting || !submissionPageCountValid}>
+                {isPrinting && pdfOutputMode === "body-only" ? "PDFを準備しています…" : "本文データを保存"}
               </button>
-              <button className="min-h-11 rounded-lg border border-stone-800 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={() => savePdf("body-only")} disabled={isPrinting || !submissionPageCountValid}>
-                {isPrinting && pdfOutputMode === "body-only" ? "印刷画面を準備しています…" : "本文PDFを保存（表紙なし）"}
+              <button className="min-h-11 rounded-lg border border-stone-800 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={() => void saveCoverPng()} disabled={!submissionPageCountValid}>
+                表紙データを保存
               </button>
               <button className="min-h-11 rounded-lg border border-stone-500 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={openSpreadCover} disabled={isPrinting || !submissionPageCountValid}>
-                見開きカバーを作成
+                表紙を編集する
               </button>
               </div>
-              <p className="mt-2 text-xs text-stone-500">印刷画面では用紙サイズをA6、保存先を「PDFに保存」にしてください。</p>
-            </section>
+              {coverExportError && <p role="alert" className="mt-2 text-sm text-red-700">{coverExportError}</p>}
+            </details>
           ) : (
             <p>PDFを保存するには、すべての作品本文の取得が必要です。</p>
           )}

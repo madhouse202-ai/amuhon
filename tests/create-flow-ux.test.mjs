@@ -50,15 +50,28 @@ test("work discovery opens on real author and work shelves while keeping search 
 
   assert.match(createPage, /useState<"shelf" \| "search">\("shelf"\)/);
   assert.match(createPage, /本棚から探す/);
-  assert.match(createPage, /作家の棚/);
-  assert.match(createPage, /作品の棚/);
+  assert.match(createPage, /作家一覧/);
+  assert.match(createPage, /作品一覧/);
   assert.match(createPage, /検索する/);
-  assert.match(createPage, /この作家の作品を見る/);
+  assert.match(createPage, /ほかの本棚を見る/);
+  assert.match(createPage, /groupShelfRows\(shelfWorks\)/);
+  assert.match(createPage, /writing-mode:vertical-rl|writing-mode: vertical-rl|\[writing-mode:vertical-rl\]/);
+  assert.match(createPage, /role="dialog"[\s\S]*aria-modal="true"/);
+  assert.match(createPage, /onDetails=\{showWorkDetails\}/);
+  assert.match(createPage, /event\.key === "Escape"/);
+  assert.match(createPage, /event\.shiftKey && document\.activeElement === first/);
+  assert.match(createPage, /detailTriggerRef\.current\?\.focus\(\)/);
+  assert.match(createPage, /青空文庫で本文を読む/);
+  assert.match(createPage, /この作品を本に追加/);
   assert.match(createPage, /この作家の作品をもっと見る/);
   assert.match(createPage, /青空文庫の作品情報を見る/);
   assert.match(createPage, /authorRequestIdRef/);
-  assert.match(catalogRoute, /workCount: works\.length/);
-  assert.match(catalogRoute, /sampleTitles: sampleItems/);
+  assert.match(catalogRoute, /役割フラグ/);
+  assert.match(catalogRoute, /buildAuthorEntries/);
+  assert.match(catalogRoute, /browse === "authors"/);
+  assert.match(catalogRoute, /browse === "works"/);
+  assert.match(catalogRoute, /exclude/);
+  assert.match(catalogRoute, /sampleTitles:/);
   assert.doesNotMatch(catalogRoute, /rating|popularity|genre|紹介文/);
 });
 

@@ -769,18 +769,10 @@ export default function OrderPage() {
             <dt>メールアドレス</dt><dd className="break-words">{customer.email}</dd>
           </dl>
           <p className="mt-4 rounded-lg bg-amber-50 p-4">本文と表紙の確認後に、税込・送料込みの価格が表示されます。確認が終わるまでお支払いには進めません。</p>
-          {AUTO_FILE_GENERATION_ENABLED && (
-            <fieldset className="mt-5 rounded-xl border border-stone-200 p-5">
-              <legend className="px-2 font-bold">入稿ファイルの準備方法</legend>
-              <label className="flex items-start gap-3 py-2">
-                <input type="radio" name="upload-mode" value="automatic" checked={uploadMode === "automatic"} onChange={() => setUploadMode("automatic")} disabled={saving} />
-                <span><strong>この画面で作成する</strong><span className="mt-1 block text-sm text-stone-600">選んだ作品と表紙から本のデータを作成します。端末への保存は不要です。</span></span>
-              </label>
-              <label className="flex items-start gap-3 py-2">
-                <input type="radio" name="upload-mode" value="manual" checked={uploadMode === "manual"} onChange={() => setUploadMode("manual")} disabled={saving} />
-                <span><strong>保存したファイルを選ぶ</strong><span className="mt-1 block text-sm text-stone-600">保存済みの本文と表紙を選択します。</span></span>
-              </label>
-            </fieldset>
+          {AUTO_FILE_GENERATION_ENABLED && uploadMode === "automatic" && (
+            <button type="button" onClick={() => setUploadMode("manual")} disabled={saving} className="mt-5 min-h-11 text-sm text-stone-600 underline underline-offset-4 disabled:opacity-50">
+              すでに作成した本のデータを使う
+            </button>
           )}
           {uploadMode === "automatic" ? (
             <section className="mt-5 rounded-xl border border-stone-200 bg-stone-50 p-5" aria-label="自動ファイル生成">
@@ -789,24 +781,26 @@ export default function OrderPage() {
               {!isSubmissionPageCount(declaredPageCount ?? -1) && <p className="mt-3 text-sm text-amber-800">完成した本の画面で本文を確認してから、もう一度お進みください。</p>}
             </section>
           ) : (
-            <section className="mt-5 rounded-xl border border-stone-200 p-5" aria-label="入稿ファイル選択">
-              <h3 className="font-bold">本文と表紙を選択</h3>
-              {DIRECT_UPLOAD_EXPERIMENT ? (
-                <p className="mt-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
-                  この操作は確認用の送信です。今回はお支払いに進めません。
-                </p>
-              ) : (
-                <p className="mt-2 text-sm text-stone-600">完成した本の画面で保存した本文と、表紙画面で保存した見開き表紙を選択してください。各ファイルは40MB以下です。</p>
-              )}
-              <label className="mt-4 block font-medium">本文PDF（表紙なし）
-                <input className="mt-1 block w-full" type="file" accept="application/pdf,.pdf" onChange={(event) => setBodyPdfFile(event.target.files?.[0] ?? null)} disabled={saving} />
-              </label>
-              <label className="mt-4 block font-medium">見開きカバーPNG
-                <input className="mt-1 block w-full" type="file" accept="image/png,.png" onChange={(event) => setCoverPngFile(event.target.files?.[0] ?? null)} disabled={saving} />
-              </label>
-              {bodyPdfFile && <p className="mt-2 text-sm">本文PDF選択済み（{Math.ceil(bodyPdfFile.size / 1024 / 1024)}MiB）</p>}
-              {coverPngFile && <p className="mt-1 text-sm">カバーPNG選択済み（{Math.ceil(coverPngFile.size / 1024 / 1024)}MiB）</p>}
-            </section>
+            <details className="mt-5 rounded-xl border border-stone-200 bg-white p-5" open={!AUTO_FILE_GENERATION_ENABLED}>
+              <summary className="cursor-pointer font-bold">作成済みの本のデータを使う</summary>
+              <section className="pt-3" aria-label="本のデータ選択">
+                {DIRECT_UPLOAD_EXPERIMENT ? (
+                  <p className="mt-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+                    この操作は確認用の送信です。今回はお支払いに進めません。
+                  </p>
+                ) : (
+                  <p className="mt-2 text-sm text-stone-600">完成した本の本文と表紙データを選択してください。</p>
+                )}
+                <label className="mt-4 block font-medium">本文のデータ（PDF）
+                  <input className="mt-1 block w-full" type="file" accept="application/pdf,.pdf" onChange={(event) => setBodyPdfFile(event.target.files?.[0] ?? null)} disabled={saving} />
+                </label>
+                <label className="mt-4 block font-medium">表紙のデータ（PNG）
+                  <input className="mt-1 block w-full" type="file" accept="image/png,.png" onChange={(event) => setCoverPngFile(event.target.files?.[0] ?? null)} disabled={saving} />
+                </label>
+                {bodyPdfFile && <p className="mt-2 text-sm">本文データを選択済み（{Math.ceil(bodyPdfFile.size / 1024 / 1024)}MiB）</p>}
+                {coverPngFile && <p className="mt-1 text-sm">表紙データを選択済み（{Math.ceil(coverPngFile.size / 1024 / 1024)}MiB）</p>}
+              </section>
+            </details>
           )}
           {error && <p role="alert" className="mt-4 text-red-700">{error}</p>}
           <div className="mt-5 flex flex-wrap gap-3">

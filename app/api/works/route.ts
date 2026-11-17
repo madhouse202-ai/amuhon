@@ -4,10 +4,13 @@ type Work = {
   id: string;
   title: string;
   author: string;
+  contributors: WorkContributor[];
   cardUrl: string;
   textUrl: string;
   xhtmlUrl: string;
 };
+
+type WorkContributor = { name: string; role: string; reading: string };
 
 type AuthorShelf = {
   author: string;
@@ -19,6 +22,15 @@ const AUTHOR_SHELF_LIMIT = 12;
 const AUTHOR_SAMPLE_TITLE_LIMIT = 2;
 const WORK_SHELF_LIMIT = 24;
 const AUTHOR_WORK_PAGE_SIZE = 30;
+const AUTHOR_LIST_PAGE_SIZE = 50;
+const WORK_LIST_PAGE_SIZE = 40;
+
+function parseExcludedWorkIds(value: string | null): Set<string> | null {
+  if (!value) return new Set();
+  const items = value.split(",");
+  if (items.length > WORK_SHELF_LIMIT || items.some((item) => !/^\d{1,12}$/.test(item))) return null;
+  return new Set(items);
+}
 
 const CATALOG_URL =
   "https://www.aozora.gr.jp/index_pages/list_person_all_extended_utf8.zip";
@@ -35,21 +47,59 @@ function sampleItems<T>(items: T[], count: number): T[] {
   return shuffled.slice(0, sampleSize);
 }
 
-function buildAuthorShelves(catalog: Work[]): AuthorShelf[] {
-  const grouped = new Map<string, Work[]>();
+function isAuthorRole(role: string): boolean {
+  return role === "著者" || role === "作者" || role === "原著者";
+}
+
+function workAuthors(work: Work): WorkContributor[] {
+  const authors = work.contributors.filter((person) => isAuthorRole(person.role));
+  if (authors.length > 0) return authors;
+  // Older catalog exports do not include a role column. In that format the
+  // existing 姓/名 pair is the author field, so retain the legacy behavior.
+  return work.contributors.length === 0 && work.author
+    ? [{ name: work.author, role: "著者", reading: work.author }]
+    : [];
+}
+
+function buildAuthorEntries(catalog: Work[]): Array<AuthorShelf & { reading: string }> {
+  const grouped = new Map<string, { works: Work[]; reading: string }>();
   for (const work of catalog) {
-    const author = work.author.trim();
-    if (!author) continue;
-    const works = grouped.get(author) ?? [];
-    works.push(work);
-    grouped.set(author, works);
+    for (const person of workAuthors(work)) {
+      const author = person.name.trim();
+      if (!author) continue;
+      const entry = grouped.get(author) ?? { works: [], reading: person.reading || author };
+      if (!entry.works.some((item) => item.id === work.id)) entry.works.push(work);
+      grouped.set(author, entry);
+    }
   }
 
-  return sampleItems([...grouped.entries()], AUTHOR_SHELF_LIMIT).map(([author, works]) => ({
-    author,
-    workCount: works.length,
-    sampleTitles: sampleItems(works, AUTHOR_SAMPLE_TITLE_LIMIT).map((work) => work.title),
-  }));
+  const collator = new Intl.Collator("ja", { sensitivity: "base", numeric: true });
+  return [...grouped.entries()]
+    .map(([author, entry]) => ({
+      author,
+      reading: entry.reading,
+      workCount: entry.works.length,
+      sampleTitles: entry.works.slice(0, AUTHOR_SAMPLE_TITLE_LIMIT).map((work) => work.title),
+    }))
+    .sort((left, right) => collator.compare(left.reading, right.reading) || collator.compare(left.author, right.author));
+}
+
+function publicAuthorEntry(entry: AuthorShelf & { reading: string }): AuthorShelf {
+  return { author: entry.author, workCount: entry.workCount, sampleTitles: entry.sampleTitles };
+}
+
+function uniqueWorks(works: Work[]): Work[] {
+  const byId = new Map<string, Work>();
+  for (const work of works) {
+    if (!byId.has(work.id)) byId.set(work.id, work);
+  }
+  return [...byId.values()];
+}
+
+function sampleWorks(catalog: Work[], excludedIds: Set<string> = new Set()): Work[] {
+  const unique = uniqueWorks(catalog);
+  const fresh = unique.filter((work) => !excludedIds.has(work.id));
+  return sampleItems(fresh.length > 0 ? fresh : unique, WORK_SHELF_LIMIT);
 }
 
 function parseOffset(value: string | null): number | null {
@@ -232,6 +282,9 @@ async function loadCatalog(): Promise<Work[]> {
     "HTMLファイルURL",
     "XHTMLURL",
   ]);
+  const roleIndex = findColumnIndex(["役割フラグ", "役割"]);
+  const lastNameReadingIndex = findColumnIndex(["姓読み", "姓よみ"]);
+  const firstNameReadingIndex = findColumnIndex(["名読み", "名よみ"]);
 
   console.log(
     "CSV列番号:",
@@ -274,7 +327,7 @@ async function loadCatalog(): Promise<Work[]> {
     );
   }
 
-  const works: Work[] = [];
+  const workMap = new Map<string, Work>();
 
   /*
    * 2行目以降を作品データとして読む
@@ -311,6 +364,8 @@ async function loadCatalog(): Promise<Work[]> {
 
     const author =
       `${lastName} ${firstName}`.trim();
+    const role = roleIndex === -1 ? "著者" : (columns[roleIndex]?.trim() ?? "");
+    const reading = `${lastNameReadingIndex === -1 ? "" : columns[lastNameReadingIndex]?.trim() ?? ""} ${firstNameReadingIndex === -1 ? "" : columns[firstNameReadingIndex]?.trim() ?? ""}`.trim();
 
     const cardUrl =
       columns[cardUrlIndex]?.trim() ?? "";
@@ -325,15 +380,27 @@ async function loadCatalog(): Promise<Work[]> {
       continue;
     }
 
-    works.push({
+    const existing = workMap.get(id);
+    const work = existing ?? {
       id,
       title,
-      author,
+      author: "",
+      contributors: [],
       cardUrl,
       textUrl,
       xhtmlUrl,
-    });
+    } satisfies Work;
+    if (author && role && !work.contributors.some((person) => person.name === author && person.role === role)) {
+      work.contributors.push({ name: author, role, reading: reading || author });
+    }
+    if (isAuthorRole(role) && author) {
+      const authors = work.contributors.filter((person) => isAuthorRole(person.role)).map((person) => person.name);
+      work.author = [...new Set(authors)].join("・");
+    }
+    workMap.set(id, work);
   }
+
+  const works = [...workMap.values()];
 
   console.log(
     `青空文庫カタログ読み込み完了: ${works.length}作品`
@@ -358,7 +425,7 @@ export async function GET(request: Request) {
     });
   }
 
-  if (!query && browse && !["discover", "author", "works"].includes(browse)) {
+  if (!query && browse && !["discover", "author", "authors", "works"].includes(browse)) {
     return Response.json({ error: "作品棚を読み込めませんでした。" }, { status: 400 });
   }
 
@@ -367,14 +434,36 @@ export async function GET(request: Request) {
       await loadCatalog();
 
     if (!query && browse === "discover") {
+      const excludedIds = parseExcludedWorkIds(searchParams.get("exclude"));
+      if (!excludedIds) return Response.json({ error: "本棚を読み込めませんでした。" }, { status: 400 });
       return Response.json({
-        authors: buildAuthorShelves(catalog),
-        works: sampleItems(catalog, WORK_SHELF_LIMIT),
+        authors: sampleItems(buildAuthorEntries(catalog), AUTHOR_SHELF_LIMIT).map(publicAuthorEntry),
+        works: sampleWorks(catalog, excludedIds),
       });
     }
 
     if (!query && browse === "works") {
-      return Response.json({ works: sampleItems(catalog, WORK_SHELF_LIMIT) });
+      const offset = parseOffset(searchParams.get("offset"));
+      if (offset === null) return Response.json({ error: "作品一覧を読み込めませんでした。" }, { status: 400 });
+      const collator = new Intl.Collator("ja", { sensitivity: "base", numeric: true });
+      const sorted = [...catalog].sort((left, right) => collator.compare(left.title, right.title) || left.id.localeCompare(right.id));
+      const works = sorted.slice(offset, offset + WORK_LIST_PAGE_SIZE);
+      const nextOffset = offset + works.length;
+      return Response.json({ works, total: sorted.length, nextOffset, hasMore: nextOffset < sorted.length });
+    }
+
+    if (!query && browse === "authors") {
+      const offset = parseOffset(searchParams.get("offset"));
+      if (offset === null) return Response.json({ error: "作家一覧を読み込めませんでした。" }, { status: 400 });
+      const authors = buildAuthorEntries(catalog);
+      const page = authors.slice(offset, offset + AUTHOR_LIST_PAGE_SIZE);
+      const nextOffset = offset + page.length;
+      return Response.json({
+        authors: page.map(publicAuthorEntry),
+        total: authors.length,
+        nextOffset,
+        hasMore: nextOffset < authors.length,
+      });
     }
 
     if (!query && browse === "author") {
@@ -384,7 +473,7 @@ export async function GET(request: Request) {
         return Response.json({ error: "作家の作品を読み込めませんでした。" }, { status: 400 });
       }
 
-      const authorWorks = catalog.filter((work) => work.author === author);
+      const authorWorks = catalog.filter((work) => workAuthors(work).some((person) => person.name === author));
       const works = authorWorks.slice(offset, offset + AUTHOR_WORK_PAGE_SIZE);
       const nextOffset = offset + works.length;
       return Response.json({
@@ -423,10 +512,14 @@ export async function GET(request: Request) {
           work.author
             .toLowerCase()
             .replace(/\s+/g, "");
+        const contributorMatch = work.contributors.some((person) =>
+          person.name.toLowerCase().replace(/\s+/g, "").includes(normalizedQuery),
+        );
 
         return (
           title.includes(normalizedQuery) ||
-          author.includes(normalizedQuery)
+          author.includes(normalizedQuery) ||
+          contributorMatch
         );
       })
       .slice(0, 30);
