@@ -55,6 +55,12 @@ test("work discovery opens on real author and work shelves while keeping search 
   assert.match(createPage, /検索する/);
   assert.match(createPage, /ほかの本棚を見る/);
   assert.match(createPage, /groupShelfRows\(shelfWorks\)/);
+  assert.match(createPage, /white-space:nowrap|whitespace-nowrap/);
+  assert.doesNotMatch(createPage, /max-h-12[^\n]*work\.author/);
+  assert.match(createPage, /aria-label=\{`\$\{work\.title\}、\$\{work\.author/);
+  assert.match(createPage, /KanaIndex label="作家一覧の五十音索引"/);
+  assert.match(createPage, /KanaIndex label="作品一覧の五十音索引"/);
+  assert.match(createPage, /availableLetters/);
   assert.match(createPage, /writing-mode:vertical-rl|writing-mode: vertical-rl|\[writing-mode:vertical-rl\]/);
   assert.match(createPage, /role="dialog"[\s\S]*aria-modal="true"/);
   assert.match(createPage, /onDetails=\{showWorkDetails\}/);

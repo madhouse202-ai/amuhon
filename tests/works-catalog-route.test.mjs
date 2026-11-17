@@ -17,12 +17,17 @@ test("catalog shelves use existing work metadata and preserve exact author pagin
     ["0006", "春の短い話", "", "", "著者", "", ""],
     ["0007", "おしどり", "小泉", "八雲", "著者", "こいずみ", "やくも"],
     ["0007", "おしどり", "田部", "隆次", "翻訳者", "たべ", "りゅうじ"],
+    ["0008", "未分類の本", "架空", "作者", "著者", "", "", "", ""],
   ];
-  const header = ["作品ID", "作品名", "姓", "名", "役割フラグ", "姓読み", "名読み", "図書カードURL", "テキストファイルURL", "XHTMLファイルURL"];
+  for (let index = 0; index < 52; index += 1) {
+    rows.push([`1${String(index).padStart(4, "0")}`, `作品${String(index).padStart(2, "0")}`, "あ作者", String(index), "著者", "あ", "さくしゃ", `あ作品${index}`, `あさくひん${index}`]);
+  }
+  rows.push(["9999", "桃太郎", "茂木", "一郎", "著者", "もぎ", "いちろう", "ももたろう", "ももたろう"]);
+  const header = ["作品ID", "作品名", "姓", "名", "役割フラグ", "姓読み", "名読み", "作品名読み", "ソート用読み", "図書カードURL", "テキストファイルURL", "XHTMLファイルURL"];
   const csv = [
     header.map(csvCell).join(","),
-    ...rows.map(([id, title, lastName, firstName, role, lastNameReading, firstNameReading]) => [
-      id, title, lastName, firstName, role, lastNameReading, firstNameReading,
+    ...rows.map(([id, title, lastName, firstName, role, lastNameReading, firstNameReading, titleReading = "", sortReading = ""]) => [
+      id, title, lastName, firstName, role, lastNameReading, firstNameReading, titleReading, sortReading,
       `https://www.aozora.gr.jp/cards/${id}/card.html`,
       `https://www.aozora.gr.jp/cards/${id}/files/${id}_0.txt`,
       `https://www.aozora.gr.jp/cards/${id}/files/${id}_0.html`,
@@ -44,14 +49,14 @@ test("catalog shelves use existing work metadata and preserve exact author pagin
     const discoveryResponse = await GET(new Request("http://localhost/api/works?browse=discover"));
     assert.equal(discoveryResponse.status, 200);
     const discovery = await discoveryResponse.json();
-    assert.equal(discovery.authors.length, 3);
-    assert.deepEqual(new Set(discovery.authors.map((shelf) => shelf.author)), new Set(["芥川 龍之介", "宮沢 賢治", "小泉 八雲"]));
+    assert.equal(discovery.authors.length, 12, "author shelf remains capped");
     assert.ok(discovery.authors.every((shelf) => shelf.workCount >= 1));
     assert.ok(discovery.authors.every((shelf) => shelf.sampleTitles.length > 0 && shelf.sampleTitles.length <= 2));
-    assert.equal(discovery.works.length, rows.length - 1, "duplicate contributor rows are folded into one work");
-    assert.equal(new Set(discovery.works.map((work) => work.id)).size, rows.length - 1);
+    assert.equal(discovery.works.length, 24, "discovery sends only a bounded random shelf");
+    assert.equal(new Set(discovery.works.map((work) => work.id)).size, discovery.works.length);
     assert.ok(discovery.works.every((work) => rows.some(([id]) => id === work.id)));
-    const oshidori = discovery.works.find((work) => work.id === "0007");
+    const oshidoriResponse = await GET(new Request("http://localhost/api/works?q=%E3%81%8A%E3%81%97%E3%81%A9%E3%82%8A"));
+    const oshidori = (await oshidoriResponse.json()).works.find((work) => work.id === "0007");
     assert.equal(oshidori.author, "小泉 八雲");
     assert.ok(oshidori.contributors.some((person) => person.role === "翻訳者" && person.name === "田部 隆次"));
 
@@ -67,7 +72,29 @@ test("catalog shelves use existing work metadata and preserve exact author pagin
     const authorList = await authorListResponse.json();
     assert.equal(authorListResponse.status, 200);
     assert.equal(authorList.authors.some((entry) => entry.author === "田部 隆次"), false, "translators are not exposed as authors");
-    assert.deepEqual(authorList.authors.map((entry) => entry.author), ["芥川 龍之介", "小泉 八雲", "宮沢 賢治"]);
+    assert.equal(authorList.authors.length, 50);
+    assert.ok(authorList.availableLetters.includes("あ"));
+    assert.ok(authorList.availableLetters.includes("も"));
+    assert.equal(authorList.authors.some((entry) => entry.author === "茂木 一郎"), false, "the later author is beyond the first page");
+    const unindexedAuthorPage = await GET(new Request("http://localhost/api/works?browse=authors&offset=56"));
+    assert.equal((await unindexedAuthorPage.json()).authors[0]?.author, "架空 作者", "entries without CSV readings remain available in All");
+    const authorByKanaResponse = await GET(new Request("http://localhost/api/works?browse=authors&letter=%E3%82%82&offset=0"));
+    const authorByKana = await authorByKanaResponse.json();
+    assert.equal(authorByKanaResponse.status, 200);
+    assert.ok(authorByKana.authors.some((entry) => entry.author === "茂木 一郎"), "kana index jumps to an author beyond the unloaded page");
+    assert.equal(authorByKana.total, 1);
+
+    const workListResponse = await GET(new Request("http://localhost/api/works?browse=works&offset=0"));
+    const workList = await workListResponse.json();
+    assert.equal(workList.works.length, 40);
+    assert.equal(workList.works.some((work) => work.id === "9999"), false, "the later work is beyond the first page");
+    assert.ok(workList.availableLetters.includes("も"));
+    const workByKanaResponse = await GET(new Request("http://localhost/api/works?browse=works&letter=%E3%82%82&offset=0"));
+    const workByKana = await workByKanaResponse.json();
+    assert.equal(workByKanaResponse.status, 200);
+    assert.deepEqual(workByKana.works.map((work) => work.id), ["9999"], "kana index jumps to a work beyond the unloaded page");
+    assert.equal(workByKana.total, 1);
+    assert.equal((await GET(new Request("http://localhost/api/works?browse=works&letter=%E3%82%94"))).status, 400);
 
     const translatedAuthorResponse = await GET(new Request("http://localhost/api/works?browse=author&author=%E5%B0%8F%E6%B3%89%20%E5%85%AB%E9%9B%B2&offset=0"));
     const translatedAuthor = await translatedAuthorResponse.json();

@@ -1,8 +1,11 @@
 import JSZip from "jszip";
+import { compareJapaneseReadings, getAvailableGojuonLetters, getGojuonIndexLetter, GOJUON_LETTERS } from "../../../lib/kana-index.ts";
 
 type Work = {
   id: string;
   title: string;
+  titleReading: string;
+  sortReading: string;
   author: string;
   contributors: WorkContributor[];
   cardUrl: string;
@@ -57,7 +60,7 @@ function workAuthors(work: Work): WorkContributor[] {
   // Older catalog exports do not include a role column. In that format the
   // existing 姓/名 pair is the author field, so retain the legacy behavior.
   return work.contributors.length === 0 && work.author
-    ? [{ name: work.author, role: "著者", reading: work.author }]
+    ? [{ name: work.author, role: "著者", reading: "" }]
     : [];
 }
 
@@ -67,13 +70,13 @@ function buildAuthorEntries(catalog: Work[]): Array<AuthorShelf & { reading: str
     for (const person of workAuthors(work)) {
       const author = person.name.trim();
       if (!author) continue;
-      const entry = grouped.get(author) ?? { works: [], reading: person.reading || author };
+      const entry = grouped.get(author) ?? { works: [], reading: person.reading };
       if (!entry.works.some((item) => item.id === work.id)) entry.works.push(work);
+      if (!entry.reading && person.reading) entry.reading = person.reading;
       grouped.set(author, entry);
     }
   }
 
-  const collator = new Intl.Collator("ja", { sensitivity: "base", numeric: true });
   return [...grouped.entries()]
     .map(([author, entry]) => ({
       author,
@@ -81,7 +84,7 @@ function buildAuthorEntries(catalog: Work[]): Array<AuthorShelf & { reading: str
       workCount: entry.works.length,
       sampleTitles: entry.works.slice(0, AUTHOR_SAMPLE_TITLE_LIMIT).map((work) => work.title),
     }))
-    .sort((left, right) => collator.compare(left.reading, right.reading) || collator.compare(left.author, right.author));
+    .sort((left, right) => compareJapaneseReadings(left.reading, right.reading) || left.author.localeCompare(right.author, "ja"));
 }
 
 function publicAuthorEntry(entry: AuthorShelf & { reading: string }): AuthorShelf {
@@ -285,6 +288,8 @@ async function loadCatalog(): Promise<Work[]> {
   const roleIndex = findColumnIndex(["役割フラグ", "役割"]);
   const lastNameReadingIndex = findColumnIndex(["姓読み", "姓よみ"]);
   const firstNameReadingIndex = findColumnIndex(["名読み", "名よみ"]);
+  const titleReadingIndex = findColumnIndex(["作品名読み", "作品名よみ"]);
+  const sortReadingIndex = findColumnIndex(["ソート用読み", "ソート用よみ"]);
 
   console.log(
     "CSV列番号:",
@@ -366,6 +371,8 @@ async function loadCatalog(): Promise<Work[]> {
       `${lastName} ${firstName}`.trim();
     const role = roleIndex === -1 ? "著者" : (columns[roleIndex]?.trim() ?? "");
     const reading = `${lastNameReadingIndex === -1 ? "" : columns[lastNameReadingIndex]?.trim() ?? ""} ${firstNameReadingIndex === -1 ? "" : columns[firstNameReadingIndex]?.trim() ?? ""}`.trim();
+    const titleReading = titleReadingIndex === -1 ? "" : columns[titleReadingIndex]?.trim() ?? "";
+    const sortReading = sortReadingIndex === -1 ? "" : columns[sortReadingIndex]?.trim() ?? "";
 
     const cardUrl =
       columns[cardUrlIndex]?.trim() ?? "";
@@ -384,14 +391,18 @@ async function loadCatalog(): Promise<Work[]> {
     const work = existing ?? {
       id,
       title,
+      titleReading,
+      sortReading,
       author: "",
       contributors: [],
       cardUrl,
       textUrl,
       xhtmlUrl,
     } satisfies Work;
+    if (!work.titleReading && titleReading) work.titleReading = titleReading;
+    if (!work.sortReading && sortReading) work.sortReading = sortReading;
     if (author && role && !work.contributors.some((person) => person.name === author && person.role === role)) {
-      work.contributors.push({ name: author, role, reading: reading || author });
+      work.contributors.push({ name: author, role, reading });
     }
     if (isAuthorRole(role) && author) {
       const authors = work.contributors.filter((person) => isAuthorRole(person.role)).map((person) => person.name);
@@ -418,6 +429,11 @@ export async function GET(request: Request) {
   const query =
     searchParams.get("q")?.trim() ?? "";
   const browse = searchParams.get("browse");
+  const letter = searchParams.get("letter");
+
+  if (letter !== null && !GOJUON_LETTERS.includes(letter)) {
+    return Response.json({ error: "五十音の指定が正しくありません。" }, { status: 400 });
+  }
 
   if (!query && !browse) {
     return Response.json({
@@ -445,24 +461,32 @@ export async function GET(request: Request) {
     if (!query && browse === "works") {
       const offset = parseOffset(searchParams.get("offset"));
       if (offset === null) return Response.json({ error: "作品一覧を読み込めませんでした。" }, { status: 400 });
-      const collator = new Intl.Collator("ja", { sensitivity: "base", numeric: true });
-      const sorted = [...catalog].sort((left, right) => collator.compare(left.title, right.title) || left.id.localeCompare(right.id));
-      const works = sorted.slice(offset, offset + WORK_LIST_PAGE_SIZE);
+      const sorted = [...catalog].sort((left, right) => {
+        const leftReading = left.sortReading || left.titleReading;
+        const rightReading = right.sortReading || right.titleReading;
+        return compareJapaneseReadings(leftReading, rightReading) || left.title.localeCompare(right.title, "ja") || left.id.localeCompare(right.id);
+      });
+      const availableLetters = getAvailableGojuonLetters(sorted.map((work) => work.sortReading || work.titleReading));
+      const filtered = letter ? sorted.filter((work) => getGojuonIndexLetter(work.sortReading || work.titleReading) === letter) : sorted;
+      const works = filtered.slice(offset, offset + WORK_LIST_PAGE_SIZE);
       const nextOffset = offset + works.length;
-      return Response.json({ works, total: sorted.length, nextOffset, hasMore: nextOffset < sorted.length });
+      return Response.json({ works, total: filtered.length, nextOffset, hasMore: nextOffset < filtered.length, availableLetters });
     }
 
     if (!query && browse === "authors") {
       const offset = parseOffset(searchParams.get("offset"));
       if (offset === null) return Response.json({ error: "作家一覧を読み込めませんでした。" }, { status: 400 });
       const authors = buildAuthorEntries(catalog);
-      const page = authors.slice(offset, offset + AUTHOR_LIST_PAGE_SIZE);
+      const availableLetters = getAvailableGojuonLetters(authors.map((author) => author.reading));
+      const filtered = letter ? authors.filter((author) => getGojuonIndexLetter(author.reading) === letter) : authors;
+      const page = filtered.slice(offset, offset + AUTHOR_LIST_PAGE_SIZE);
       const nextOffset = offset + page.length;
       return Response.json({
         authors: page.map(publicAuthorEntry),
-        total: authors.length,
+        total: filtered.length,
         nextOffset,
-        hasMore: nextOffset < authors.length,
+        hasMore: nextOffset < filtered.length,
+        availableLetters,
       });
     }
 

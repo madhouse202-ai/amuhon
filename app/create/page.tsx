@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { BookWork } from "@/lib/book";
+import { GOJUON_ROWS } from "@/lib/kana-index";
 import { CreationProgress } from "@/app/creation-progress";
 import { DraftSaveStatus } from "@/app/draft-save-status";
 import { useBookDraftAutosave } from "@/lib/use-book-draft-autosave";
@@ -12,6 +13,47 @@ type Work = BookWork & { contributors?: WorkContributor[] };
 type PageEstimate = { status: "idle" | "loading" | "ready" | "error"; pages?: number };
 type AuthorShelf = { author: string; workCount: number; sampleTitles: string[] };
 type ListPage = { nextOffset: number; hasMore: boolean };
+
+function KanaIndex({
+  label,
+  value,
+  availableLetters,
+  onChange,
+}: {
+  label: string;
+  value: string | null;
+  availableLetters: string[];
+  onChange: (letter: string | null) => void;
+}) {
+  const available = new Set(availableLetters);
+  return (
+    <nav aria-label={label} className="mb-4 rounded-xl border border-stone-200 bg-white p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium text-stone-700">読みの頭文字から探す</p>
+        <button type="button" aria-pressed={value === null} onClick={() => onChange(null)} className={`min-h-9 rounded-lg px-3 text-sm ${value === null ? "bg-stone-800 text-white" : "border border-stone-300 bg-white"}`}>すべて</button>
+      </div>
+      <div className="space-y-1">
+        {GOJUON_ROWS.map((row) => (
+          <div key={row[0]} className="grid grid-cols-[2.25rem_repeat(5,minmax(2rem,1fr))] gap-1" aria-label={`${row[0]}行`}>
+            <span aria-hidden="true" className="flex items-center text-xs text-stone-500">{row[0]}行</span>
+            {row.map((letter) => (
+              <button
+                key={letter}
+                type="button"
+                disabled={!available.has(letter)}
+                aria-label={`${letter}から始まる${label.replace("の五十音索引", "")}`}
+                aria-pressed={value === letter}
+                onClick={() => onChange(letter)}
+                className={`min-h-9 min-w-8 rounded-md text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-amber-700 ${value === letter ? "bg-amber-900 text-white" : "bg-stone-100 text-stone-800 enabled:hover:bg-amber-100"} disabled:cursor-not-allowed disabled:bg-stone-50 disabled:text-stone-300`}
+              >{letter}</button>
+            ))}
+            {Array.from({ length: 5 - row.length }, (_, index) => <span key={`empty-${index}`} aria-hidden="true" />)}
+          </div>
+        ))}
+      </div>
+    </nav>
+  );
+}
 
 const pageEstimateCache = new Map<string, number>();
 const pageEstimateRequests = new Map<string, Promise<number>>();
@@ -186,6 +228,12 @@ export default function CreatePage() {
   const [listedWorks, setListedWorks] = useState<Work[]>([]);
   const [workListPage, setWorkListPage] = useState<ListPage>({ nextOffset: 0, hasMore: false });
   const [authorListPage, setAuthorListPage] = useState<ListPage>({ nextOffset: 0, hasMore: false });
+  const [authorListLetter, setAuthorListLetter] = useState<string | null>(null);
+  const [workListLetter, setWorkListLetter] = useState<string | null>(null);
+  const [authorAvailableLetters, setAuthorAvailableLetters] = useState<string[]>([]);
+  const [workAvailableLetters, setWorkAvailableLetters] = useState<string[]>([]);
+  const authorListRequestIdRef = useRef(0);
+  const workListRequestIdRef = useRef(0);
   const [activeAuthor, setActiveAuthor] = useState("");
   const [authorWorks, setAuthorWorks] = useState<Work[]>([]);
   const [authorOffset, setAuthorOffset] = useState(0);
@@ -251,39 +299,63 @@ export default function CreatePage() {
     }
   }, []);
 
-  const requestAuthorList = useCallback(async (offset = 0, append = false) => {
+  const requestAuthorList = useCallback(async (offset = 0, append = false, letter = authorListLetter) => {
+    const requestId = append ? authorListRequestIdRef.current : ++authorListRequestIdRef.current;
     setAuthorListError("");
     setIsLoadingAuthorList(true);
     try {
-      const response = await fetch(`/api/works?browse=authors&offset=${offset}`, { cache: "no-store" });
+      const params = new URLSearchParams({ browse: "authors", offset: String(offset) });
+      if (letter) params.set("letter", letter);
+      const response = await fetch(`/api/works?${params.toString()}`, { cache: "no-store" });
       if (!response.ok) throw new Error("authors_unavailable");
-      const result = await response.json() as { authors?: unknown; nextOffset?: unknown; hasMore?: unknown };
-      if (!Array.isArray(result.authors) || !Number.isSafeInteger(result.nextOffset) || typeof result.hasMore !== "boolean") throw new Error("authors_invalid");
+      const result = await response.json() as { authors?: unknown; nextOffset?: unknown; hasMore?: unknown; availableLetters?: unknown };
+      if (!Array.isArray(result.authors) || !Number.isSafeInteger(result.nextOffset) || typeof result.hasMore !== "boolean" || !Array.isArray(result.availableLetters) || !result.availableLetters.every((item) => typeof item === "string")) throw new Error("authors_invalid");
+      if (requestId !== authorListRequestIdRef.current) return;
       setAuthorShelves((current) => append ? [...current, ...(result.authors as AuthorShelf[])] : result.authors as AuthorShelf[]);
+      setAuthorAvailableLetters(result.availableLetters as string[]);
       setAuthorListPage({ nextOffset: result.nextOffset as number, hasMore: result.hasMore });
     } catch {
-      setAuthorListError("作家一覧を読み込めませんでした。通信状態を確認して、再試行してください。");
+      if (requestId === authorListRequestIdRef.current) setAuthorListError("作家一覧を読み込めませんでした。通信状態を確認して、再試行してください。");
     } finally {
-      setIsLoadingAuthorList(false);
+      if (requestId === authorListRequestIdRef.current) setIsLoadingAuthorList(false);
     }
-  }, []);
+  }, [authorListLetter]);
 
-  const requestWorkList = useCallback(async (offset = 0, append = false) => {
+  const requestWorkList = useCallback(async (offset = 0, append = false, letter = workListLetter) => {
+    const requestId = append ? workListRequestIdRef.current : ++workListRequestIdRef.current;
     setWorkListError("");
     setIsLoadingWorkList(true);
     try {
-      const response = await fetch(`/api/works?browse=works&offset=${offset}`, { cache: "no-store" });
+      const params = new URLSearchParams({ browse: "works", offset: String(offset) });
+      if (letter) params.set("letter", letter);
+      const response = await fetch(`/api/works?${params.toString()}`, { cache: "no-store" });
       if (!response.ok) throw new Error("works_unavailable");
-      const result = await response.json() as { works?: unknown; nextOffset?: unknown; hasMore?: unknown };
-      if (!Array.isArray(result.works) || !Number.isSafeInteger(result.nextOffset) || typeof result.hasMore !== "boolean") throw new Error("works_invalid");
+      const result = await response.json() as { works?: unknown; nextOffset?: unknown; hasMore?: unknown; availableLetters?: unknown };
+      if (!Array.isArray(result.works) || !Number.isSafeInteger(result.nextOffset) || typeof result.hasMore !== "boolean" || !Array.isArray(result.availableLetters) || !result.availableLetters.every((item) => typeof item === "string")) throw new Error("works_invalid");
+      if (requestId !== workListRequestIdRef.current) return;
       setListedWorks((current) => append ? [...current, ...(result.works as Work[])] : result.works as Work[]);
+      setWorkAvailableLetters(result.availableLetters as string[]);
       setWorkListPage({ nextOffset: result.nextOffset as number, hasMore: result.hasMore });
     } catch {
-      setWorkListError("作品一覧を読み込めませんでした。通信状態を確認して、再試行してください。");
+      if (requestId === workListRequestIdRef.current) setWorkListError("作品一覧を読み込めませんでした。通信状態を確認して、再試行してください。");
     } finally {
-      setIsLoadingWorkList(false);
+      if (requestId === workListRequestIdRef.current) setIsLoadingWorkList(false);
     }
-  }, []);
+  }, [workListLetter]);
+
+  const selectAuthorLetter = useCallback((letter: string | null) => {
+    setAuthorListLetter(letter);
+    setAuthorShelves([]);
+    setAuthorListPage({ nextOffset: 0, hasMore: false });
+    void requestAuthorList(0, false, letter);
+  }, [requestAuthorList]);
+
+  const selectWorkLetter = useCallback((letter: string | null) => {
+    setWorkListLetter(letter);
+    setListedWorks([]);
+    setWorkListPage({ nextOffset: 0, hasMore: false });
+    void requestWorkList(0, false, letter);
+  }, [requestWorkList]);
 
   const requestAuthorWorks = useCallback(async (author: string, offset = 0, append = false) => {
     const requestId = ++authorRequestIdRef.current;
@@ -623,6 +695,10 @@ export default function CreatePage() {
                             {row.map((work, index) => {
                               const style = spineStyle(work, index + rowIndex * row.length);
                               const selected = isSelected(work.id);
+                              const authorLength = Array.from(work.author).length;
+                              const authorFontSize = authorLength > 7 ? 8 : authorLength > 5 ? 9 : 10;
+                              const authorMaxHeight = Math.min(style.height * 0.42, Math.max(40, authorLength * authorFontSize) + 4);
+                              const titleMaxHeight = Math.max(44, style.height - authorMaxHeight - 48);
                               return (
                                 <button
                                   key={work.id}
@@ -635,8 +711,8 @@ export default function CreatePage() {
                                 >
                                   <span aria-hidden="true" className="absolute inset-y-0 left-1 w-px bg-white/20" />
                                   {selected && <span aria-hidden="true" className="absolute left-1 top-1 grid size-5 place-items-center rounded-full bg-white text-xs font-bold text-emerald-900 shadow">✓</span>}
-                                  <span className="overflow-hidden text-ellipsis text-center text-[15px] font-semibold leading-5 [text-orientation:upright] [writing-mode:vertical-rl]" style={{ maxHeight: style.height - 82 }}>{work.title}</span>
-                                  <span className="absolute bottom-1 right-1 max-h-12 overflow-hidden text-ellipsis text-[10px] leading-3 [text-orientation:upright] [writing-mode:vertical-rl]">{work.author}</span>
+                                  <span className="overflow-hidden text-ellipsis text-center text-[15px] font-semibold leading-5 [text-orientation:upright] [writing-mode:vertical-rl]" style={{ maxHeight: titleMaxHeight }}>{work.title}</span>
+                                  <span aria-hidden="true" className="absolute bottom-1 right-1 overflow-hidden text-ellipsis whitespace-nowrap leading-3 [text-orientation:upright] [writing-mode:vertical-rl]" title={work.author} style={{ maxHeight: authorMaxHeight, fontSize: authorFontSize }}>{work.author}</span>
                                 </button>
                               );
                             })}
@@ -654,7 +730,8 @@ export default function CreatePage() {
                 <div className="mt-5">
                   {authorShelves.length > 0 ? (
                     <>
-                    <p className="mb-3 text-sm text-stone-600">青空文庫カタログに登録された著者名を読み順で表示します。</p>
+                    <p className="mb-3 text-sm text-stone-600">青空文庫CSVの姓読み・名読みを使って表示します。読み情報がない作家は「すべて」に含まれます。</p>
+                    <KanaIndex label="作家一覧の五十音索引" value={authorListLetter} availableLetters={authorAvailableLetters} onChange={selectAuthorLetter} />
                     <div className="grid gap-2 sm:grid-cols-2">
                     {authorShelves.map((shelf) => (
                       <button
@@ -675,13 +752,14 @@ export default function CreatePage() {
                   ) : !isLoadingAuthorList && !authorListError ? <p className="rounded-xl bg-white p-5 text-stone-600">作家を表示できる作品がありません。</p> : null}
                     {isLoadingAuthorList && <p className="mt-4 text-sm text-stone-600" role="status">作家一覧を読み込んでいます…</p>}
                     {authorListError && <div className="mt-4 rounded-xl bg-red-50 p-4 text-red-900" role="alert"><p>{authorListError}</p><button type="button" onClick={() => void requestAuthorList()} className="mt-2 min-h-11 underline">再試行</button></div>}
-                    {authorListPage.hasMore && <button type="button" onClick={() => void requestAuthorList(authorListPage.nextOffset, true)} disabled={isLoadingAuthorList} className="mt-4 min-h-11 rounded-lg border border-stone-300 bg-white px-4 py-2">{isLoadingAuthorList ? "読み込み中…" : "作家をもっと見る"}</button>}
+                    {authorListPage.hasMore && <button type="button" onClick={() => void requestAuthorList(authorListPage.nextOffset, true, authorListLetter)} disabled={isLoadingAuthorList} className="mt-4 min-h-11 rounded-lg border border-stone-300 bg-white px-4 py-2">{isLoadingAuthorList ? "読み込み中…" : "作家をもっと見る"}</button>}
                   </div>
               )}
 
               {!isLoadingShelf && !shelfError && shelfMode === "works" && (
                 <div className="mt-5">
-                  <p className="mb-3 text-sm text-stone-600">カタログの作品名順です。作品を選ぶと同じ詳細を開きます。</p>
+                  <p className="mb-3 text-sm text-stone-600">青空文庫CSVの作品名読み・ソート用読みを使って表示します。読み情報がない作品は「すべて」に含まれます。</p>
+                  <KanaIndex label="作品一覧の五十音索引" value={workListLetter} availableLetters={workAvailableLetters} onChange={selectWorkLetter} />
                   {listedWorks.length > 0 ? (
                     <div className="grid gap-3">
                       {listedWorks.map(renderWorkCard)}
@@ -689,7 +767,7 @@ export default function CreatePage() {
                   ) : !isLoadingWorkList && !workListError ? <p className="rounded-xl bg-white p-5 text-stone-600">作品一覧を表示できる作品がありません。</p> : null}
                   {isLoadingWorkList && <p className="mt-4 text-sm text-stone-600" role="status">作品一覧を読み込んでいます…</p>}
                   {workListError && <div className="mt-4 rounded-xl bg-red-50 p-4 text-red-900" role="alert"><p>{workListError}</p><button type="button" onClick={() => void requestWorkList()} className="mt-2 min-h-11 underline">再試行</button></div>}
-                  {workListPage.hasMore && <button type="button" onClick={() => void requestWorkList(workListPage.nextOffset, true)} disabled={isLoadingWorkList} className="mt-4 min-h-11 rounded-lg border border-stone-300 bg-white px-4 py-2">{isLoadingWorkList ? "読み込み中…" : "作品をもっと見る"}</button>}
+                  {workListPage.hasMore && <button type="button" onClick={() => void requestWorkList(workListPage.nextOffset, true, workListLetter)} disabled={isLoadingWorkList} className="mt-4 min-h-11 rounded-lg border border-stone-300 bg-white px-4 py-2">{isLoadingWorkList ? "読み込み中…" : "作品をもっと見る"}</button>}
                 </div>
               )}
 

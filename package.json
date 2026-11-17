@@ -16,6 +16,7 @@
     "test:order-checkout": "node --experimental-strip-types --test tests/order-pricing.test.mjs tests/order-checkout-route.test.mjs tests/stripe-webhook-route.test.mjs tests/stripe-paid-session-validation.test.mjs tests/order-payment-reconciliation-route.test.mjs tests/order-checkout-migration.test.mjs tests/order-stripe-livemode-migration.test.mjs tests/order-stripe-checkout-host-allowlist-migration.test.mjs tests/order-stripe-payment-reconciliation-migration.test.mjs tests/dev-stripe-webhook.test.mjs",
     "test:order-admin": "node --experimental-strip-types --test tests/admin-management.test.mjs",
     "test:staging-e2e-contract": "node --experimental-strip-types --test tests/staging-e2e-contract.test.mjs",
+    "test:bookshelf-ui": "node --test tests/bookshelf-kana-ui.local.test.mjs",
     "test:order-validation-sql": "node --test tests/order-validation-jobs-migration.test.mjs tests/order-validation-asset-commit-migration.test.mjs tests/order-validation-targeted-claim-migration.test.mjs",
     "generate:order-fixtures": "node --experimental-strip-types scripts/generate-order-validation-fixtures.mjs",
     "benchmark:order-assets": "node --experimental-strip-types scripts/benchmark-order-assets.mjs",
