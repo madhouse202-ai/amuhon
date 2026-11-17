@@ -143,9 +143,9 @@ test("local order UI generates and validates both assets without file selection"
     });
 
     await page.goto(`${APP_ORIGIN}/final`, { waitUntil: "domcontentloaded" });
-    await page.getByText(/実組版結果：/).waitFor({ timeout: 150_000 });
-    await page.getByText(/本文PDF 80 ページ|本文PDF 80ページ/).waitFor({ timeout: 10_000 });
-    await page.getByRole("button", { name: "注文手続きへ" }).click();
+    await page.getByText(/実際の組版結果です/).waitFor({ timeout: 150_000 });
+    await page.getByRole("region", { name: "完成した本の内容" }).getByText("80ページ", { exact: true }).waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name: "注文内容を確認して進む" }).click();
     await page.waitForURL("**/order");
     await page.getByLabel("氏名").fill("ローカル試験購入者");
     await page.getByLabel("郵便番号").fill("1000001");
@@ -154,14 +154,12 @@ test("local order UI generates and validates both assets without file selection"
     await page.getByLabel("番地・建物名").fill("1-1");
     await page.getByLabel("電話番号").fill("0312345678");
     await page.getByLabel("メールアドレス").fill("local-test@example.invalid");
-    await page.getByRole("button", { name: "入力内容を確認する" }).click();
-
-    const automaticOption = page.getByRole("radio", { name: /この画面で自動生成する/ });
-    await automaticOption.check();
+    await page.getByRole("button", { name: "配送先を確認する" }).click();
+    await page.getByRole("heading", { name: "本文PDFと見開きカバーを自動生成" }).waitFor();
     assert.equal(await page.locator('input[type="file"]').count(), 0, "Automatic mode must not render file pickers.");
-    await page.getByRole("button", { name: "本を生成して検証・保存する" }).click();
-    await page.getByRole("heading", { name: "注文下書きと入稿ファイルを保存しました" }).waitFor({ timeout: 180_000 });
-    await page.locator("p").filter({ hasText: "状態：ready_for_payment" }).filter({ hasText: "ファイル検証済み" }).waitFor({ timeout: 30_000 });
+    await page.getByRole("button", { name: "本を生成して確認する" }).click();
+    await page.getByRole("heading", { name: "本のデータを受け取りました" }).waitFor({ timeout: 180_000 });
+    await page.getByText(/本の内容：確認済み/).waitFor({ timeout: 30_000 });
     await page.locator("p").filter({ hasText: "1,980" }).filter({ hasText: "税込・送料込み" }).waitFor({ timeout: 30_000 });
 
     assert.equal(draftRequestCount, 1);
