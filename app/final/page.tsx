@@ -24,7 +24,6 @@ import {
 import { ensureNotoSerifJpLoaded } from "@/lib/noto-serif-jp-preview";
 import { CreationProgress } from "@/app/creation-progress";
 import { CoverFrontPreview } from "@/app/cover-front-preview";
-import { createSpreadCoverPngBlob } from "@/lib/cover-renderer";
 import { isSubmissionPageCount, padPerfectBindingBodyPageCount } from "@/lib/production";
 import {
   BODY_RUBY_ENABLED,
@@ -42,14 +41,6 @@ import {
 ========================================================= */
 
 const AOZORA_REQUEST_TIMEOUT_MS = 30_000;
-const NOTO_PREVIEW_DIAGNOSTIC_CODES = new Set([
-  "NOTO_FONT_READINESS_FAILURE",
-  "NOTO_BODY_COLUMNS_EMPTY_FAILURE",
-  "NOTO_CDP_FONTS_EMPTY_FAILURE",
-  "NOTO_FALLBACK_FONT_FAILURE",
-  "NOTO_CHECK_EXCEPTION_FAILURE",
-  "NOTO_USAGE_CHECK_FAILURE",
-]);
 
 function printFontFamily(bodyTypography: FinalBodyTypography): string {
   return bodyTypography === "noto-serif-jp" ? '"Noto Serif JP", serif' : "serif";
@@ -95,7 +86,6 @@ type WorkText = {
   error?: string;
 };
 
-type PdfOutputMode = "all-pages" | "body-only";
 const COVER_PAGE_COUNT_SESSION_KEY = "amuhon-cover-page-count";
 
 const ENABLE_RUBY = BODY_RUBY_ENABLED;
@@ -488,6 +478,58 @@ function BodyPage({
   );
 }
 
+function SourcePage({
+  works,
+  pageNumber,
+  pageIndex,
+  pageCount,
+  bodyTypography,
+}: {
+  works: BookData["works"];
+  pageNumber: number;
+  pageIndex: number;
+  pageCount: number;
+  bodyTypography: FinalBodyTypography;
+}) {
+  return (
+    <section className="print-page print-sources-page relative" data-source-page="true" style={{ width: PAGE_WIDTH, height: PAGE_HEIGHT, background: "#f8f3df", padding: "9mm 9mm 14mm", boxSizing: "border-box", fontFamily: printFontFamily(bodyTypography), color: "#28241f" }}>
+      <h2 className="mb-3 border-b border-stone-400 pb-2 text-center text-[10pt] font-semibold">収録作品と出典</h2>
+      <p className="mb-2 text-[6.5pt] leading-[1.4]">本文・書誌情報：青空文庫公開カタログおよび各図書カード。</p>
+      <ol className="space-y-2 text-[6.5pt] leading-[1.35]" data-noto-inspection-kind={bodyTypography === "noto-serif-jp" ? "sources" : undefined}>
+        {works.map((work, index) => {
+          const metadata = work.sourceMetadata;
+          const contributors = work.contributors?.filter((person) => !["著者", "作者", "原著者"].includes(person.role)) ?? [];
+          const cardPath = (() => {
+            try {
+              const url = new URL(work.cardUrl);
+              return url.protocol === "https:" && ["www.aozora.gr.jp", "aozora.gr.jp"].includes(url.hostname) ? url.pathname : "";
+            } catch { return ""; }
+          })();
+          return (
+            <li key={`${work.id}-${index}`} className="break-words">
+              <p><span className="mr-1">{(pageIndex * 4) + index + 1}.</span><strong>{work.title}</strong> — {work.author || "著者情報なし"}</p>
+              {contributors.length > 0 && <p>{contributors.map((person) => `${person.role}：${person.name}`).join("／")}</p>}
+              {metadata && [metadata.firstPublication, metadata.baseText, metadata.basePublisher, metadata.inputter, metadata.proofreader].some(Boolean) && (
+                <p>{[
+                  metadata.firstPublication && `初出：${metadata.firstPublication}`,
+                  metadata.baseText && `底本：${metadata.baseText}`,
+                  metadata.basePublisher && `出版社：${metadata.basePublisher}`,
+                  metadata.inputter && `入力：${metadata.inputter}`,
+                  metadata.proofreader && `校正：${metadata.proofreader}`,
+                ].filter(Boolean).join("／")}</p>
+              )}
+              <p>青空文庫 作品ID {work.id}：{cardPath || "図書カード情報"}</p>
+              {work.rightsNotice && <p>利用条件：{work.rightsNotice}</p>}
+            </li>
+          );
+        })}
+      </ol>
+      <p className="absolute bottom-[8mm] inset-x-0 text-center text-[6pt] text-stone-600">{pageIndex + 1} / {pageCount}</p>
+      <div className="print-page__number" data-noto-inspection-kind={bodyTypography === "noto-serif-jp" ? "page-number" : undefined} aria-hidden="true">{pageNumber}</div>
+    </section>
+  );
+}
+
 /* =========================================================
    奥付
 ========================================================= */
@@ -559,16 +601,7 @@ export default function FinalPage() {
   ] = useState("");
 
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
-  const [isPrinting, setIsPrinting] = useState(false);
-  const [coverExportError, setCoverExportError] = useState("");
-  const [pdfOutputMode, setPdfOutputMode] = useState<PdfOutputMode>("all-pages");
   const [bodyTypography, setBodyTypography] = useState<FinalBodyTypography>("serif");
-  const [typographyError, setTypographyError] = useState("");
-  const [isTypographyLoading, setIsTypographyLoading] = useState(false);
-  const [isPreviewPdfGenerating, setIsPreviewPdfGenerating] = useState(false);
-  const [previewPdfStatus, setPreviewPdfStatus] = useState("");
-  const [previewPdfError, setPreviewPdfError] = useState("");
-  const printingRef = useRef(false);
   const loadSequenceRef = useRef(0);
   const loadControllerRef = useRef<AbortController | null>(null);
   const previewSessionSnapshotRef = useRef<{
@@ -730,16 +763,6 @@ export default function FinalPage() {
     };
   }, []);
 
-  useEffect(() => {
-    const resetPrinting = () => {
-      printingRef.current = false;
-      setIsPrinting(false);
-      setPdfOutputMode("all-pages");
-    };
-    window.addEventListener("afterprint", resetPrinting);
-    return () => window.removeEventListener("afterprint", resetPrinting);
-  }, []);
-
   const retryFailedWorks = async () => {
     if (!data || loading) return;
     await loadWorks(data);
@@ -747,103 +770,6 @@ export default function FinalPage() {
 
   const canPrint = Boolean(data && !loading && !error && works.length > 0 &&
     works.every((work) => !work.error && work.text.trim().length > 0));
-
-  const selectBodyTypography = async (typography: FinalBodyTypography) => {
-    setTypographyError("");
-    if (typography === "serif") {
-      setBodyTypography("serif");
-      return;
-    }
-    setIsTypographyLoading(true);
-    try {
-      await ensureNotoSerifJpLoaded();
-      setBodyTypography("noto-serif-jp");
-    } catch {
-      setBodyTypography("serif");
-      setTypographyError(NOTO_SERIF_JP_UNAVAILABLE_MESSAGE);
-    } finally {
-      setIsTypographyLoading(false);
-    }
-  };
-
-  const saveTypographyPreviewPdf = async () => {
-    if (!canPrint || !data || !submissionPageCountValid || isPreviewPdfGenerating) return;
-    setPreviewPdfError("");
-    setPreviewPdfStatus("");
-    setIsPreviewPdfGenerating(true);
-    try {
-      if (bodyTypography === "noto-serif-jp") await ensureNotoSerifJpLoaded();
-      const response = await fetch("/api/dev/final-preview-pdf", {
-        method: "POST",
-        credentials: "same-origin",
-        cache: "no-store",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          book: data,
-          bodyPdfPageCount: submissionPageCount,
-          bodyTypography,
-          works: works.map(({ id, title, author, text }) => ({ id, title, author, text })),
-        }),
-      });
-      if (!response.ok) {
-        const result = await response.json().catch(() => null) as { error?: string; diagnosticCode?: string } | null;
-        const safeDiagnosticCode = result?.diagnosticCode && NOTO_PREVIEW_DIAGNOSTIC_CODES.has(result.diagnosticCode)
-          ? `（診断コード: ${result.diagnosticCode}）`
-          : "";
-        throw new Error(`${result?.error ?? "開発用検証PDFを作成できませんでした。"}${safeDiagnosticCode}`);
-      }
-      const reportedPageCount = Number(response.headers.get("X-Body-Pdf-Page-Count"));
-      const reportedRubyCount = Number(response.headers.get("X-Body-Ruby-Count"));
-      if (reportedPageCount !== submissionPageCount ||
-          response.headers.get("X-Body-Typography") !== bodyTypography ||
-          !Number.isSafeInteger(reportedRubyCount) || reportedRubyCount <= 0) {
-        throw new Error("A6ページ数、ルビ、書体の検証結果が一致しません。PDFは保存しませんでした。");
-      }
-
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      try {
-        const anchor = document.createElement("a");
-        anchor.href = objectUrl;
-        anchor.download = `amuhon-final-${bodyTypography}-${reportedPageCount}pages.pdf`;
-        anchor.click();
-      } finally {
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-      }
-      setPreviewPdfStatus(`${bodyTypography === "noto-serif-jp" ? "Noto Serif JP" : "serif"}でPDFを生成しました。A6縦 ${reportedPageCount}ページ、ルビ ${reportedRubyCount}箇所を確認済みです。`);
-    } catch (previewError) {
-      setPreviewPdfError(previewError instanceof Error ? previewError.message : "開発用検証PDFを作成できませんでした。");
-    } finally {
-      setIsPreviewPdfGenerating(false);
-    }
-  };
-
-  const savePdf = (mode: PdfOutputMode) => {
-    if (!canPrint || printingRef.current) return;
-    printingRef.current = true;
-    setPdfOutputMode(mode);
-    setIsPrinting(true);
-    window.requestAnimationFrame(() => window.print());
-  };
-
-  const saveCoverPng = async () => {
-    if (!canPrint || !data || !submissionPageCountValid) return;
-    setCoverExportError("");
-    try {
-      const blob = await createSpreadCoverPngBlob(data, submissionPageCount);
-      const objectUrl = URL.createObjectURL(blob);
-      try {
-        const anchor = document.createElement("a");
-        anchor.href = objectUrl;
-        anchor.download = "amuhon-cover-spread.png";
-        anchor.click();
-      } finally {
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-      }
-    } catch {
-      setCoverExportError("表紙データを作成できませんでした。少し待ってからもう一度お試しください。");
-    }
-  };
 
   const openSpreadCover = () => {
     if (!canPrint || !data) return;
@@ -1050,11 +976,30 @@ export default function FinalPage() {
   }
 
   /*
-   * 5. 奥付
+   * 5. 収録作品と出典。CSVに実在する書誌情報だけを掲載し、
+   * 長い短編集では読める文字サイズのまま複数ページへ分ける。
    */
 
-  const colophonPageNumber =
-    currentPageNumber;
+  const sourceWorksPerPage = 4;
+  const sourcePages = Array.from({ length: Math.ceil(data.works.length / sourceWorksPerPage) }, (_, index) =>
+    data.works.slice(index * sourceWorksPerPage, (index + 1) * sourceWorksPerPage),
+  );
+  sourcePages.forEach((sourceWorks, index) => {
+    bodyPages.push(
+      <SourcePage
+        key={`sources-${index}`}
+        works={sourceWorks}
+        pageNumber={currentPageNumber + index}
+        pageIndex={index}
+        pageCount={sourcePages.length}
+        bodyTypography={bodyTypography}
+      />,
+    );
+  });
+
+  /* 6. 奥付 */
+
+  const colophonPageNumber = currentPageNumber + sourcePages.length;
 
   bodyPages.push(
     <ColophonPage
@@ -1113,7 +1058,7 @@ export default function FinalPage() {
   return (
     <>
       <main
-        className={`print-root${pdfOutputMode === "body-only" ? " print-root--body-only" : ""}`}
+        className="print-root"
         data-final-layout-ready={canPrint ? "true" : "false"}
         data-submission-page-count={submissionPageCount}
         style={{
@@ -1177,7 +1122,7 @@ export default function FinalPage() {
           )}
           {canPrint && (
             <div className="mt-4">
-              <button className="min-h-14 w-full break-words rounded-xl bg-emerald-900 px-5 py-4 text-lg font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50" type="button" onClick={openOrder} disabled={isPrinting || !submissionPageCountValid}>
+              <button className="min-h-14 w-full break-words rounded-xl bg-emerald-900 px-5 py-4 text-lg font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-50" type="button" onClick={openOrder} disabled={!submissionPageCountValid}>
                 注文内容を確認して進む
               </button>
               <p className="mt-2 text-xs text-stone-500">この段階では決済されません。ファイル検証・価格確認の後に決済へ進みます。</p>
@@ -1196,52 +1141,7 @@ export default function FinalPage() {
               </button>
             </div>
           )}
-          {canPrint ? (
-            <details className="mt-5 border-t border-stone-200 pt-4" aria-label="完成した本のデータ">
-              <summary className="min-h-11 cursor-pointer py-2 text-sm font-medium text-stone-600">本のデータを手元で確認・用意する</summary>
-              <p className="mt-2 text-sm text-stone-600">注文の自動作成が利用できない場合は、本文と表紙のデータをここから保存できます。</p>
-              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-              <button className="min-h-11 rounded-lg bg-stone-800 px-5 py-3 font-bold text-white disabled:opacity-50" type="button" onClick={() => savePdf("body-only")} disabled={isPrinting || !submissionPageCountValid}>
-                {isPrinting && pdfOutputMode === "body-only" ? "PDFを準備しています…" : "本文データを保存"}
-              </button>
-              <button className="min-h-11 rounded-lg border border-stone-800 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={() => void saveCoverPng()} disabled={!submissionPageCountValid}>
-                表紙データを保存
-              </button>
-              <button className="min-h-11 rounded-lg border border-stone-500 px-5 py-3 font-bold text-stone-800 disabled:opacity-50" type="button" onClick={openSpreadCover} disabled={isPrinting || !submissionPageCountValid}>
-                表紙を編集する
-              </button>
-              </div>
-              {coverExportError && <p role="alert" className="mt-2 text-sm text-red-700">{coverExportError}</p>}
-            </details>
-          ) : (
-            <p>PDFを保存するには、すべての作品本文の取得が必要です。</p>
-          )}
-          {process.env.NODE_ENV === "development" && (
-            <details className="mt-5 rounded-lg border border-violet-200 p-3">
-              <summary className="cursor-pointer font-medium text-violet-950">開発者向け：本文書体の検証</summary>
-              <fieldset className="mt-3 rounded border border-violet-300 p-4" aria-label="開発用本文書体検証">
-                <legend className="px-2 font-bold text-violet-950">開発用・本文書体検証（注文データには使用しません）</legend>
-                <p className="mb-3 text-sm">本文だけを切り替えます。初期値は従来のserifです。見開き表紙、注文PDF、Storage、決済は変更しません。</p>
-                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                  <button className="min-h-10 rounded border border-stone-600 px-4 py-2" type="button" onClick={() => void selectBodyTypography("serif")} disabled={isTypographyLoading || isPreviewPdfGenerating}>
-                    現行 serif・1.00em
-                  </button>
-                  <button className="min-h-10 rounded border border-violet-800 px-4 py-2 font-bold text-violet-950" type="button" onClick={() => void selectBodyTypography("noto-serif-jp")} disabled={isTypographyLoading || isPreviewPdfGenerating}>
-                    {isTypographyLoading ? "Noto Serif JPを確認中…" : "D版 Noto Serif JP・1.00em"}
-                  </button>
-                  <button className="min-h-10 break-words rounded bg-violet-900 px-4 py-2 font-bold text-white" type="button" onClick={() => void saveTypographyPreviewPdf()} disabled={!canPrint || !submissionPageCountValid || isTypographyLoading || isPreviewPdfGenerating}>
-                    {isPreviewPdfGenerating ? "検証PDFを生成中…" : "現在の本文で検証PDFを保存"}
-                  </button>
-                </div>
-                <p className="mt-2 text-sm" role="status">
-                  現在の本文書体：{bodyTypography === "noto-serif-jp" ? "Noto Serif JP・1.00em" : "従来のserif・1.00em"}
-                </p>
-                {typographyError && <p className="mt-2 text-sm text-red-800" role="alert">{typographyError}</p>}
-                {previewPdfStatus && <p className="mt-2 text-sm text-emerald-800" role="status">{previewPdfStatus}</p>}
-                {previewPdfError && <p className="mt-2 text-sm text-red-800" role="alert">{previewPdfError}</p>}
-              </fieldset>
-            </details>
-          )}
+          {canPrint && <p className="mt-5 rounded-lg bg-stone-50 p-3 text-sm text-stone-600">印刷用データはブラウザーへ渡しません。ご注文後に製造用データを生成し、管理された保管先へ保存します。</p>}
           {canPrint && !submissionPageCountValid && (
             <p role="alert" className="mt-4 text-red-800">
               現在のページ数では製本用データを準備できません。作品を追加・削除してページ数を調整してください。

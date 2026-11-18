@@ -1,5 +1,6 @@
 import { hashOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
 import { readOrderUploadCookie } from "../../../../../lib/order-upload-cookie.ts";
+import { isLegacyBuyerAssetFlowEnabled } from "../../../../../lib/order-production-gate.ts";
 import {
   createSupabaseServiceHeaders,
   getSupabaseServiceCredential,
@@ -80,6 +81,7 @@ function getSupabaseConfig(): { url: URL; serviceCredential: SupabaseServiceCred
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  if (!isLegacyBuyerAssetFlowEnabled()) return errorResponse("印刷データのサーバー生成を準備中のため、検証を受け付けていません。", 503);
   if (process.env.NEXT_PUBLIC_ORDER_DIRECT_UPLOAD_EXPERIMENT !== "true") {
     return errorResponse("このアップロード方式は現在利用できません。", 404);
   }

@@ -12,7 +12,7 @@ import {
 } from "@/lib/book";
 import { useBookDraftAutosave } from "@/lib/use-book-draft-autosave";
 import { calculateCoverLayout, isSubmissionPageCount } from "@/lib/production";
-import { CoverFrontPreview } from "@/app/cover-front-preview";
+import { CoverSpreadPreview } from "@/app/cover-spread-preview";
 
 const COVER_PAGE_COUNT_SESSION_KEY = "amuhon-cover-page-count";
 
@@ -28,6 +28,7 @@ export default function CoverPage() {
   const coverStyle: CoverStyle = draft.coverStyle;
   const coverColor: CoverColor = draft.coverColor;
   const [coverPageCount, setCoverPageCount] = useState<CoverPageCount | null>(null);
+  const [coverExporting, setCoverExporting] = useState(false);
 
   useEffect(() => {
     try {
@@ -59,6 +60,26 @@ export default function CoverPage() {
     ? calculateCoverLayout(coverPageCount.bodyPdfPageCount)
     : null;
   const spreadReady = pageCountIsEligible && layout !== null;
+  const rendererInternalMode = process.env.AMUHON_PDF_RENDERER_INTERNAL_MODE === "true";
+
+  async function downloadRendererCover() {
+    if (!rendererInternalMode || !spreadReady || !coverPageCount || coverExporting) return;
+    setCoverExporting(true);
+    try {
+      const { createSpreadCoverPngBlob } = await import("@/lib/print-cover-renderer");
+      const blob = await createSpreadCoverPngBlob({ title, editor, coverStyle, coverColor }, coverPageCount.bodyPdfPageCount);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "cover.png";
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      alert("表紙の生成に失敗しました。レンダラーの状態を確認してください。");
+    } finally {
+      setCoverExporting(false);
+    }
+  }
 
   function saveCoverSettings() {
     if (loadState !== "ready") return false;
@@ -323,15 +344,14 @@ export default function CoverPage() {
 
       <section className="mb-10 rounded-2xl bg-stone-100 p-5 sm:p-8" aria-labelledby="cover-preview-heading">
         <h2 id="cover-preview-heading" className="text-xl font-bold">表紙プレビュー</h2>
-        <p className="mt-2 text-sm leading-6 text-stone-600">実際に保存する表紙画像の表表紙部分を表示しています。</p>
+        <p className="mt-2 text-sm leading-6 text-stone-600">表表紙・背表紙・裏表紙の仕上がりを確認できます。画面用の軽い画像で表示しています。</p>
         {spreadReady && coverPageCount ? (
-          <CoverFrontPreview
+          <CoverSpreadPreview
             title={title}
             editor={editor}
             coverStyle={coverStyle}
             coverColor={coverColor}
             pageCount={coverPageCount.bodyPdfPageCount}
-            className="mx-auto mt-5 w-56 sm:w-64"
           />
         ) : (
           <p role={pageCountMatchesBook && !pageCountIsEligible ? "alert" : "status"} className="mt-5 rounded-xl bg-white p-5 text-center text-sm text-amber-900">
@@ -340,6 +360,8 @@ export default function CoverPage() {
               : "完成した本の内容を確認すると、表紙を表示できます。"}
           </p>
         )}
+        {spreadReady && <p className="mt-3 text-center text-sm text-stone-600">背幅は推定ページ数に基づいています。完成時に確定します。</p>}
+        {rendererInternalMode && <button type="button" onClick={downloadRendererCover} disabled={!spreadReady || coverExporting} className="mt-4 rounded bg-stone-800 px-4 py-2 text-white disabled:opacity-50">{coverExporting ? "レンダリング中…" : "見開きカバーPNGをダウンロード"}</button>}
       </section>
 
       {/* 決定ボタン */}

@@ -54,11 +54,16 @@ async function invoke(mockFetch, options = {}) {
     trustedCheckoutHosts = ["checkout.stripe.com"],
     allowlistResponse = null,
     allowlistError = null,
+    rightsResponse = { approved: true },
     ...requestOptions
   } = options;
   setTestEnv();
   globalThis.fetch = async (input, init) => {
-    if (String(input).endsWith("/rpc/get_amuhon_stripe_checkout_allowed_hosts_v1")) {
+    const url = String(input);
+    if (url.endsWith("/rpc/check_amuhon_order_commercial_rights_v1")) {
+      return Response.json(rightsResponse);
+    }
+    if (url.endsWith("/rpc/get_amuhon_stripe_checkout_allowed_hosts_v1")) {
       if (allowlistError) throw allowlistError;
       if (allowlistResponse) return Response.json(allowlistResponse.data, { status: allowlistResponse.status ?? 200 });
       return Response.json({ hosts: trustedCheckoutHosts });
@@ -106,6 +111,16 @@ test("checkout rejects missing capability and wrong Origin before RPC or Stripe"
   assert.equal(calls, 0);
 });
 
+test("checkout refuses an order whose server-side rights check is not approved", async () => {
+  const calls = [];
+  const response = await invoke(async (input) => {
+    calls.push(String(input));
+    throw new Error("Stripe and checkout state must not be reached");
+  }, { rightsResponse: { approved: false } });
+  assert.equal(response.status, 409);
+  assert.equal(calls.length, 0);
+});
+
 test("live Stripe keys are refused in explicit test mode before checkout state can be changed", async () => {
   const originalFetch = globalThis.fetch;
   setTestEnv("sk_live_never-allowed");
@@ -141,13 +156,14 @@ test("database mode mismatch and missing mode response stop before creating a St
   let calls = 0;
   globalThis.fetch = async (input) => {
     calls += 1;
+    if (String(input).endsWith("/rpc/check_amuhon_order_commercial_rights_v1")) return Response.json({ approved: true });
     if (String(input).endsWith("/rpc/get_amuhon_stripe_checkout_allowed_hosts_v1")) return Response.json({ hosts: ["checkout.stripe.com"] });
     return Response.json({ state: "create_session", livemode: true });
   };
   try {
     const response = await checkoutPost(request(), { params: Promise.resolve({ id: ORDER_ID }) });
     assert.equal(response.status, 409);
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
   } finally { globalThis.fetch = originalFetch; }
 });
 
@@ -165,6 +181,7 @@ test("explicit live mode creates and records only a matching live Checkout Sessi
   globalThis.fetch = async (input, init = {}) => {
     const url = String(input);
     calls.push(url);
+    if (url.endsWith("/rpc/check_amuhon_order_commercial_rights_v1")) return Response.json({ approved: true });
     if (url.endsWith("/rpc/begin_amuhon_order_checkout_v2")) {
       const args = JSON.parse(String(init.body));
       assert.equal(args.p_livemode, true);
@@ -193,7 +210,7 @@ test("explicit live mode creates and records only a matching live Checkout Sessi
     const response = await checkoutPost(request(), { params: Promise.resolve({ id: ORDER_ID }) });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { checkoutUrl: liveUrl, checkoutHost: "checkout.stripe.com" });
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 5);
   } finally { globalThis.fetch = originalFetch; }
 });
 

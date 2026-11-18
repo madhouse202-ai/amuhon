@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 
 import { hashOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
 import { readOrderUploadCookie } from "../../../../../lib/order-upload-cookie.ts";
+import { isLegacyBuyerAssetFlowEnabled } from "../../../../../lib/order-production-gate.ts";
 import { isOrderTusProjectMatch, tusEndpoint } from "../../../../../lib/order-tus.ts";
 import {
   createSupabaseServiceHeaders,
@@ -211,6 +212,7 @@ async function abortLease(url: URL, credential: SupabaseServiceCredential, order
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  if (!isLegacyBuyerAssetFlowEnabled()) return fail("印刷データのサーバー生成を準備中のため、アップロードを受け付けていません。", 503);
   if (!isDirectUploadEnabled()) return fail("直接アップロード実験は無効です。", 404);
   if (!validOrigin(request)) return fail("送信元を確認できませんでした。画面を再読み込みしてください。", 403);
   const { id: orderId } = await context.params;

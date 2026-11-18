@@ -4,7 +4,7 @@ import test from "node:test";
 
 const source = (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("the final review presents the actual composition, cover, pages, and a guarded order action", async () => {
+test("the final review presents composition and order action without buyer-facing print exports", async () => {
   const finalPage = await source("../app/final/page.tsx");
 
   assert.match(finalPage, /本の完成を確認/);
@@ -14,13 +14,10 @@ test("the final review presents the actual composition, cover, pages, and a guar
   assert.match(finalPage, /表紙を確認・変更/);
   assert.match(finalPage, /注文内容を確認して進む/);
   assert.match(finalPage, /<CoverFrontPreview/);
-  assert.match(finalPage, /onClick=\{openOrder\} disabled=\{isPrinting \|\| !submissionPageCountValid\}/);
-  assert.match(finalPage, /if \(!canPrint \|\| !data \|\| !submissionPageCountValid\) return/);
-  assert.match(finalPage, /本のデータを手元で確認・用意する/);
-  assert.match(finalPage, /本文データを保存/);
-  assert.match(finalPage, /表紙データを保存/);
+  assert.match(finalPage, /onClick=\{openOrder\}/);
+  assert.doesNotMatch(finalPage, /window\.print\(|本のデータを手元で確認・用意する|本文データを保存|表紙データを保存|開発者向け：/);
   assert.doesNotMatch(finalPage, /印刷用データを保存（任意）/);
-  assert.match(finalPage, /開発者向け：本文書体の検証/);
+  assert.match(finalPage, /印刷用データはブラウザーへ渡しません/);
 });
 
 test("order review returns to final and shows server-confirmed price without persisting customer fields", async () => {
@@ -48,8 +45,11 @@ test("order review returns to final and shows server-confirmed price without per
   assert.match(createPage, /if \(!flushDraft\(\{ \.\.\.draft, works: selectedWorks \}\)\) return;\s*router\.push\("\/cover"\)/);
   assert.match(coverPage, /if \(!flushDraft\(normalizedDraft\)\) return false/);
   assert.match(coverPage, /function handleSave\(\) \{\s*if \(!saveCoverSettings\(\)\) return;[\s\S]*?router\.push\("\/final"\)/);
-  assert.match(coverPage, /<CoverFrontPreview/);
-  assert.doesNotMatch(coverPage, /見開きカバーPNGをダウンロード|見開きカバープレビュー/);
+  assert.match(coverPage, /<CoverSpreadPreview/);
+  assert.match(coverPage, /rendererInternalMode && <button/);
+  assert.match(orderPage, /if \(!AUTO_FILE_GENERATION_ENABLED\)/);
+  assert.match(orderPage, /オンライン注文を準備しています/);
+  assert.doesNotMatch(orderPage, /保存したファイルを選ぶ/);
   assert.match(orderPage, /const currentBook = loadBookData\(\)/);
 });
 

@@ -449,6 +449,9 @@ export async function renderLocalFinalBodyPdf(
       failure: LOCAL_FINAL_PDF_DIAGNOSTIC_CODES.handoffSetupFailure,
     }, () => page.addInitScript(({ bookData, renderOrigin, requestedTypography, preloadedWorks, typographySessionKey, preloadedWorksSessionKey, diagnosticsEnabled, rendererFontAvailable }) => {
       const originMatched = location.origin === renderOrigin;
+      if (originMatched) {
+        document.documentElement.dataset.amuhonPdfRenderer = "true";
+      }
       if (originMatched && rendererFontAvailable) {
         Object.defineProperty(window, "__AMUHON_PDF_RENDERER_V1__", {
           value: true,

@@ -2,6 +2,15 @@ export type CoverStyle = "classic" | "free";
 
 export type CoverColor = "red" | "blue" | "green";
 
+export type BookContributor = { name: string; role: string };
+export type CatalogSourceMetadata = {
+  firstPublication: string;
+  baseText: string;
+  basePublisher: string;
+  inputter: string;
+  proofreader: string;
+};
+
 export type BookWork = {
   id: string;
   title: string;
@@ -9,6 +18,13 @@ export type BookWork = {
   cardUrl: string;
   textUrl: string;
   xhtmlUrl: string;
+  /** Role-aware catalog people retained for rights checks and source notes. */
+  contributors?: BookContributor[];
+  sourceMetadata?: CatalogSourceMetadata;
+  /** Exact server-verified text revision; clients cannot assert this value. */
+  sourceSha256?: string;
+  /** Server-copied license or permission notice printed in the source note. */
+  rightsNotice?: string;
 };
 
 export type BookData = {
@@ -51,8 +67,19 @@ export type BookDraftReadResult =
 function isBookWork(value: unknown): value is BookWork {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const work = value as Record<string, unknown>;
-  return ["id", "title", "author", "cardUrl", "textUrl", "xhtmlUrl"]
-    .every((key) => typeof work[key] === "string");
+  if (!["id", "title", "author", "cardUrl", "textUrl", "xhtmlUrl"]
+    .every((key) => typeof work[key] === "string")) return false;
+  if (work.contributors !== undefined && (!Array.isArray(work.contributors) || work.contributors.length > 20 ||
+      !work.contributors.every((item) => item && typeof item === "object" && !Array.isArray(item) &&
+        typeof (item as Record<string, unknown>).name === "string" &&
+        typeof (item as Record<string, unknown>).role === "string"))) return false;
+  if (work.sourceMetadata !== undefined) {
+    const metadata = work.sourceMetadata as Record<string, unknown>;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata) ||
+        ["firstPublication", "baseText", "basePublisher", "inputter", "proofreader"].some((key) => typeof metadata[key] !== "string" || (metadata[key] as string).length > 2000)) return false;
+  }
+  return (work.sourceSha256 === undefined || (typeof work.sourceSha256 === "string" && /^[a-f0-9]{64}$/.test(work.sourceSha256))) &&
+    (work.rightsNotice === undefined || (typeof work.rightsNotice === "string" && work.rightsNotice.length <= 1000));
 }
 
 /**

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { calculateSpineWidthMm } from "../../../../lib/production.ts";
 
 type AdminOrderDetail = {
   id: string;
@@ -15,6 +16,23 @@ type AdminOrderDetail = {
   canDownloadAssets: boolean;
   fulfillmentStatus: string;
   submittedAt: string | null;
+  productionReadiness?: {
+    rightsApproved: boolean;
+    assetsReady: boolean;
+    renderState: string;
+    pageCount: number | null;
+    spineWidthMm: number | null;
+    fulfillmentStatus: string;
+    printerOrderNumber: string | null;
+    submittedAt: string | null;
+  };
+  fulfillmentAudit?: Array<{
+    from: string;
+    to: string;
+    printerOrderNumber: string | null;
+    adminUserId: string;
+    createdAt: string;
+  }>;
   pdfRenderJob?: {
     state: "not_applicable" | "not_queued" | "queued" | "rendering" | "succeeded" | "failed" | "unavailable";
     attemptCount?: number;
@@ -23,10 +41,20 @@ type AdminOrderDetail = {
   customer: { name: string; postalCode: string; prefecture: string; city: string; address: string; phone: string; email: string };
 };
 
+function recommendedNextStatus(status: string): string {
+  return status === "not_submitted" ? "processing" :
+    status === "processing" ? "submitted" :
+      status === "on_hold" ? "processing" :
+        status === "submitted" ? "shipped" : "shipped";
+}
+
 export function AdminOrderDetailClient({ orderId }: { orderId: string }) {
   const [order, setOrder] = useState<AdminOrderDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [nextStatus, setNextStatus] = useState("processing");
+  const [printerOrderNumber, setPrinterOrderNumber] = useState("");
+  const [vendorOrderConfirmed, setVendorOrderConfirmed] = useState(false);
 
   const load = useCallback(async () => {
     const response = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, { cache: "no-store", credentials: "same-origin" });
@@ -34,6 +62,8 @@ export function AdminOrderDetailClient({ orderId }: { orderId: string }) {
     const data = await response.json() as { order?: AdminOrderDetail };
     if (!data.order || data.order.id !== orderId) throw new Error("注文詳細の形式を確認できませんでした。");
     setOrder(data.order);
+    setPrinterOrderNumber(data.order.productionReadiness?.printerOrderNumber ?? "");
+    setNextStatus(recommendedNextStatus(data.order.fulfillmentStatus));
   }, [orderId]);
 
   useEffect(() => {
@@ -45,7 +75,11 @@ export function AdminOrderDetailClient({ orderId }: { orderId: string }) {
       })
       .then((data) => {
         if (!data.order || data.order.id !== orderId) throw new Error("注文詳細の形式を確認できませんでした。");
-        if (active) setOrder(data.order);
+        if (active) {
+          setOrder(data.order);
+          setPrinterOrderNumber(data.order.productionReadiness?.printerOrderNumber ?? "");
+          setNextStatus(recommendedNextStatus(data.order.fulfillmentStatus));
+        }
       })
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : "注文詳細を読み込めませんでした。"); });
     return () => { active = false; };
@@ -57,10 +91,12 @@ export function AdminOrderDetailClient({ orderId }: { orderId: string }) {
     setError(null);
     try {
       const response = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/submission`, {
-        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}",
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nextStatus, printerOrderNumber: ["submitted", "shipped"].includes(nextStatus) ? printerOrderNumber.trim() : null, vendorOrderConfirmed }),
       });
-      if (!response.ok) throw new Error(response.status === 409 ? "決済済み・ファイル検証済みの注文だけ入稿済みにできます。" : "入稿状態を更新できませんでした。");
+      if (!response.ok) throw new Error(response.status === 409 ? "権利確認・決済・生成ファイル・製本直送.com側の状態を確認してください。" : "入稿状態を更新できませんでした。");
       await load();
+      setVendorOrderConfirmed(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "入稿状態を更新できませんでした。");
     } finally {
@@ -82,7 +118,7 @@ export function AdminOrderDetailClient({ orderId }: { orderId: string }) {
           <div><dt className="text-xs text-stone-500">ページ数</dt><dd>{order.pageCount ?? "未確定"}ページ</dd></div>
           <div><dt className="text-xs text-stone-500">販売価格（税込・送料込み）</dt><dd>{yen}</dd></div>
           <div><dt className="text-xs text-stone-500">決済</dt><dd>{order.paymentStatus === "paid" ? "決済済み" : order.paymentStatus}</dd></div>
-          <div><dt className="text-xs text-stone-500">入稿状態</dt><dd>{order.fulfillmentStatus === "submitted" ? "入稿済み" : "未入稿"}</dd></div>
+          <div><dt className="text-xs text-stone-500">入稿状態</dt><dd>{{ not_submitted: "未処理", processing: "処理中", on_hold: "保留", submitted: "入稿済み", shipped: "発送済み" }[order.fulfillmentStatus] ?? order.fulfillmentStatus}</dd></div>
           <div><dt className="text-xs text-stone-500">製本ファイル検証</dt><dd>{order.assetsVerified ? "検証済み" : "未検証"}</dd></div>
         </dl>
       </section>
@@ -118,9 +154,36 @@ export function AdminOrderDetailClient({ orderId }: { orderId: string }) {
         </div> : <p className="mt-3 text-sm text-stone-600">決済済みかつファイル検証済みの注文のみダウンロードできます。</p>}
       </section>
       <section className="rounded border border-stone-200 bg-white p-5">
+        <h2 className="font-semibold">入稿前の確認</h2>
+        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">
+          <li>決済：{order.paymentStatus === "paid" ? "確認済み" : "未確認"}</li>
+          <li>生成済みPDF・表紙PNG：{order.productionReadiness?.assetsReady ? "検証済み" : "未準備"}</li>
+          <li>作品の商用利用権：{order.productionReadiness?.rightsApproved ? "全作品確認済み" : "未確認・入稿不可"}</li>
+          <li>本文最終ページ数：{order.productionReadiness?.pageCount ?? order.pageCount ?? "未確定"}ページ</li>
+          <li>推定背幅：{order.productionReadiness?.spineWidthMm ?? calculateSpineWidthMm(order.productionReadiness?.pageCount ?? order.pageCount ?? 0) ?? "未確定"}mm</li>
+        </ul>
+        <p className="mt-3 text-sm text-stone-600">製本直送.comで注文確定を確認するまでは「入稿済み」にできません。ここでは外部発注を実行しません。</p>
+      </section>
+      <section className="rounded border border-stone-200 bg-white p-5">
         <h2 className="font-semibold">製本直送.comへの手動入稿</h2>
-        {order.fulfillmentStatus === "submitted" ? <p className="mt-3">入稿済み{order.submittedAt ? `（${new Date(order.submittedAt).toLocaleString("ja-JP")}）` : ""}</p> : <button type="button" className="mt-3 rounded bg-stone-900 px-4 py-2 text-white disabled:opacity-50" disabled={!order.canDownloadAssets || busy} onClick={markSubmitted}>{busy ? "更新中…" : "入稿済みにする"}</button>}
-        {!order.canDownloadAssets && order.fulfillmentStatus !== "submitted" && <p className="mt-2 text-sm text-amber-800">決済済み・ファイル検証済みになるまで入稿状態を更新できません。</p>}
+        {order.fulfillmentStatus === "shipped" && <p className="mt-3">発送済み</p>}
+        {order.fulfillmentStatus === "submitted" && <p className="mt-3">入稿済み：{order.productionReadiness?.printerOrderNumber ?? "注文番号未登録"}</p>}
+        {order.fulfillmentStatus !== "shipped" && <div className="mt-4 grid max-w-xl gap-3">
+          <label className="grid gap-1 text-sm">次の状態
+            <select value={nextStatus} onChange={(event) => setNextStatus(event.target.value)} className="rounded border border-stone-300 px-3 py-2">
+              {(order.fulfillmentStatus === "not_submitted" ? ["processing", "on_hold", "submitted"] : order.fulfillmentStatus === "processing" ? ["on_hold", "submitted"] : order.fulfillmentStatus === "on_hold" ? ["processing", "submitted"] : ["shipped"]).map((status) => <option key={status} value={status}>{({ processing: "処理中", on_hold: "保留", submitted: "入稿済み", shipped: "発送済み" } as Record<string, string>)[status]}</option>)}
+            </select>
+          </label>
+          {["submitted", "shipped"].includes(nextStatus) && <label className="grid gap-1 text-sm">製本直送.comの注文番号
+            <input value={printerOrderNumber} onChange={(event) => setPrinterOrderNumber(event.target.value)} maxLength={100} autoComplete="off" className="rounded border border-stone-300 px-3 py-2" />
+          </label>}
+          <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={vendorOrderConfirmed} onChange={(event) => setVendorOrderConfirmed(event.target.checked)} className="mt-1" />
+            {nextStatus === "shipped" ? "製本直送.com側で発送済みであることを確認しました" : nextStatus === "submitted" ? "製本直送.com側で注文確定したことを確認しました" : "状態変更を確認しました"}
+          </label>
+          <button type="button" className="w-fit rounded bg-stone-900 px-4 py-2 text-white disabled:opacity-50" disabled={(nextStatus !== "on_hold" && (!order.canDownloadAssets || !order.productionReadiness?.rightsApproved)) || busy || (["submitted", "shipped"].includes(nextStatus) && (!vendorOrderConfirmed || !printerOrderNumber.trim()))} onClick={markSubmitted}>{busy ? "更新中…" : "状態を記録"}</button>
+        </div>}
+        {!order.productionReadiness?.rightsApproved && <p className="mt-2 text-sm text-amber-800">権利台帳のA判定がないため、処理開始・入稿・ダウンロードはできません。決済済みの問題注文は保留として記録できます。</p>}
+        {order.fulfillmentAudit && order.fulfillmentAudit.length > 0 && <div className="mt-5"><h3 className="font-medium">操作履歴</h3><ol className="mt-2 space-y-2 text-sm">{order.fulfillmentAudit.map((event, index) => <li key={index}>{new Date(event.createdAt).toLocaleString("ja-JP")}：{event.from} → {event.to}{event.printerOrderNumber ? "（" + event.printerOrderNumber + "）" : ""}</li>)}</ol></div>}
       </section>
     </div>
   );

@@ -4,7 +4,10 @@ import { validateOrderCustomer, type OrderBookSnapshot, type OrderDraftRequest }
 import { hashOrderUploadToken } from "../../../lib/order-upload-token.ts";
 import { serializeOrderUploadCookie } from "../../../lib/order-upload-cookie.ts";
 import { createSupabaseServiceHeaders, getSupabaseServiceCredential } from "../../../lib/supabase-service-credential.ts";
+import { callOrderRpc, getSupabaseServerConfig } from "../../../lib/order-checkout-server.ts";
+import { parseCommercialRightsApproval } from "../../../lib/commercial-rights.ts";
 import type { BookWork } from "../../../lib/book.ts";
+import { isLegacyBuyerAssetFlowEnabled } from "../../../lib/order-production-gate.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -92,8 +95,38 @@ function parseBookSnapshot(input: unknown): OrderBookSnapshot | null {
     const textUrl = safeHttpUrl(work.textUrl);
     const xhtmlUrl = safeHttpUrl(work.xhtmlUrl);
     if (!id || !workTitle || author === null || !cardUrl || !textUrl || !xhtmlUrl || seenIds.has(id)) return null;
+    let contributors: BookWork["contributors"];
+    if (work.contributors !== undefined) {
+      if (!Array.isArray(work.contributors) || work.contributors.length > 20) return null;
+      contributors = [];
+      for (const contributorValue of work.contributors) {
+        if (!contributorValue || typeof contributorValue !== "object" || Array.isArray(contributorValue)) return null;
+        const contributor = contributorValue as Record<string, unknown>;
+        const name = boundedString(contributor.name, 300);
+        const role = boundedString(contributor.role, 80);
+        if (!name || !role || Object.keys(contributor).some((key) => !["name", "role"].includes(key))) return null;
+        contributors.push({ name, role });
+      }
+    }
+    let sourceMetadata: BookWork["sourceMetadata"];
+    if (work.sourceMetadata !== undefined) {
+      if (!work.sourceMetadata || typeof work.sourceMetadata !== "object" || Array.isArray(work.sourceMetadata)) return null;
+      const metadata = work.sourceMetadata as Record<string, unknown>;
+      const keys = ["firstPublication", "baseText", "basePublisher", "inputter", "proofreader"];
+      if (Object.keys(metadata).some((key) => !keys.includes(key)) || keys.some((key) => typeof metadata[key] !== "string" || (metadata[key] as string).length > 2000)) return null;
+      sourceMetadata = {
+        firstPublication: metadata.firstPublication as string,
+        baseText: metadata.baseText as string,
+        basePublisher: metadata.basePublisher as string,
+        inputter: metadata.inputter as string,
+        proofreader: metadata.proofreader as string,
+      };
+    }
+    // The browser is not allowed to claim an approved source revision. A
+    // future server preflight must calculate and attach sourceSha256 itself.
+    if (work.sourceSha256 !== undefined || work.rightsNotice !== undefined) return null;
     seenIds.add(id);
-    works.push({ id, title: workTitle, author, cardUrl, textUrl, xhtmlUrl });
+    works.push({ id, title: workTitle, author, cardUrl, textUrl, xhtmlUrl, contributors, sourceMetadata });
   }
 
   return { title, editor, coverStyle: raw.coverStyle, coverColor: raw.coverColor, works };
@@ -114,6 +147,9 @@ function getRateLimitIdentity(request: Request): string | null {
 }
 
 export async function POST(request: Request) {
+  if (!isLegacyBuyerAssetFlowEnabled()) {
+    return errorResponse("印刷データをサーバーで安全に準備する注文機能を整備中です。入力内容は保存されていません。", 503);
+  }
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
     return errorResponse("注文情報の形式が正しくありません。", 415);
   }
@@ -159,18 +195,7 @@ export async function POST(request: Request) {
   if (!clientIp) return errorResponse("注文保存サービスの接続情報が不足しています。入力内容は保存されていません。", 503);
 
   const rateLimitKeyHash = createHmac("sha256", rateLimitSecret).update(clientIp).digest("hex");
-  const uploadToken = randomBytes(32).toString("base64url");
   const requestPayload: OrderDraftRequest = { idempotencyKey, customer, book, declaredBodyPdfPageCount };
-  const args = {
-    p_order_id: randomUUID(),
-    p_idempotency_key: requestPayload.idempotencyKey,
-    p_customer: requestPayload.customer,
-    p_book_snapshot: requestPayload.book,
-    p_declared_body_pdf_page_count: requestPayload.declaredBodyPdfPageCount,
-    p_rate_limit_key_hash: rateLimitKeyHash,
-    p_upload_token_hash: hashOrderUploadToken(uploadToken),
-    p_draft_retention_days: retentionDays,
-  };
 
   let databaseUrl: URL;
   try {
@@ -181,6 +206,39 @@ export async function POST(request: Request) {
   if (databaseUrl.protocol !== "https:" && databaseUrl.hostname !== "localhost") {
     return errorResponse("注文保存サービスの設定が正しくありません。入力内容は保存されていません。", 503);
   }
+
+  const rightsConfig = getSupabaseServerConfig();
+  if (!rightsConfig || rightsConfig.url.origin !== databaseUrl.origin) {
+    return errorResponse("作品の利用条件を確認できません。入力内容は保存されていません。", 503);
+  }
+  try {
+    const rights = await callOrderRpc(rightsConfig, "check_amuhon_works_commercial_rights_v1", {
+      p_works: requestPayload.book.works,
+    });
+    const approval = parseCommercialRightsApproval(rights.data);
+    if (!rights.ok || approval === null) return errorResponse("作品の利用条件を確認できません。入力内容は保存されていません。", 503);
+    if (!approval.approved) return errorResponse("選択した作品は販売用の利用確認が完了していません。注文内容は保存されていません。", 409);
+    if (approval.notices.length !== requestPayload.book.works.length) return errorResponse("作品の利用条件を確認できません。入力内容は保存されていません。", 503);
+    requestPayload.book.works = requestPayload.book.works.map((work) => {
+      const notice = approval.notices.find((item) => item.workId === work.id);
+      if (!notice) throw new Error("commercial_rights_notice_mismatch");
+      return { ...work, sourceSha256: notice.sourceSha256, rightsNotice: notice.conditions };
+    });
+  } catch {
+    return errorResponse("作品の利用条件を確認できません。入力内容は保存されていません。", 503);
+  }
+
+  const uploadToken = randomBytes(32).toString("base64url");
+  const args = {
+    p_order_id: randomUUID(),
+    p_idempotency_key: requestPayload.idempotencyKey,
+    p_customer: requestPayload.customer,
+    p_book_snapshot: requestPayload.book,
+    p_declared_body_pdf_page_count: requestPayload.declaredBodyPdfPageCount,
+    p_rate_limit_key_hash: rateLimitKeyHash,
+    p_upload_token_hash: hashOrderUploadToken(uploadToken),
+    p_draft_retention_days: retentionDays,
+  };
 
   try {
     const rpcResponse = await fetch(`${databaseUrl.origin}/rest/v1/rpc/create_amuhon_order_draft_with_upload_token`, {

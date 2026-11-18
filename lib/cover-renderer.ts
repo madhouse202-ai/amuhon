@@ -47,11 +47,11 @@ export function getFrontCoverSourceRect(layout: ReturnType<typeof calculateCover
   };
 }
 
-/** Create the same print-ready spread PNG used by the cover download button. */
-export async function createSpreadCoverPngBlob(
+export async function renderSpreadCoverPng(
   book: Pick<BookData, "title" | "editor" | "coverStyle" | "coverColor">,
   bodyPdfPageCount: number,
   showSpineText = true,
+  outputDpi = BOOK_PRODUCTION.dpi,
 ): Promise<Blob> {
   if (typeof document === "undefined") throw new Error("カバー画像はブラウザーで生成してください。");
   if (!isSubmissionPageCount(bodyPdfPageCount)) {
@@ -73,9 +73,11 @@ export async function createSpreadCoverPngBlob(
     ? calculateSpineTextLayout(bodyPdfPageCount, title, editor)
     : null;
   const canvas = document.createElement("canvas");
-  canvas.width = layout.pixelWidth;
-  canvas.height = layout.pixelHeight;
-  if (canvas.width !== layout.pixelWidth || canvas.height !== layout.pixelHeight) {
+  const outputWidth = Math.round(layout.coverWidthMm / 25.4 * outputDpi);
+  const outputHeight = Math.round(layout.coverHeightMm / 25.4 * outputDpi);
+  canvas.width = outputWidth;
+  canvas.height = outputHeight;
+  if (canvas.width !== outputWidth || canvas.height !== outputHeight) {
     throw new Error("ブラウザーが必要なPNG寸法を確保できませんでした。");
   }
 
@@ -95,8 +97,8 @@ export async function createSpreadCoverPngBlob(
   const frontCenterY = heightMm / 2;
   const pxPerMmX = canvas.width / layout.coverWidthMm;
   const pxPerMmY = canvas.height / heightMm;
-  const titleFontPx = 20 * BOOK_PRODUCTION.dpi / 72;
-  const authorFontPx = 9 * BOOK_PRODUCTION.dpi / 72;
+  const titleFontPx = 20 * outputDpi / 72;
+  const authorFontPx = 9 * outputDpi / 72;
   const maxTextWidthPx = (BOOK_PRODUCTION.trimWidthMm - 24) * pxPerMmX;
 
   context.save();
@@ -156,6 +158,8 @@ export async function createSpreadCoverPngBlob(
 
   const rawBlob = await canvasBlob(canvas);
   const pngBytes = new Uint8Array(await rawBlob.arrayBuffer());
+  if (outputDpi !== BOOK_PRODUCTION.dpi) return rawBlob;
+
   const printBytes = addPngResolutionMetadata(pngBytes, BOOK_PRODUCTION.dpi);
   assertPngPrintProperties(printBytes, layout.pixelWidth, layout.pixelHeight, BOOK_PRODUCTION.dpi);
   const printBuffer = new ArrayBuffer(printBytes.byteLength);
@@ -163,9 +167,17 @@ export async function createSpreadCoverPngBlob(
   return new Blob([printBuffer], { type: "image/png" });
 }
 
+/** Render a screen-sized spread directly; never create or downsample a print-ready PNG. */
+export function createSpreadCoverPreviewBlob(
+  book: Pick<BookData, "title" | "editor" | "coverStyle" | "coverColor">,
+  bodyPdfPageCount: number,
+): Promise<Blob> {
+  return renderSpreadCoverPng(book, bodyPdfPageCount, true, 96);
+}
+
 /**
- * Make a screen preview from the exact front-cover pixels in the print-ready
- * spread. This keeps the buyer-facing artwork aligned with the submitted PNG.
+ * Make a screen preview by drawing at screen resolution with the same layout
+ * and artwork logic as the print spread. No print-sized image is created.
  */
 export async function createFrontCoverPreviewBlob(
   book: Pick<BookData, "title" | "editor" | "coverStyle" | "coverColor">,
@@ -173,7 +185,7 @@ export async function createFrontCoverPreviewBlob(
 ): Promise<Blob> {
   const layout = calculateCoverLayout(bodyPdfPageCount);
   if (!layout) throw new Error("本文ページ数から表紙を確認できません。");
-  const spreadBlob = await createSpreadCoverPngBlob(book, bodyPdfPageCount, true);
+  const spreadBlob = await createSpreadCoverPreviewBlob(book, bodyPdfPageCount);
   const bitmap = await createImageBitmap(spreadBlob);
   try {
     const canvas = document.createElement("canvas");

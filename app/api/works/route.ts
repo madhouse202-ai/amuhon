@@ -11,6 +11,7 @@ type Work = {
   cardUrl: string;
   textUrl: string;
   xhtmlUrl: string;
+  sourceMetadata: { firstPublication: string; baseText: string; basePublisher: string; inputter: string; proofreader: string };
 };
 
 type WorkContributor = { name: string; role: string; reading: string };
@@ -290,6 +291,11 @@ async function loadCatalog(): Promise<Work[]> {
   const firstNameReadingIndex = findColumnIndex(["名読み", "名よみ"]);
   const titleReadingIndex = findColumnIndex(["作品名読み", "作品名よみ"]);
   const sortReadingIndex = findColumnIndex(["ソート用読み", "ソート用よみ"]);
+  const firstPublicationIndex = findColumnIndex(["初出"]);
+  const baseTextIndex = findColumnIndex(["底本名1", "底本1", "底本名"]);
+  const basePublisherIndex = findColumnIndex(["底本出版社名1", "底本出版社1", "底本出版社名"]);
+  const inputterIndex = findColumnIndex(["入力者", "入力者名"]);
+  const proofreaderIndex = findColumnIndex(["校正者", "校正者名"]);
 
   console.log(
     "CSV列番号:",
@@ -398,9 +404,26 @@ async function loadCatalog(): Promise<Work[]> {
       cardUrl,
       textUrl,
       xhtmlUrl,
+      sourceMetadata: {
+        firstPublication: "",
+        baseText: "",
+        basePublisher: "",
+        inputter: "",
+        proofreader: "",
+      },
     } satisfies Work;
     if (!work.titleReading && titleReading) work.titleReading = titleReading;
     if (!work.sortReading && sortReading) work.sortReading = sortReading;
+    const sourceMetadata = {
+      firstPublication: firstPublicationIndex === -1 ? "" : columns[firstPublicationIndex]?.trim() ?? "",
+      baseText: baseTextIndex === -1 ? "" : columns[baseTextIndex]?.trim() ?? "",
+      basePublisher: basePublisherIndex === -1 ? "" : columns[basePublisherIndex]?.trim() ?? "",
+      inputter: inputterIndex === -1 ? "" : columns[inputterIndex]?.trim() ?? "",
+      proofreader: proofreaderIndex === -1 ? "" : columns[proofreaderIndex]?.trim() ?? "",
+    };
+    for (const key of Object.keys(sourceMetadata) as Array<keyof typeof sourceMetadata>) {
+      if (!work.sourceMetadata[key] && sourceMetadata[key]) work.sourceMetadata[key] = sourceMetadata[key];
+    }
     if (author && role && !work.contributors.some((person) => person.name === author && person.role === role)) {
       work.contributors.push({ name: author, role, reading });
     }

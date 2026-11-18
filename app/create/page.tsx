@@ -8,8 +8,8 @@ import { CreationProgress } from "@/app/creation-progress";
 import { DraftSaveStatus } from "@/app/draft-save-status";
 import { useBookDraftAutosave } from "@/lib/use-book-draft-autosave";
 
-type WorkContributor = { name: string; role: string; reading: string };
-type Work = BookWork & { contributors?: WorkContributor[] };
+type WorkContributor = { name: string; role: string; reading?: string };
+type Work = Omit<BookWork, "contributors"> & { contributors?: WorkContributor[] };
 type PageEstimate = { status: "idle" | "loading" | "ready" | "error"; pages?: number };
 type AuthorShelf = { author: string; workCount: number; sampleTitles: string[] };
 type ListPage = { nextOffset: number; hasMore: boolean };
@@ -161,6 +161,71 @@ function EstimateWhenVisible({
   );
 }
 
+function SelectedBookPanel({
+  works,
+  estimates,
+  canEdit,
+  onMove,
+  onRemove,
+  onRetry,
+  onCreateBook,
+  headingId,
+}: {
+  works: Work[];
+  estimates: Record<string, PageEstimate>;
+  canEdit: boolean;
+  onMove: (index: number, direction: "up" | "down") => void;
+  onRemove: (id: string) => void;
+  onRetry: (work: Work) => void;
+  onCreateBook: () => void;
+  headingId: string;
+}) {
+  const values = works.map((work) => estimates[work.id]);
+  const complete = works.length > 0 && values.every((estimate) => estimate?.status === "ready");
+  const unresolved = values.filter((estimate) => estimate?.status !== "ready").length;
+  const bodyPages = values.reduce((sum, estimate) => sum + (estimate?.pages ?? 0), 0);
+
+  return (
+    <section className="rounded-2xl bg-white p-4 shadow-sm sm:p-5" aria-labelledby={headingId}>
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 id={headingId} className="text-xl font-bold">あなたの本</h2>
+        <span className="text-sm text-stone-500">{works.length}作品</span>
+      </div>
+      {works.length === 0 ? (
+        <p className="mt-4 text-sm text-stone-500">本棚から作品を選ぶと、ここに並びます。</p>
+      ) : (
+        <ol className="mt-4 max-h-[52vh] space-y-2 overflow-y-auto pr-1">
+          {works.map((work, index) => {
+            const estimate = estimates[work.id] ?? { status: "idle" as const };
+            return (
+              <li key={work.id} className="rounded-xl bg-stone-50 p-3">
+                <div className="min-w-0">
+                  <p className="break-words text-sm font-medium"><span className="mr-1 text-stone-500">{index + 1}.</span>{work.title}</p>
+                  <p className="mt-1 break-words text-xs text-stone-600">{work.author || "作者情報なし"}</p>
+                  <p className="mt-1 text-xs text-stone-600">
+                    {estimate.status === "ready" ? `本文：約${estimate.pages}ページ` : estimate.status === "error" ? "本文ページ数を確認できません" : "本文ページ数を計算中…"}
+                    {estimate.status === "error" && <button type="button" onClick={() => onRetry(work)} className="ml-2 min-h-8 underline underline-offset-2">再計算</button>}
+                  </p>
+                </div>
+                <div className="mt-2 flex justify-end gap-1">
+                  <button type="button" onClick={() => onMove(index, "up")} disabled={!canEdit || index === 0} aria-label={`${work.title}を上へ移動`} className="min-h-9 min-w-10 rounded-lg bg-white px-2 text-sm shadow-sm disabled:opacity-35">↑</button>
+                  <button type="button" onClick={() => onMove(index, "down")} disabled={!canEdit || index === works.length - 1} aria-label={`${work.title}を下へ移動`} className="min-h-9 min-w-10 rounded-lg bg-white px-2 text-sm shadow-sm disabled:opacity-35">↓</button>
+                  <button type="button" onClick={() => onRemove(work.id)} disabled={!canEdit} aria-label={`${work.title}を本から削除`} className="min-h-9 rounded-lg bg-white px-3 text-sm shadow-sm disabled:opacity-50">削除</button>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      <p className="mt-4 border-t border-stone-200 pt-3 text-sm text-stone-700" role="status">
+        {complete ? `推定本文合計：約${bodyPages}ページ` : works.length ? `本文ページ数を確認中（残り${unresolved}作品）` : "本文ページ数：未計算"}
+      </p>
+      <p className="mt-1 text-xs leading-5 text-stone-500">目次・出典・奥付などを含む最終ページ数と価格は、完成時に確定します。</p>
+      <button type="button" onClick={onCreateBook} disabled={works.length === 0 || !canEdit} className="mt-4 min-h-12 w-full rounded-xl bg-stone-800 px-4 py-3 font-semibold text-white transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40">表紙を作る</button>
+    </section>
+  );
+}
+
 function WorkChoiceCard({
   work,
   estimate,
@@ -250,13 +315,13 @@ export default function CreatePage() {
   const [isLoadingWorkList, setIsLoadingWorkList] = useState(false);
   const [isRefreshingShelf, setIsRefreshingShelf] = useState(false);
   const [detailWork, setDetailWork] = useState<Work | null>(null);
+  const [mobileBookOpen, setMobileBookOpen] = useState(false);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
   const detailDialogRef = useRef<HTMLElement | null>(null);
   const selectedWorks = draft.works;
   const [isSearching, setIsSearching] = useState(false);
   const [searched, setSearched] = useState(false);
   const [searchError, setSearchError] = useState("");
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [pageEstimates, setPageEstimates] = useState<Record<string, PageEstimate>>({});
   const estimatedSelectedIdsRef = useRef(new Set<string>());
   const shelfWorkIdsRef = useRef<string[]>([]);
@@ -469,6 +534,8 @@ export default function CreatePage() {
           cardUrl: work.cardUrl,
           textUrl: work.textUrl,
           xhtmlUrl: work.xhtmlUrl,
+          contributors: work.contributors?.map(({ name, role }) => ({ name, role })) ?? [],
+          sourceMetadata: work.sourceMetadata,
         },
       ]);
     }
@@ -506,31 +573,6 @@ export default function CreatePage() {
     }
 
     setSelectedWorks(newWorks);
-  };
-
-  const handleDrop = (targetIndex: number) => {
-    if (
-      draggedIndex === null ||
-      draggedIndex === targetIndex
-    ) {
-      return;
-    }
-
-    const newWorks = [...selectedWorks];
-
-    const [draggedWork] = newWorks.splice(
-      draggedIndex,
-      1
-    );
-
-    newWorks.splice(
-      targetIndex,
-      0,
-      draggedWork
-    );
-
-    setSelectedWorks(newWorks);
-    setDraggedIndex(null);
   };
 
   const isSelected = (id: string) => {
@@ -599,7 +641,7 @@ export default function CreatePage() {
 
   return (
     <main className="min-h-screen bg-stone-50 px-4 py-8 text-stone-800 sm:px-6 sm:py-16">
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto max-w-7xl pb-28 lg:pb-0">
 
         <CreationProgress currentStep={1} />
         <div className="mb-5">
@@ -619,7 +661,9 @@ export default function CreatePage() {
         </p>
 
         {/* 本棚からの選書を基本にし、検索も同じ画面から使えるようにする */}
-        <section className="mt-10" aria-labelledby="work-discovery-heading">
+        <div className="mt-10 grid grid-cols-1 items-start gap-8 lg:grid-cols-[minmax(0,1.8fr)_minmax(18rem,1fr)]">
+        <div className="min-w-0">
+        <section className="mt-0" aria-labelledby="work-discovery-heading">
           <h2 id="work-discovery-heading" className="text-2xl font-bold">作品を探す</h2>
           <p className="mt-2 text-stone-600">気になる物語を見つけたら、作品情報を読んで本に加えられます。</p>
 
@@ -696,8 +740,10 @@ export default function CreatePage() {
                               const style = spineStyle(work, index + rowIndex * row.length);
                               const selected = isSelected(work.id);
                               const authorLength = Array.from(work.author).length;
-                              const authorFontSize = authorLength > 7 ? 8 : authorLength > 5 ? 9 : 10;
-                              const authorMaxHeight = Math.min(style.height * 0.42, Math.max(40, authorLength * authorFontSize) + 4);
+                              const authorFontSize = Math.max(8, 10 - Math.floor(Math.max(0, authorLength - 5) / 2));
+                              const authorMaxHeight = Math.min(style.height * 0.44, Math.max(40, authorLength * authorFontSize) + 4);
+                              const titleLength = Array.from(work.title).length;
+                              const titleFontSize = titleLength > 20 ? 10 : titleLength > 15 ? 12 : titleLength > 10 ? 13 : 15;
                               const titleMaxHeight = Math.max(44, style.height - authorMaxHeight - 48);
                               return (
                                 <button
@@ -711,7 +757,7 @@ export default function CreatePage() {
                                 >
                                   <span aria-hidden="true" className="absolute inset-y-0 left-1 w-px bg-white/20" />
                                   {selected && <span aria-hidden="true" className="absolute left-1 top-1 grid size-5 place-items-center rounded-full bg-white text-xs font-bold text-emerald-900 shadow">✓</span>}
-                                  <span className="overflow-hidden text-ellipsis text-center text-[15px] font-semibold leading-5 [text-orientation:upright] [writing-mode:vertical-rl]" style={{ maxHeight: titleMaxHeight }}>{work.title}</span>
+                                  <span aria-hidden="true" className="overflow-hidden text-ellipsis whitespace-nowrap text-center font-semibold leading-5 [text-orientation:upright] [writing-mode:vertical-rl]" style={{ maxHeight: titleMaxHeight, fontSize: titleFontSize }} title={work.title}>{work.title}</span>
                                   <span aria-hidden="true" className="absolute bottom-1 right-1 overflow-hidden text-ellipsis whitespace-nowrap leading-3 [text-orientation:upright] [writing-mode:vertical-rl]" title={work.author} style={{ maxHeight: authorMaxHeight, fontSize: authorFontSize }}>{work.author}</span>
                                 </button>
                               );
@@ -826,143 +872,51 @@ export default function CreatePage() {
             </div>
           )}
         </section>
+        </div>
+        <aside className="hidden lg:sticky lg:top-6 lg:block" aria-label="選択中の本">
+          <SelectedBookPanel
+            headingId="selected-book-desktop-heading"
+            works={selectedWorks}
+            estimates={pageEstimates}
+            canEdit={loadState === "ready"}
+            onMove={moveWork}
+            onRemove={removeWork}
+            onRetry={retryEstimate}
+            onCreateBook={createBook}
+          />
+        </aside>
+        </div>
+        </div>
 
-        {/* 選んだ作品 */}
-        <section className="mt-12 rounded-2xl bg-white p-4 shadow-sm sm:mt-16 sm:p-8">
-          <h2 className="text-2xl font-bold">
-            あなたの本
-          </h2>
-
-          {selectedWorks.length === 0 ? (
-            <p className="mt-4 text-stone-500">
-              まだ作品が選ばれていません。
-            </p>
-          ) : (
-            <ol className="mt-6 space-y-3">
-
-              {selectedWorks.map(
-                (work, index) => (
-                  <li
-                    key={work.id}
-                    draggable={true}
-                    onDragStart={() =>
-                      setDraggedIndex(index)
-                    }
-                    onDragOver={(e) =>
-                      e.preventDefault()
-                    }
-                    onDrop={() =>
-                      handleDrop(index)
-                    }
-                    className="flex flex-col gap-3 rounded-xl bg-stone-50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5"
-                  >
-                    <div className="min-w-0 break-words">
-                      <span className="mr-3 text-stone-400">
-                        {index + 1}.
-                      </span>
-
-                      <span className="font-medium">
-                        {work.title}
-                      </span>
-
-                      <span className="ml-3 text-sm text-stone-500">
-                        {work.author}
-                      </span>
-                        <span className="ml-3 text-sm text-stone-500">
-                          {pageEstimates[work.id]?.status === "ready"
-                            ? `本文：約${pageEstimates[work.id].pages}ページ`
-                            : pageEstimates[work.id]?.status === "error"
-                              ? "ページ数を確認できません"
-                              : pageEstimates[work.id]?.status === "loading"
-                                ? "ページ数を計算中…"
-                                : "ページ数は未計算です"}
-                        </span>
-                        {pageEstimates[work.id]?.status === "error" && (
-                          <button type="button" onClick={() => retryEstimate(work)} className="ml-2 min-h-10 underline underline-offset-4">
-                            再計算
-                          </button>
-                        )}
-                    </div>
-
-                    <div className="flex gap-2">
-
-                      <button
-                        onClick={() =>
-                          moveWork(
-                            index,
-                            "up"
-                          )
-                        }
-                        disabled={
-                          index === 0 || loadState !== "ready"
-                        }
-                        className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
-                        aria-label={`${work.title}を上へ移動`}
-                      >
-                        ↑
-                      </button>
-
-                      <button
-                        onClick={() =>
-                          moveWork(
-                            index,
-                            "down"
-                          )
-                        }
-                        disabled={
-                          index ===
-                          selectedWorks.length - 1 || loadState !== "ready"
-                        }
-                        className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm disabled:opacity-30"
-                        aria-label={`${work.title}を下へ移動`}
-                      >
-                        ↓
-                      </button>
-
-                      <button
-                        onClick={() =>
-                          removeWork(
-                            work.id
-                          )
-                        }
-                        disabled={loadState !== "ready"}
-                        className="rounded-lg bg-white px-3 py-2 text-sm shadow-sm"
-                        aria-label={`${work.title}を本から削除`}
-                      >
-                        削除
-                      </button>
-
-                    </div>
-                  </li>
-                )
-              )}
-
-            </ol>
-          )}
-          {selectedWorks.length > 0 && (() => {
-            const estimates = selectedWorks.map((work) => pageEstimates[work.id]);
-            const complete = estimates.every((estimate) => estimate?.status === "ready");
-            const unresolved = estimates.filter((estimate) => estimate?.status !== "ready").length;
-            const total = estimates.reduce((sum, estimate) => sum + (estimate?.pages ?? 0), 0);
-            return complete
-              ? <p className="mt-5 font-medium text-stone-700" role="status">選択作品の推定本文合計：約{total}ページ</p>
-              : <p className="mt-5 text-sm text-stone-500" role="status">選択作品のページ数を計算しています（残り{unresolved}作品）。計算できない作品は、上の「再計算」をお試しください。</p>;
-          })()}
-        </section>
-
-        {/* 本を編む */}
-        <button
-          onClick={createBook}
-          disabled={
-            selectedWorks.length === 0 || loadState !== "ready"
-          }
-          className="mt-8 w-full rounded-xl bg-stone-800 px-6 py-4 text-lg font-medium text-white transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          表紙を作る
-        </button>
-
-      </div>
-      {detailWork && (
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-stone-200 bg-[#fffdf8] p-3 shadow-[0_-6px_22px_rgba(0,0,0,.12)] lg:hidden">
+          <div className="mx-auto flex max-w-xl items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-semibold">あなたの本 · {selectedWorks.length}作品</p>
+              <p className="truncate text-xs text-stone-600">{selectedWorks.length === 0 ? "本棚から作品を選んでください" : selectedWorks.map((work) => work.title).join("・")}</p>
+            </div>
+            <button type="button" onClick={() => setMobileBookOpen(true)} aria-expanded={mobileBookOpen} className="min-h-11 shrink-0 rounded-lg bg-stone-800 px-4 py-2 text-sm font-semibold text-white">内容を見る</button>
+          </div>
+        </div>
+        {mobileBookOpen && (
+          <div className="fixed inset-0 z-50 bg-stone-950/45" onMouseDown={(event) => { if (event.target === event.currentTarget) setMobileBookOpen(false); }}>
+            <section role="dialog" aria-modal="true" aria-labelledby="mobile-book-dialog-heading" className="absolute inset-x-0 bottom-0 max-h-[88vh] overflow-y-auto rounded-t-2xl bg-[#fffdf8] p-4 pb-6 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 id="mobile-book-dialog-heading" className="text-lg font-bold">選択した作品</h2>
+                <button type="button" onClick={() => setMobileBookOpen(false)} className="min-h-11 rounded-lg border border-stone-300 px-4 py-2">閉じる</button>
+              </div>
+              <SelectedBookPanel
+                headingId="selected-book-mobile-heading"
+                works={selectedWorks}
+                estimates={pageEstimates}
+                canEdit={loadState === "ready"}
+                onMove={moveWork}
+                onRemove={removeWork}
+                onRetry={retryEstimate}
+                onCreateBook={createBook}
+              />
+            </section>
+          </div>
+        )}      {detailWork && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-stone-950/55 p-0 sm:items-center sm:p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) closeWorkDetails(); }}>
           <section
             ref={detailDialogRef}

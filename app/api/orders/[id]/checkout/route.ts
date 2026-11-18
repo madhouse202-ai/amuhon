@@ -7,6 +7,8 @@ import { callOrderRpc, getSupabaseServerConfig, isValidOrderId, validOrderPostOr
 import { getStripeServerConfig, isCheckoutSessionIdForMode } from "../../../../../lib/stripe-mode.ts";
 import { checkoutRecordExceptionCode, checkoutRecordFailureCode } from "../../../../../lib/order-checkout-diagnostics.ts";
 import { isTrustedStripeCheckoutUrl, parseTrustedStripeCheckoutHosts, validateCheckoutSessionResponse } from "../../../../../lib/stripe-checkout-session-validation.ts";
+import { isLegacyBuyerAssetFlowEnabled } from "../../../../../lib/order-production-gate.ts";
+import { parseCommercialRightsDecision } from "../../../../../lib/commercial-rights.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +42,7 @@ async function readTrustedCheckoutHosts(supabase: NonNullable<ReturnType<typeof 
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  if (!isLegacyBuyerAssetFlowEnabled()) return fail("印刷データのサーバー生成を準備中のため、現在は注文を開始できません。", 503);
   if (!validOrderPostOrigin(request)) return fail("送信元を確認できませんでした。画面を再読み込みしてください。", 403);
   const { id: orderId } = await context.params;
   if (!isValidOrderId(orderId)) return fail("注文情報を確認できません。", 404);
@@ -48,6 +51,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const stripe = getStripeServerConfig();
   const supabase = getSupabaseServerConfig();
   if (!stripe || !supabase) return fail("決済サービスの設定を確認できません。", 503);
+
+  try {
+    const rights = await callOrderRpc(supabase, "check_amuhon_order_commercial_rights_v1", {
+      p_order_id: orderId,
+      p_upload_token_hash: hashOrderUploadToken(token),
+    });
+    const approved = parseCommercialRightsDecision(rights.data);
+    if (!rights.ok || approved === null) return fail("作品の利用条件を確認できません。決済は開始していません。", 503);
+    if (!approved) return fail("この注文の作品は販売用の利用確認が完了していません。決済は開始していません。", 409);
+  } catch {
+    return fail("作品の利用条件を確認できません。決済は開始していません。", 503);
+  }
 
   // Load the database-owned allowlist before begin_v2, which may bind an attempt and
   // move a verified order into ready_for_payment. A missing allowlist must not strand it.

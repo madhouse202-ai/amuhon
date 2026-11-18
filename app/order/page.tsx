@@ -6,7 +6,6 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Upload } from "tus-js-client";
 
 import { bookLayoutKey, loadBookData, type BookData } from "@/lib/book";
-import { createSpreadCoverPngBlob } from "@/lib/cover-renderer";
 import { isSubmissionPageCount } from "@/lib/production";
 import { createOrderTusHeaders, inspectOrderTusCredentials } from "@/lib/order-tus";
 import { getSupabasePublicCredential } from "@/lib/supabase-public-credential";
@@ -229,6 +228,19 @@ export default function OrderPage() {
     }
   }, []);
 
+  if (!AUTO_FILE_GENERATION_ENABLED) {
+    return (
+      <main className="min-h-screen bg-stone-50 px-4 py-12 text-stone-800 sm:px-6">
+        <section className="mx-auto max-w-xl rounded-2xl bg-white p-6 shadow-sm sm:p-8" role="status">
+          <OrderFlowSteps currentStep={1} />
+          <h1 className="text-2xl font-bold">オンライン注文を準備しています</h1>
+          <p className="mt-4 leading-7 text-stone-700">印刷用データを購入者の端末へ渡さず、サーバーでページ数・価格を確認してから製造する仕組みを整備しています。準備が完了するまで注文情報の保存や決済は開始しません。</p>
+          <Link href="/final" className="mt-6 inline-flex min-h-12 items-center rounded-xl bg-stone-800 px-5 py-3 font-semibold text-white">完成した本の確認に戻る</Link>
+        </section>
+      </main>
+    );
+  }
+
   function updateCustomer(field: keyof OrderCustomer, value: string) {
     setCustomer((current) => ({ ...current, [field]: value }));
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
@@ -271,6 +283,7 @@ export default function OrderPage() {
     const bodyBlob = await response.blob();
     if (bodyBlob.size > MAX_ORDER_ASSET_BYTES) throw new Error("生成した本文PDFが40,000,000バイトを超えています。");
 
+    const { createSpreadCoverPngBlob } = await import("@/lib/print-cover-renderer");
     const coverBlob = await createSpreadCoverPngBlob(book, pageCount);
     if (coverBlob.size > MAX_ORDER_ASSET_BYTES) throw new Error("生成したカバーPNGが40,000,000バイトを超えています。");
 

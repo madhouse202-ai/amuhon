@@ -20,10 +20,12 @@ test("admin allowlist fails closed when missing or malformed and compares only U
 test("download and submission policies require paid orders and verified assets", () => {
   assert.equal(canDownloadAdminOrderAssets({ status: "ready_for_payment", assetsVerified: true, fulfillmentStatus: "not_submitted" }), false);
   assert.equal(canDownloadAdminOrderAssets({ status: "paid", assetsVerified: false, fulfillmentStatus: "not_submitted" }), false);
-  assert.equal(canDownloadAdminOrderAssets({ status: "paid", assetsVerified: true, fulfillmentStatus: "not_submitted" }), true);
+  assert.equal(canDownloadAdminOrderAssets({ status: "paid", assetsVerified: true, fulfillmentStatus: "not_submitted", renderState: "queued", rightsApproved: true }), false);
+  assert.equal(canDownloadAdminOrderAssets({ status: "paid", assetsVerified: true, fulfillmentStatus: "not_submitted", renderState: "succeeded", rightsApproved: false }), false);
+  assert.equal(canDownloadAdminOrderAssets({ status: "paid", assetsVerified: true, fulfillmentStatus: "not_submitted", renderState: "succeeded", rightsApproved: true }), true);
   assert.equal(canMarkOrderSubmitted({ status: "paid", assetsVerified: false, fulfillmentStatus: "not_submitted" }), false);
   assert.equal(canMarkOrderSubmitted({ status: "paid", assetsVerified: true, fulfillmentStatus: "submitted" }), false);
-  assert.equal(canMarkOrderSubmitted({ status: "paid", assetsVerified: true, fulfillmentStatus: "not_submitted" }), true);
+  assert.equal(canMarkOrderSubmitted({ status: "paid", assetsVerified: true, fulfillmentStatus: "not_submitted", renderState: "succeeded", rightsApproved: true }), true);
 });
 
 test("every admin data API verifies the server-side admin before service-role access", async () => {
@@ -146,4 +148,28 @@ test("asset API streams only fixed private-object paths and never returns a sign
   assert.match(route, /requireAdmin\(\)/);
   assert.match(route, /Content-Disposition/);
   assert.doesNotMatch(source, /createSignedUrl|getPublicUrl/);
+});
+
+test("printer submission requires a vendor confirmation, readiness, rights review, and an audit entry", async () => {
+  const [migration, submissionRoute, detailRoute, detailClient] = await Promise.all([
+    read("supabase/migrations/20261118000200_order_printer_confirmation_audit.sql"),
+    read("app/api/admin/orders/[id]/submission/route.ts"),
+    read("app/api/admin/orders/[id]/route.ts"),
+    read("app/admin/orders/[id]/order-detail-client.tsx"),
+  ]);
+  assert.match(migration, /mark_amuhon_order_printer_submitted_v2/);
+  assert.match(migration, /p_vendor_order_confirmed is distinct from true/);
+  assert.match(migration, /_amuhon_order_print_assets_ready_v1/);
+  assert.match(migration, /p_next_status <> 'on_hold' and not public\._amuhon_order_print_assets_ready_v1\(p_order_id\)/);
+  assert.match(migration, /_amuhon_book_works_rights_approved_v1/);
+  assert.match(migration, /amuhon_order_fulfillment_events/);
+  assert.match(migration, /get_amuhon_admin_order_fulfillment_audit_v1/);
+  assert.match(migration, /LEGACY_SUBMISSION_RPC_DISABLED/);
+  assert.match(submissionRoute, /mark_amuhon_order_printer_submitted_v2/);
+  assert.match(submissionRoute, /await requireAdmin\(\)[\s\S]*?createAdminServiceClient\(\)/);
+  assert.match(detailRoute, /get_amuhon_admin_order_production_readiness_v1/);
+  assert.match(detailRoute, /get_amuhon_admin_order_fulfillment_audit_v1/);
+  assert.match(detailClient, /製本直送\.com側で注文確定したことを確認しました/);
+  assert.match(detailClient, /権利台帳のA判定がないため/);
+  assert.match(detailClient, /nextStatus !== "on_hold"/);
 });

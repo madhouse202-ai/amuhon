@@ -9,6 +9,7 @@ import {
 } from "../../../../../lib/order-assets.ts";
 import { equalHexDigest, hashOrderUploadToken } from "../../../../../lib/order-upload-token.ts";
 import { readOrderUploadCookie } from "../../../../../lib/order-upload-cookie.ts";
+import { isLegacyBuyerAssetFlowEnabled } from "../../../../../lib/order-production-gate.ts";
 import {
   createSupabaseServiceHeaders,
   getSupabaseServiceCredential,
@@ -197,6 +198,7 @@ async function abortLease(baseUrl: URL, credential: SupabaseServiceCredential, o
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  if (!isLegacyBuyerAssetFlowEnabled()) return fail("印刷データのサーバー生成を準備中のため、アップロードを受け付けていません。", 503);
   if (!validOrigin(request)) return fail("送信元を確認できませんでした。画面を再読み込みしてください。", 403);
   const { id: orderId } = await context.params;
   if (!UUID_PATTERN.test(orderId)) return fail("注文情報を確認できません。", 404);

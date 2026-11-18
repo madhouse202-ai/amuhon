@@ -56,8 +56,39 @@ export function parseLocalOrderPdfRequest(input: unknown): LocalOrderPdfRequest 
     const textUrl = safeAozoraUrl(work.textUrl);
     const xhtmlUrl = safeAozoraUrl(work.xhtmlUrl);
     if (!cardUrl || !textUrl || !xhtmlUrl) return null;
+    let contributors: BookWork["contributors"];
+    if (work.contributors !== undefined) {
+      if (!Array.isArray(work.contributors) || work.contributors.length > 20) return null;
+      contributors = [];
+      for (const value of work.contributors) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+        const contributor = value as Record<string, unknown>;
+        if (typeof contributor.name !== "string" || !contributor.name.trim() || contributor.name.length > 300 ||
+            typeof contributor.role !== "string" || !contributor.role.trim() || contributor.role.length > 80) return null;
+        contributors.push({ name: contributor.name.trim(), role: contributor.role.trim() });
+      }
+    }
+    let sourceMetadata: BookWork["sourceMetadata"];
+    if (work.sourceMetadata !== undefined) {
+      if (!work.sourceMetadata || typeof work.sourceMetadata !== "object" || Array.isArray(work.sourceMetadata)) return null;
+      const metadata = work.sourceMetadata as Record<string, unknown>;
+      const keys = ["firstPublication", "baseText", "basePublisher", "inputter", "proofreader"];
+      if (Object.keys(metadata).some((key) => !keys.includes(key)) || keys.some((key) => typeof metadata[key] !== "string" || (metadata[key] as string).length > 2000)) return null;
+      sourceMetadata = {
+        firstPublication: metadata.firstPublication as string,
+        baseText: metadata.baseText as string,
+        basePublisher: metadata.basePublisher as string,
+        inputter: metadata.inputter as string,
+        proofreader: metadata.proofreader as string,
+      };
+    }
+    const sourceSha256 = work.sourceSha256 === undefined ? undefined :
+      typeof work.sourceSha256 === "string" && /^[a-f0-9]{64}$/.test(work.sourceSha256) ? work.sourceSha256 : null;
+    const rightsNotice = work.rightsNotice === undefined ? undefined :
+      typeof work.rightsNotice === "string" && work.rightsNotice.trim().length > 0 && work.rightsNotice.length <= 1000 ? work.rightsNotice : null;
+    if (sourceSha256 === null || rightsNotice === null || ((sourceSha256 === undefined) !== (rightsNotice === undefined))) return null;
     ids.add(id);
-    works.push({ id, title: workTitle, author: work.author.trim(), cardUrl, textUrl, xhtmlUrl });
+    works.push({ id, title: workTitle, author: work.author.trim(), cardUrl, textUrl, xhtmlUrl, contributors, sourceMetadata, sourceSha256, rightsNotice });
   }
 
   return {

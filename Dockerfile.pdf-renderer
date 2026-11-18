@@ -5,6 +5,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     NEXT_TELEMETRY_DISABLED=1 \
     AMUHON_PDF_WORKER_BROWSER_MODE=pinned \
     AMUHON_PDF_RENDER_PORT=3000 \
+    AMUHON_PDF_RENDERER_INTERNAL_MODE=true \
     AMUHON_PDF_FONT_PATH=/opt/amuhon/fonts/NotoSerifCJKjp-Regular.otf \
     NODE_ENV=production
 

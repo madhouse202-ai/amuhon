@@ -42,7 +42,49 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     } catch {
       // The queue migration may not be deployed yet; keep the admin order view available.
     }
-    return Response.json({ order: { ...(data as Record<string, unknown>), pdfRenderJob } }, { headers: { "Cache-Control": "no-store, private" } });
+    let productionReadiness: Record<string, unknown> = { rightsApproved: false, assetsReady: false };
+    let fulfillmentAudit: unknown[] = [];
+    try {
+      const [readinessResult, auditResult] = await Promise.all([
+        supabase.rpc("get_amuhon_admin_order_production_readiness_v1", { p_order_id: id }),
+        supabase.rpc("get_amuhon_admin_order_fulfillment_audit_v1", { p_order_id: id }),
+      ]);
+      if (!readinessResult.error && readinessResult.data && typeof readinessResult.data === "object" && !Array.isArray(readinessResult.data)) {
+        const candidate = readinessResult.data as Record<string, unknown>;
+        productionReadiness = {
+          rightsApproved: candidate.rightsApproved === true,
+          assetsReady: candidate.assetsReady === true,
+          renderState: typeof candidate.renderState === "string" && /^[a-z_]{1,32}$/.test(candidate.renderState) ? candidate.renderState : "unavailable",
+          pageCount: Number.isSafeInteger(candidate.pageCount) && (candidate.pageCount as number) > 0 ? candidate.pageCount : null,
+          spineWidthMm: typeof candidate.spineWidthMm === "number" && Number.isFinite(candidate.spineWidthMm) ? candidate.spineWidthMm : null,
+          fulfillmentStatus: typeof candidate.fulfillmentStatus === "string" ? candidate.fulfillmentStatus : "unavailable",
+          printerOrderNumber: typeof candidate.printerOrderNumber === "string" ? candidate.printerOrderNumber : null,
+          submittedAt: typeof candidate.submittedAt === "string" && Number.isFinite(Date.parse(candidate.submittedAt)) ? candidate.submittedAt : null,
+        };
+      }
+      if (!auditResult.error && auditResult.data && typeof auditResult.data === "object" && !Array.isArray(auditResult.data)) {
+        const events = (auditResult.data as Record<string, unknown>).events;
+        if (Array.isArray(events)) {
+          fulfillmentAudit = events.slice(-100).filter((event): event is Record<string, unknown> =>
+            !!event && typeof event === "object" && !Array.isArray(event) &&
+            typeof (event as Record<string, unknown>).from === "string" &&
+            typeof (event as Record<string, unknown>).to === "string" &&
+            typeof (event as Record<string, unknown>).adminUserId === "string" &&
+            typeof (event as Record<string, unknown>).createdAt === "string" && Number.isFinite(Date.parse((event as Record<string, unknown>).createdAt as string))
+          ).map((event) => ({
+            from: event.from,
+            to: event.to,
+            printerOrderNumber: typeof event.printerOrderNumber === "string" ? event.printerOrderNumber : null,
+            adminUserId: event.adminUserId,
+            createdAt: event.createdAt,
+          }));
+        }
+      }
+    } catch {
+      // Missing additive fulfillment migration is represented as unavailable and fail-closed.
+    }
+    const canDownloadAssets = (data as Record<string, unknown>).canDownloadAssets === true && productionReadiness.assetsReady === true;
+    return Response.json({ order: { ...(data as Record<string, unknown>), canDownloadAssets, pdfRenderJob, productionReadiness, fulfillmentAudit } }, { headers: { "Cache-Control": "no-store, private" } });
   } catch {
     return Response.json({ error: "注文詳細を取得できませんでした。" }, { status: 502, headers: { "Cache-Control": "no-store" } });
   }

@@ -19,16 +19,20 @@ test("front cover preview crops the print PNG trim panel without changing print 
   assert.ok(Math.abs(crop.height - (148 / layout.coverHeightMm * layout.pixelHeight)) < 0.001);
 });
 
-test("cover editing and final review share the preview cropped from the submitted artwork", async () => {
+test("buyer cover editing uses a screen-sized spread; print cover generation is renderer-only", async () => {
   const [cover, final, preview, renderer] = await Promise.all([
     source("../app/cover/page.tsx"),
     source("../app/final/page.tsx"),
-    source("../app/cover-front-preview.tsx"),
+    source("../app/cover-spread-preview.tsx"),
     source("../lib/cover-renderer.ts"),
   ]);
-  assert.match(cover, /<CoverFrontPreview/);
+  const printRenderer = await source("../lib/print-cover-renderer.ts");
+  assert.match(cover, /<CoverSpreadPreview/);
   assert.match(final, /<CoverFrontPreview/);
-  assert.match(preview, /createFrontCoverPreviewBlob/);
-  assert.match(renderer, /createSpreadCoverPngBlob\(book, bodyPdfPageCount, true\)/);
-  assert.match(renderer, /getFrontCoverSourceRect\(layout, bitmap\.width, bitmap\.height\)/);
+  assert.match(preview, /createSpreadCoverPreviewBlob/);
+  assert.match(renderer, /renderSpreadCoverPng\(book, bodyPdfPageCount, true, 96\)/);
+  assert.match(printRenderer, /BOOK_PRODUCTION\.dpi/);
+  assert.match(cover, /rendererInternalMode && <button/);
+  assert.match(cover, /await import\("@\/lib\/print-cover-renderer"\)/);
+  assert.doesNotMatch(cover, /import \{ createSpreadCoverPngBlob \} from/);
 });

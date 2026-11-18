@@ -21,10 +21,13 @@ export type AdminOrderAccessState = {
   status: string;
   assetsVerified: boolean;
   fulfillmentStatus: string;
+  renderState?: string;
+  rightsApproved?: boolean;
 };
 
 export function canDownloadAdminOrderAssets(order: AdminOrderAccessState): boolean {
-  return order.status === "paid" && order.assetsVerified;
+  return order.status === "paid" && order.assetsVerified &&
+    order.renderState === "succeeded" && order.rightsApproved === true;
 }
 
 export function canMarkOrderSubmitted(order: AdminOrderAccessState): boolean {

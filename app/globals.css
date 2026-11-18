@@ -89,20 +89,20 @@ body {
 }
 
 @media print {
-  html:has(.print-root),
-  html:has(.print-root) body {
+  html[data-amuhon-pdf-renderer="true"],
+  html[data-amuhon-pdf-renderer="true"] body {
     margin: 0 !important;
     padding: 0 !important;
     background: #fff !important;
   }
 
-  html:has(.print-root) body {
+  html[data-amuhon-pdf-renderer="true"] body {
     display: block !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
 
-  .print-root {
+  html[data-amuhon-pdf-renderer="true"] .print-root {
     display: block !important;
     width: 105mm !important;
     min-height: auto !important;
@@ -111,11 +111,11 @@ body {
     background: #fff !important;
   }
 
-  .print-controls {
+  html[data-amuhon-pdf-renderer="true"] .print-controls {
     display: none !important;
   }
 
-  .print-sheet {
+  html[data-amuhon-pdf-renderer="true"] .print-sheet {
     width: 105mm !important;
     height: 148mm !important;
     margin: 0 !important;
@@ -127,22 +127,22 @@ body {
     page-break-inside: avoid !important;
   }
 
-  .print-sheet:last-child {
+  html[data-amuhon-pdf-renderer="true"] .print-sheet:last-child {
     break-after: auto !important;
     page-break-after: auto !important;
   }
 
-  .print-root--body-only .print-sheet--front-cover,
-  .print-root--body-only .print-sheet--back-cover {
+  html[data-amuhon-pdf-renderer="true"] .print-root--body-only .print-sheet--front-cover,
+  html[data-amuhon-pdf-renderer="true"] .print-root--body-only .print-sheet--back-cover {
     display: none !important;
   }
 
-  .print-root--body-only .print-sheet:nth-last-child(2) {
+  html[data-amuhon-pdf-renderer="true"] .print-root--body-only .print-sheet:nth-last-child(2) {
     break-after: auto !important;
     page-break-after: auto !important;
   }
 
-  .print-page:not(.cover-page) {
+  html[data-amuhon-pdf-renderer="true"] .print-page:not(.cover-page) {
     width: 105mm !important;
     height: 148mm !important;
     margin: 0 !important;
@@ -152,17 +152,29 @@ body {
     overflow: visible !important;
   }
 
-  .print-root--body-only .print-page {
+  html[data-amuhon-pdf-renderer="true"] .print-root--body-only .print-page {
     background: transparent !important;
   }
 
-  .body-content > div {
+  html[data-amuhon-pdf-renderer="true"] .body-content > div {
     line-height: 1 !important;
     letter-spacing: 0 !important;
   }
 
-  .cover-page--classic .cover-page__content {
+  html[data-amuhon-pdf-renderer="true"] .cover-page--classic .cover-page__content {
     outline: 1px solid currentColor;
     outline-offset: 6mm;
+  }
+
+  html:not([data-amuhon-pdf-renderer="true"]) .print-root {
+    display: none !important;
+  }
+
+  html:not([data-amuhon-pdf-renderer="true"]) body::before {
+    content: "編む本の印刷用データは購入者へ配布していません。画面表示の印刷は利用できません。";
+    display: block;
+    margin: 24px;
+    color: #444;
+    font: 12pt/1.6 sans-serif;
   }
 }

@@ -74,7 +74,7 @@ test("bookshelf, kana index, translator details, and spine layout work on deskto
       await page.route("**/api/aozora**", (route) => route.fulfill({ json: { pageCount: 1 } }));
 
       await page.goto(`${baseURL}/create`);
-      const spine = page.locator('button[aria-label^="おしどり"]');
+      const spine = page.locator('button[aria-label^="おしどり、小泉 八雲"]');
       await spine.waitFor();
       assert.match(await spine.getAttribute("aria-label"), /小泉 八雲/);
       const authorOnSpine = spine.locator('[title="小泉 八雲"]');
@@ -95,7 +95,7 @@ test("bookshelf, kana index, translator details, and spine layout work on deskto
       await detail.getByRole("button", { name: "この作品を本に追加" }).click();
       await detail.getByText("この作品は本に入っています").waitFor();
       await detail.getByRole("button", { name: "作品詳細を閉じる" }).click();
-      await page.getByText("おしどり", { exact: true }).last().waitFor();
+      assert.equal(await spine.getAttribute("aria-pressed"), "true", "added work stays visible and selected on its shelf");
 
       await page.getByRole("button", { name: "作家一覧", exact: true }).click();
       await page.getByRole("button", { name: "小泉 八雲", exact: false }).waitFor();
