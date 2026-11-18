@@ -786,6 +786,15 @@ export default function FinalPage() {
       bodyPdfPageCount: submissionPageCount,
       worksKey: bookLayoutKey(data),
     }));
+    if (process.env.NODE_ENV === "development") {
+      try {
+        sessionStorage.setItem(FINAL_PRELOADED_WORKS_SESSION_KEY, JSON.stringify(
+          works.map(({ id, title, author, text }) => ({ id, title, author, text })),
+        ));
+      } catch {
+        // The local renderer can fall back to its existing Aozora retrieval path if browser storage is unavailable.
+      }
+    }
     router.push("/order");
   };
 

@@ -37,6 +37,8 @@ export type LocalFinalPdfOptions = {
   blockExternalRequests?: boolean;
   /** Bound the whole browser session; the browser is closed when the deadline fires. */
   timeoutMs?: number;
+  /** Validated loopback /final URL derived from the same-origin local dev API request. */
+  developmentRenderUrl?: string;
   verifyNotoFontUsage?: boolean;
   /** Fixed, content-free progress codes for the local typography diagnostic route. */
   onDiagnosticCode?: (code: LocalFinalPdfDiagnosticCode) => void;
@@ -176,6 +178,9 @@ export const LOCAL_FINAL_PDF_DIAGNOSTIC_CODES = {
   chromiumStart: "CHROMIUM_START",
   chromiumSuccess: "CHROMIUM_SUCCESS",
   chromiumFailure: "CHROMIUM_FAILURE",
+  rendererConfigStart: "RENDERER_CONFIG_START",
+  rendererConfigSuccess: "RENDERER_CONFIG_SUCCESS",
+  rendererConfigFailure: "RENDERER_CONFIG_FAILURE",
   handoffSetupStart: "BODY_HANDOFF_SETUP_START",
   handoffSetupSuccess: "BODY_HANDOFF_SETUP_SUCCESS",
   handoffSetupFailure: "BODY_HANDOFF_SETUP_FAILURE",
@@ -316,7 +321,11 @@ export async function renderLocalFinalBodyPdf(
   expectedPageCount: number | null,
   options: LocalFinalPdfOptions = {},
 ): Promise<LocalFinalPdfResult> {
-  const rendererConfig = resolveFinalPdfRendererConfig();
+  const rendererConfig = await runLocalFinalPdfDiagnosticStage(options.onDiagnosticCode, {
+    start: LOCAL_FINAL_PDF_DIAGNOSTIC_CODES.rendererConfigStart,
+    success: LOCAL_FINAL_PDF_DIAGNOSTIC_CODES.rendererConfigSuccess,
+    failure: LOCAL_FINAL_PDF_DIAGNOSTIC_CODES.rendererConfigFailure,
+  }, async () => resolveFinalPdfRendererConfig(process.env, process.platform, options.developmentRenderUrl));
   const bodyTypography = options.bodyTypography ?? "serif";
   const timeoutMs = options.timeoutMs ?? 180_000;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 30_000 || timeoutMs > 300_000) {

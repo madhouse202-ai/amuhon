@@ -285,7 +285,7 @@ test("D toggle is development-only, starts at serif, and keeps ordinary order PD
   assert.match(renderer, /writingMode !== "vertical-rl"/);
   assert.match(orderPage, /fetch\("\/api\/dev\/order-pdf"/);
   assert.doesNotMatch(orderPage, /noto-serif-jp|FINAL_TYPOGRAPHY/);
-  assert.match(oldOrderRoute, /renderLocalFinalBodyPdf\(input\.book, input\.bodyPdfPageCount\)/);
+  assert.match(oldOrderRoute, /renderLocalFinalBodyPdf\(input\.book, input\.bodyPdfPageCount, \{/);
 });
 
 test("font and PDF preview endpoints are fixed to local development and do not touch order services", async () => {

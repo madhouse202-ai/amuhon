@@ -34,8 +34,7 @@ function KanaIndex({
       </div>
       <div className="space-y-1">
         {GOJUON_ROWS.map((row) => (
-          <div key={row[0]} className="grid grid-cols-[2.25rem_repeat(5,minmax(2rem,1fr))] gap-1" aria-label={`${row[0]}行`}>
-            <span aria-hidden="true" className="flex items-center text-xs text-stone-500">{row[0]}行</span>
+          <div key={row[0]} role="group" aria-label={`${row[0]}行`} className="grid grid-cols-5 gap-1">
             {row.map((letter) => (
               <button
                 key={letter}
@@ -304,6 +303,7 @@ export default function CreatePage() {
   const [authorOffset, setAuthorOffset] = useState(0);
   const [authorHasMore, setAuthorHasMore] = useState(false);
   const authorRequestIdRef = useRef(0);
+  const authorWorksHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const [isLoadingShelf, setIsLoadingShelf] = useState(true);
   const [isLoadingAuthorWorks, setIsLoadingAuthorWorks] = useState(false);
   const [shelfError, setShelfError] = useState("");
@@ -438,6 +438,17 @@ export default function CreatePage() {
       setAuthorWorks((current) => append ? [...current, ...(result.works as Work[])] : result.works as Work[]);
       setAuthorOffset(result.nextOffset as number);
       setAuthorHasMore(result.hasMore);
+      if (!append) {
+        window.requestAnimationFrame(() => {
+          const heading = authorWorksHeadingRef.current;
+          if (!heading || !heading.isConnected) return;
+          heading.focus({ preventScroll: true });
+          heading.scrollIntoView({
+            behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+            block: "start",
+          });
+        });
+      }
     } catch {
       if (requestId !== authorRequestIdRef.current) return;
       setAuthorError("作品を読み込めませんでした。通信状態を確認して、再試行してください。");
@@ -820,7 +831,7 @@ export default function CreatePage() {
               {shelfMode === "author-works" && (
                 <div className="mt-5">
                   <button type="button" onClick={() => { authorRequestIdRef.current += 1; setIsLoadingAuthorWorks(false); setShelfMode("authors"); }} className="min-h-11 underline underline-offset-4">作家の棚へ戻る</button>
-                  <h3 className="mt-3 break-words text-xl font-bold">{activeAuthor}</h3>
+                  <h3 ref={authorWorksHeadingRef} tabIndex={-1} className="mt-3 scroll-mt-20 break-words text-xl font-bold focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-700">{activeAuthor}</h3>
                   {isLoadingAuthorWorks && <p className="mt-4 text-stone-600" role="status">作品を読み込んでいます…</p>}
                   {authorError && (
                     <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-5 text-red-900" role="alert">

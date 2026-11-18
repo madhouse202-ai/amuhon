@@ -8,7 +8,7 @@ import { resolveFinalPdfRendererConfig } from "../lib/final-pdf-renderer-config.
 import { validateBodyPdf, validateCoverPng } from "../lib/order-assets.ts";
 import { calculateCoverLayout } from "../lib/production.ts";
 
-const APP_ORIGIN = "http://localhost:3000";
+const APP_ORIGIN = process.env.AMUHON_TEST_BASE_URL ?? "http://localhost:3000";
 const WORKS = [
   { id: "000015", title: "アグニの神" },
   { id: "000055", title: "芋粥" },
@@ -75,6 +75,10 @@ test("local order UI generates and validates both assets without file selection"
   let checkoutRequestCount = 0;
   let validatedBodyPageCount = null;
   let validatedCover = null;
+  let bodySnapshotIncluded = false;
+  let orderPdfRequestStarted = false;
+  let orderPdfResponseStatus = null;
+  let orderPdfResponseDiagnostic = null;
 
   try {
     await page.addInitScript((selectedBook) => {
@@ -141,6 +145,18 @@ test("local order UI generates and validates both assets without file selection"
       await route.abort("blockedbyclient");
       throw new Error("Unexpected order API request was blocked.");
     });
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname !== "/api/dev/order-pdf") return;
+      orderPdfRequestStarted = true;
+      const body = request.postDataJSON();
+      bodySnapshotIncluded = Array.isArray(body?.preloadedWorks) && body.preloadedWorks.length === WORKS.length;
+    });
+    page.on("response", (response) => {
+      if (new URL(response.url()).pathname === "/api/dev/order-pdf") {
+        orderPdfResponseStatus = response.status();
+        orderPdfResponseDiagnostic = response.headers()["x-diagnostic-code"] ?? null;
+      }
+    });
 
     await page.goto(`${APP_ORIGIN}/final`, { waitUntil: "domcontentloaded" });
     await page.getByText(/実際の組版結果です/).waitFor({ timeout: 150_000 });
@@ -157,8 +173,30 @@ test("local order UI generates and validates both assets without file selection"
     await page.getByRole("button", { name: "配送先を確認する" }).click();
     await page.getByRole("heading", { name: "本文PDFと見開きカバーを自動生成" }).waitFor();
     assert.equal(await page.locator('input[type="file"]').count(), 0, "Automatic mode must not render file pickers.");
+    const orderPdfResponsePromise = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/dev/order-pdf", { timeout: 180_000 },
+    );
     await page.getByRole("button", { name: "本を生成して確認する" }).click();
-    await page.getByRole("heading", { name: "本のデータを受け取りました" }).waitFor({ timeout: 180_000 });
+    const orderPdfResponse = await orderPdfResponsePromise;
+    if (!orderPdfResponse.ok()) {
+      assert.fail(`ORDER_PDF_HTTP_${orderPdfResponse.status()} diagnostic=${orderPdfResponseDiagnostic ?? "none"}`);
+    }
+    try {
+      await page.waitForFunction(() => {
+        const generated = [...document.querySelectorAll("h2, h3")].some((element) => element.textContent?.trim() === "本のデータを受け取りました");
+        const failed = [...document.querySelectorAll('[role="alert"]')].some((element) => element.textContent?.includes("本文PDFを作成できませんでした"));
+        return generated || failed;
+      }, null, { timeout: 180_000 });
+    } catch {
+      assert.fail(`ORDER_PDF_RESPONSE_TIMEOUT requestStarted=${orderPdfRequestStarted} responseStatus=${orderPdfResponseStatus ?? "none"}`);
+    }
+    const generationFailureLocator = page.locator('[role="alert"]').filter({ hasText: "本文PDFを作成できませんでした" });
+    if (await generationFailureLocator.count() > 0) {
+      const generationFailure = await generationFailureLocator.first().textContent() ?? "";
+      const diagnosticCode = /診断コード: ([A-Z][A-Z0-9_]{2,63})/u.exec(generationFailure)?.[1] ?? "MISSING_DIAGNOSTIC_CODE";
+      assert.fail(`Order-screen PDF generation failed with ${diagnosticCode}.`);
+    }
+    await page.getByRole("heading", { name: "本のデータを受け取りました" }).waitFor({ timeout: 10_000 });
     await page.getByText(/本の内容：確認済み/).waitFor({ timeout: 30_000 });
     await page.locator("p").filter({ hasText: "1,980" }).filter({ hasText: "税込・送料込み" }).waitFor({ timeout: 30_000 });
 
@@ -168,6 +206,7 @@ test("local order UI generates and validates both assets without file selection"
     assert.equal(checkoutRequestCount, 0, "This proof must not start Stripe Checkout.");
     assert.equal(validatedBodyPageCount, 80);
     assert.ok(validatedCover);
+    assert.equal(bodySnapshotIncluded, true, "the same approved /final body snapshot is handed to local PDF rendering");
   } finally {
     await context.close();
     await browser.close();

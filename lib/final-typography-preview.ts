@@ -1,5 +1,8 @@
 import type { BookData } from "./book.ts";
 import { parseLocalOrderPdfRequest } from "./local-order-pdf-request.ts";
+import { parseFinalPreviewWorkTexts, type FinalPreviewWorkText } from "./final-work-text-snapshot.ts";
+export { parseFinalPreviewWorkTexts } from "./final-work-text-snapshot.ts";
+export type { FinalPreviewWorkText } from "./final-work-text-snapshot.ts";
 
 export const FINAL_TYPOGRAPHY_SESSION_KEY = "amuhon-dev-final-body-typography";
 export const FINAL_PRELOADED_WORKS_SESSION_KEY = "amuhon-dev-final-preview-works";
@@ -12,43 +15,9 @@ export const NOTO_SERIF_JP_UNAVAILABLE_MESSAGE =
   "Noto Serif CJK JP 2.003の開発用フォントを読み込めません。.local-assets\\fonts\\NotoSerifCJKjp-Regular.otf の配置とSHA-256を確認してください。";
 
 export type FinalBodyTypography = "serif" | "noto-serif-jp";
-export type FinalPreviewWorkText = {
-  id: string;
-  title: string;
-  author: string;
-  text: string;
-};
-
-const MAX_TOTAL_WORK_TEXT_BYTES = 8_000_000;
-const MAX_SINGLE_WORK_TEXT_BYTES = 4_000_000;
 
 export function isFinalBodyTypography(value: unknown): value is FinalBodyTypography {
   return value === "serif" || value === "noto-serif-jp";
-}
-
-/** Match cached text to the selected work snapshot and reject arbitrary or oversized payloads. */
-export function parseFinalPreviewWorkTexts(
-  value: unknown,
-  book: BookData,
-): FinalPreviewWorkText[] | null {
-  if (!Array.isArray(value) || value.length !== book.works.length || value.length === 0) return null;
-  const parsed: FinalPreviewWorkText[] = [];
-  let totalBytes = 0;
-
-  for (const [index, rawWork] of value.entries()) {
-    if (!rawWork || typeof rawWork !== "object" || Array.isArray(rawWork)) return null;
-    const item = rawWork as Record<string, unknown>;
-    const selected = book.works[index];
-    if (!selected || item.id !== selected.id || item.title !== selected.title ||
-        item.author !== selected.author || typeof item.text !== "string" || !item.text.trim()) return null;
-    const textBytes = new TextEncoder().encode(item.text).byteLength;
-    if (textBytes > MAX_SINGLE_WORK_TEXT_BYTES) return null;
-    totalBytes += textBytes;
-    if (totalBytes > MAX_TOTAL_WORK_TEXT_BYTES) return null;
-    parsed.push({ id: selected.id, title: selected.title, author: selected.author, text: item.text });
-  }
-
-  return parsed;
 }
 
 export type FinalTypographyPreviewRequest = {

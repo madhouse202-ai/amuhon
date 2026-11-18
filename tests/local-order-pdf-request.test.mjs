@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import { resolveFinalPdfRendererConfig } from "../lib/final-pdf-renderer-config.ts";
+import { getLocalDevelopmentOrigin, inspectLocalDevelopmentOrigin } from "../lib/local-dev-render-origin.ts";
 import { parseLocalOrderPdfRequest } from "../lib/local-order-pdf-request.ts";
 
 const validInput = {
@@ -64,6 +65,23 @@ test("does not carry caller-supplied HTML or render URL into the accepted snapsh
   assert.equal("url" in parsed, false);
 });
 
+test("accepts only bounded renderer text snapshots that match the selected works in order", () => {
+  const snapshot = {
+    ...validInput,
+    preloadedWorks: [{ id: "000015", title: "アグニの神", author: "芥川 竜之介", text: "本文の検証用テキスト。" }],
+  };
+  const parsed = parseLocalOrderPdfRequest(snapshot);
+  assert.equal(parsed?.preloadedWorks?.[0]?.text, "本文の検証用テキスト。");
+
+  const mismatched = structuredClone(snapshot);
+  mismatched.preloadedWorks[0].id = "999999";
+  assert.equal(parseLocalOrderPdfRequest(mismatched), null);
+
+  const empty = structuredClone(snapshot);
+  empty.preloadedWorks[0].text = "  ";
+  assert.equal(parseLocalOrderPdfRequest(empty), null);
+});
+
 test("renderer config keeps local defaults and fails closed outside development", () => {
   const local = resolveFinalPdfRendererConfig({ NODE_ENV: "development" }, "win32");
   assert.equal(local.renderUrl, "http://localhost:3000/final");
@@ -81,6 +99,59 @@ test("renderer config keeps local defaults and fails closed outside development"
     }, "linux"),
     /内部URLが設定されていません/,
   );
+});
+
+test("renderer follows the validated development port and still rejects non-loopback targets", () => {
+  const dynamic = resolveFinalPdfRendererConfig(
+    { NODE_ENV: "development" },
+    "win32",
+    "http://localhost:3101/final",
+  );
+  assert.equal(dynamic.renderUrl, "http://localhost:3101/final");
+  assert.equal(dynamic.renderOrigin, "http://localhost:3101");
+  for (const value of [
+    "https://localhost:3101/final",
+    "http://192.168.1.5:3101/final",
+    "http://localhost.evil.example:3101/final",
+    "http://localhost:3101/other",
+  ]) {
+    assert.throws(() => resolveFinalPdfRendererConfig({ NODE_ENV: "development" }, "win32", value));
+  }
+  assert.throws(() => resolveFinalPdfRendererConfig(
+    { NODE_ENV: "production", ORDER_PDF_CHROMIUM_EXECUTABLE_PATH: "/usr/bin/chromium" },
+    "linux",
+    "http://localhost:3101/final",
+  ));
+});
+
+test("local development render origin requires same-origin HTTP loopback and an explicit port", () => {
+  const localRequest = new Request("http://localhost:3101/api/dev/order-pdf", {
+    method: "POST",
+    headers: { origin: "http://localhost:3101", host: "localhost:3101" },
+  });
+  assert.equal(getLocalDevelopmentOrigin(localRequest, "/api/dev/order-pdf"), "http://localhost:3101");
+
+  const ipv4Request = new Request("http://127.0.0.1:3002/api/dev/order-pdf", {
+    method: "POST",
+    headers: { origin: "http://127.0.0.1:3002", host: "127.0.0.1:3002" },
+  });
+  assert.equal(getLocalDevelopmentOrigin(ipv4Request, "/api/dev/order-pdf"), "http://127.0.0.1:3002");
+
+  for (const [url, origin, host, path] of [
+    ["http://localhost:3101/api/dev/order-pdf", "http://localhost:3000", "localhost:3101", "/api/dev/order-pdf"],
+    ["http://192.168.1.4:3101/api/dev/order-pdf", "http://192.168.1.4:3101", "192.168.1.4:3101", "/api/dev/order-pdf"],
+    ["http://localhost/api/dev/order-pdf", "http://localhost", "localhost", "/api/dev/order-pdf"],
+    ["http://localhost:3101/api/dev/order-pdf", "http://localhost:3101", "attacker.example:3101", "/api/dev/order-pdf"],
+    ["http://localhost:3101/other", "http://localhost:3101", "localhost:3101", "/api/dev/order-pdf"],
+  ]) {
+    const request = new Request(url, { method: "POST", headers: { origin, host } });
+    assert.equal(getLocalDevelopmentOrigin(request, path), null);
+  }
+  const mismatch = new Request("http://localhost:3101/api/dev/order-pdf", {
+    method: "POST",
+    headers: { origin: "http://localhost:3000", host: "localhost:3101" },
+  });
+  assert.equal(inspectLocalDevelopmentOrigin(mismatch, "/api/dev/order-pdf").failureCode, "LOCAL_ORIGIN_MISMATCH");
 });
 
 test("production renderer requires an absolute Chromium path and loopback /final URL", () => {
@@ -123,16 +194,22 @@ test("renderer stays development-only at its API and seeds only the isolated ren
   ]);
 
   assert.match(route, /process\.env\.NODE_ENV !== "development"/);
-  assert.match(route, /requestUrl\.origin !== "http:\/\/localhost:3000"/);
-  assert.match(route, /origin !== "http:\/\/localhost:3000"/);
-  assert.match(route, /host !== "localhost:3000"/);
+  assert.match(route, /inspectLocalDevelopmentOrigin\(request, "\/api\/dev\/order-pdf"\)/);
+  assert.match(route, /developmentRenderUrl: `\$\{localOrigin\}\/final`/);
+  assert.match(route, /onDiagnosticCode: \(code\) =>/);
+  assert.match(route, /BODY_SNAPSHOT_HANDOFF_SUCCESS/);
+  assert.match(route, /blockExternalRequests: true/);
+  assert.match(route, /MAX_REQUEST_BYTES = 8_500_000/);
+  assert.match(route, /console\.info\(`\[order-pdf\] \$\{code\}`\)/);
+  assert.doesNotMatch(route, /requestUrl\.origin !== "http:\/\/localhost:3000"/);
   assert.match(route, /parseLocalOrderPdfRequest\(raw\)/);
-  assert.match(route, /MAX_REQUEST_BYTES = 256 \* 1024/);
+  assert.match(route, /MAX_REQUEST_BYTES = 8_500_000/);
   assert.match(renderer, /resolveFinalPdfRendererConfig\(\)/);
   assert.match(renderer, /location\.origin === renderOrigin/);
   assert.match(renderer, /page\.goto\(rendererConfig\.renderUrl/);
   assert.match(rendererConfig, /ORDER_PDF_CHROMIUM_EXECUTABLE_PATH/);
   assert.match(rendererConfig, /ORDER_PDF_RENDER_URL/);
+  assert.match(rendererConfig, /developmentRenderUrlOverride/);
   assert.match(rendererConfig, /url\.pathname !== "\/final"/);
   assert.doesNotMatch(renderer, /http:\/\/localhost:3000\/final/);
   assert.match(renderer, /preferCSSPageSize: true/);

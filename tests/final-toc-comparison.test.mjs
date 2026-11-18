@@ -167,7 +167,7 @@ test("comparison runner keeps the experiment outside production TOC/PDF files an
   assert.match(script, /\.legacy-page-number \{ font-size: 7\.5pt; color: #a15b46; \}/);
   assert.match(layout, /calculateWorkStartPages/);
   assert.match(layout, /paginateTocEntries/);
-  assert.match(orderPdfRoute, /renderLocalFinalBodyPdf\(input\.book, input\.bodyPdfPageCount\)/);
+  assert.match(orderPdfRoute, /renderLocalFinalBodyPdf\(input\.book, input\.bodyPdfPageCount, \{/);
   assert.match(previewPdfRoute, /renderLocalFinalBodyPdf\(input\.book, input\.bodyPdfPageCount/);
   assert.match(pdfRenderer, /page\.goto\(rendererConfig\.renderUrl/);
 });

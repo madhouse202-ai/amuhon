@@ -41,8 +41,12 @@ function parseInternalFinalUrl(value: string): URL | null {
 export function resolveFinalPdfRendererConfig(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  developmentRenderUrlOverride?: string,
 ): FinalPdfRendererConfig {
   const isDevelopment = env.NODE_ENV === "development";
+  if (developmentRenderUrlOverride && !isDevelopment) {
+    throw new Error("内部PDFページのURL上書きはローカル開発環境に限定されます。");
+  }
   const configuredExecutable = env.ORDER_PDF_CHROMIUM_EXECUTABLE_PATH?.trim();
   const configuredRenderUrl = env.ORDER_PDF_RENDER_URL?.trim();
 
@@ -58,7 +62,7 @@ export function resolveFinalPdfRendererConfig(
     throw new Error("本文PDFレンダラーのChromium実行パスが設定されていません。");
   }
 
-  const renderUrlValue = configuredRenderUrl || (isDevelopment ? LOCAL_FINAL_RENDER_URL : "");
+  const renderUrlValue = developmentRenderUrlOverride || configuredRenderUrl || (isDevelopment ? LOCAL_FINAL_RENDER_URL : "");
   if (!renderUrlValue) {
     throw new Error("本文PDFレンダラーの内部URLが設定されていません。");
   }

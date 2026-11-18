@@ -30,7 +30,9 @@ test("local Chromium PDF APIs require the development localhost origin", async (
     read("../app/api/dev/final-preview-pdf/route.ts"),
     read("../app/api/dev/final-typography-font/route.ts"),
   ]);
-  for (const source of [bodyPdf, previewPdf, font]) {
+  assert.match(bodyPdf, /process\.env\.NODE_ENV !== "development"/);
+  assert.match(bodyPdf, /getLocalDevelopmentOrigin\(request, "\/api\/dev\/order-pdf"\)/);
+  for (const source of [previewPdf, font]) {
     assert.match(source, /process\.env\.NODE_ENV !== "development"/);
     assert.match(source, /http:\/\/localhost:3000/);
   }

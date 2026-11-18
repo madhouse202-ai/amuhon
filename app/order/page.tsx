@@ -9,6 +9,7 @@ import { bookLayoutKey, loadBookData, type BookData } from "@/lib/book";
 import { isSubmissionPageCount } from "@/lib/production";
 import { createOrderTusHeaders, inspectOrderTusCredentials } from "@/lib/order-tus";
 import { getSupabasePublicCredential } from "@/lib/supabase-public-credential";
+import { FINAL_PRELOADED_WORKS_SESSION_KEY, parseFinalPreviewWorkTexts } from "@/lib/final-typography-preview";
 import {
   JAPANESE_PREFECTURES,
   validateOrderCustomer,
@@ -261,17 +262,40 @@ export default function OrderPage() {
       throw new Error("/final の組版ページ数が未確定または対象範囲外です。/final で本を組版してから再試行してください。");
     }
 
+    let storedWorks: string | null = null;
+    try {
+      storedWorks = sessionStorage.getItem(FINAL_PRELOADED_WORKS_SESSION_KEY);
+    } catch {
+      // The browser-only optimization is optional; the local renderer retains its existing Aozora fetch path.
+    }
+    let preloadedWorks: ReturnType<typeof parseFinalPreviewWorkTexts> = null;
+    if (storedWorks !== null) {
+      try {
+        preloadedWorks = parseFinalPreviewWorkTexts(JSON.parse(storedWorks) as unknown, book);
+      } catch {
+        preloadedWorks = null;
+      }
+      if (!preloadedWorks) {
+        throw new Error("本文の引き継ぎ情報が現在の作品選択と一致しません。完成した本を開き直してから再試行してください。");
+      }
+    }
+
     const response = await fetch("/api/dev/order-pdf", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify({ book, bodyPdfPageCount: declaredPageCount }),
+      body: JSON.stringify({ book, bodyPdfPageCount: declaredPageCount, ...(preloadedWorks ? { preloadedWorks } : {}) }),
     });
     if (!response.ok) {
-      const result = await response.json().catch(() => null) as { error?: unknown } | null;
-      throw new Error(typeof result?.error === "string"
+      const result = await response.json().catch(() => null) as { error?: unknown; diagnosticCode?: unknown } | null;
+      const message = typeof result?.error === "string"
         ? result.error
-        : "ローカル本文PDFを生成できませんでした。ファイルは注文へ送信されていません。");
+        : "ローカル本文PDFを生成できませんでした。ファイルは注文へ送信されていません。";
+      const diagnosticCode = process.env.NODE_ENV === "development" &&
+        typeof result?.diagnosticCode === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(result.diagnosticCode)
+        ? `（診断コード: ${result.diagnosticCode}）`
+        : "";
+      throw new Error(`${message}${diagnosticCode}`);
     }
     if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/pdf")) {
       throw new Error("本文PDF生成サービスの応答形式が正しくありません。");
@@ -286,6 +310,11 @@ export default function OrderPage() {
     const { createSpreadCoverPngBlob } = await import("@/lib/print-cover-renderer");
     const coverBlob = await createSpreadCoverPngBlob(book, pageCount);
     if (coverBlob.size > MAX_ORDER_ASSET_BYTES) throw new Error("生成したカバーPNGが40,000,000バイトを超えています。");
+    try {
+      sessionStorage.removeItem(FINAL_PRELOADED_WORKS_SESSION_KEY);
+    } catch {
+      // This temporary public-text snapshot is optional browser state.
+    }
 
     return {
       bodyPdf: new File([bodyBlob], "amuhon-body.pdf", { type: "application/pdf" }),

@@ -99,11 +99,22 @@ test("bookshelf, kana index, translator details, and spine layout work on deskto
 
       await page.getByRole("button", { name: "作家一覧", exact: true }).click();
       await page.getByRole("button", { name: "小泉 八雲", exact: false }).waitFor();
+      assert.equal(await page.getByText("あ行", { exact: true }).count(), 0, "row labels should stay visually hidden");
+      assert.ok(await page.locator('[role="group"][aria-label="あ行"]').count(), "row context stays available to assistive technology");
       const unavailableAuthorKana = page.getByRole("button", { name: "あから始まる作家一覧" });
       assert.equal(await unavailableAuthorKana.isDisabled(), true);
       await page.getByRole("button", { name: "もから始まる作家一覧" }).click();
-      await page.getByRole("button", { name: /茂木 一郎/ }).waitFor();
+      const authorResult = page.getByRole("button", { name: /茂木 一郎/ });
+      await authorResult.waitFor();
       assert.ok(requestedLists.some((entry) => entry.browse === "authors" && entry.letter === "も"));
+      const authorHeading = page.getByRole("heading", { name: "茂木 一郎" });
+      await authorHeading.waitFor();
+      await page.waitForFunction(() => {
+        const heading = [...document.querySelectorAll("h3")].find((element) => element.textContent === "茂木 一郎");
+        return heading !== undefined && heading.getBoundingClientRect().top >= 0 && heading.getBoundingClientRect().top < window.innerHeight / 3;
+      });
+      assert.equal(await authorHeading.evaluate((element) => document.activeElement === element), true,
+        "author result heading receives focus after loading for keyboard users");
 
       await page.getByRole("button", { name: "作品一覧", exact: true }).click();
       const unavailableWorkKana = page.getByRole("button", { name: "あから始まる作品一覧" });

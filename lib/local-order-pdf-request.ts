@@ -1,5 +1,6 @@
 import type { BookData, BookWork } from "./book.ts";
 import { isSubmissionPageCount } from "./production.ts";
+import { parseFinalPreviewWorkTexts, type FinalPreviewWorkText } from "./final-work-text-snapshot.ts";
 
 const MAX_WORKS = 100;
 const MAX_URL_LENGTH = 2048;
@@ -27,6 +28,7 @@ function safeAozoraUrl(value: unknown): string | null {
 export type LocalOrderPdfRequest = {
   book: BookData;
   bodyPdfPageCount: number;
+  preloadedWorks?: FinalPreviewWorkText[];
 };
 
 /** Accept only the app's bounded Aozora book snapshot; never accept HTML, paths, or render URLs. */
@@ -91,14 +93,14 @@ export function parseLocalOrderPdfRequest(input: unknown): LocalOrderPdfRequest 
     works.push({ id, title: workTitle, author: work.author.trim(), cardUrl, textUrl, xhtmlUrl, contributors, sourceMetadata, sourceSha256, rightsNotice });
   }
 
+  const book: BookData = { title, editor, coverStyle: source.coverStyle, coverColor: source.coverColor, works };
+  const hasPreloadedWorks = Object.hasOwn(raw, "preloadedWorks");
+  const preloadedWorks = hasPreloadedWorks ? parseFinalPreviewWorkTexts(raw.preloadedWorks, book) : null;
+  if (hasPreloadedWorks && preloadedWorks === null) return null;
+
   return {
     bodyPdfPageCount: raw.bodyPdfPageCount as number,
-    book: {
-      title,
-      editor,
-      coverStyle: source.coverStyle,
-      coverColor: source.coverColor,
-      works,
-    },
+    book,
+    ...(preloadedWorks ? { preloadedWorks } : {}),
   };
 }

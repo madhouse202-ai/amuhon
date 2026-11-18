@@ -36,3 +36,19 @@ test("buyer cover editing uses a screen-sized spread; print cover generation is 
   assert.match(cover, /await import\("@\/lib\/print-cover-renderer"\)/);
   assert.doesNotMatch(cover, /import \{ createSpreadCoverPngBlob \} from/);
 });
+
+test("cover preview is always available and survives title/editor edits without trusting a stale work list", async () => {
+  const [cover, preview] = await Promise.all([
+    source("../app/cover/page.tsx"),
+    source("../app/cover-spread-preview.tsx"),
+  ]);
+  assert.match(cover, /PREVIEW_ONLY_BODY_PAGE_COUNT = 80/);
+  assert.match(cover, /storedPageCountMatchesWorks\(coverPageCount\.worksKey, currentBook\)/);
+  assert.match(cover, /const previewBodyPageCount = confirmedBodyPageCount \?\? PREVIEW_ONLY_BODY_PAGE_COUNT/);
+  assert.match(cover, /<CoverSpreadPreview[\s\S]*?pageCount=\{previewBodyPageCount\}/);
+  assert.match(cover, /背幅はプレビュー用の仮設定/);
+  assert.match(cover, /confirmedBodyPageCount === null/);
+  assert.match(preview, /JSON\.stringify\(\[title, editor, coverStyle, coverColor, pageCount\]\)/);
+  assert.match(preview, /createSpreadCoverPreviewBlob\(\{ title, editor, coverStyle, coverColor \}, pageCount\)/);
+  assert.match(preview, /alt="表表紙・背表紙・裏表紙の全体プレビュー"/);
+});
