@@ -183,7 +183,7 @@ test("local order UI generates and validates both assets without file selection"
     }
     try {
       await page.waitForFunction(() => {
-        const generated = [...document.querySelectorAll("h2, h3")].some((element) => element.textContent?.trim() === "本のデータを受け取りました");
+        const generated = [...document.querySelectorAll("h1, h2, h3")].some((element) => element.textContent?.trim() === "本のデータを受け取りました");
         const failed = [...document.querySelectorAll('[role="alert"]')].some((element) => element.textContent?.includes("本文PDFを作成できませんでした"));
         return generated || failed;
       }, null, { timeout: 180_000 });

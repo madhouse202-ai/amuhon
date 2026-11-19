@@ -458,8 +458,17 @@ export async function renderLocalFinalBodyPdf(
       failure: LOCAL_FINAL_PDF_DIAGNOSTIC_CODES.handoffSetupFailure,
     }, () => page.addInitScript(({ bookData, renderOrigin, requestedTypography, preloadedWorks, typographySessionKey, preloadedWorksSessionKey, diagnosticsEnabled, rendererFontAvailable }) => {
       const originMatched = location.origin === renderOrigin;
-      if (originMatched) {
-        document.documentElement.dataset.amuhonPdfRenderer = "true";
+      const markDocumentElement = () => {
+        const root = document.documentElement;
+        if (!root) return false;
+        root.dataset.amuhonPdfRenderer = "true";
+        return true;
+      };
+      if (originMatched && !markDocumentElement()) {
+        const observer = new MutationObserver(() => {
+          if (markDocumentElement()) observer.disconnect();
+        });
+        observer.observe(document, { childList: true });
       }
       if (originMatched && rendererFontAvailable) {
         Object.defineProperty(window, "__AMUHON_PDF_RENDERER_V1__", {
@@ -520,8 +529,9 @@ export async function renderLocalFinalBodyPdf(
         success: LOCAL_FINAL_PDF_DIAGNOSTIC_CODES.handoffVerifySuccess,
         failure: LOCAL_FINAL_PDF_DIAGNOSTIC_CODES.handoffVerifyFailure,
       }, async () => {
-        const handoff = await page.evaluate(() =>
-          (window as Window & {
+        const handoff = await page.evaluate(() => ({
+          markerInstalled: document.documentElement?.dataset.amuhonPdfRenderer === "true",
+          state: (window as Window & {
             __amuhonFinalPdfHandoffV1?: {
               originMatched: boolean;
               bookStored: boolean;
@@ -529,9 +539,9 @@ export async function renderLocalFinalBodyPdf(
               preloadedWorksStored: boolean;
             };
           }).__amuhonFinalPdfHandoffV1 ?? null,
-        );
-        if (!handoff || !handoff.originMatched || !handoff.bookStored ||
-            !handoff.typographyStored || !handoff.preloadedWorksStored) {
+        }));
+        if (!handoff.markerInstalled || !handoff.state || !handoff.state.originMatched || !handoff.state.bookStored ||
+            !handoff.state.typographyStored || !handoff.state.preloadedWorksStored) {
           throw new Error("renderer_data_handoff_failed");
         }
       });
