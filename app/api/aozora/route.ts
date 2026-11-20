@@ -1,6 +1,8 @@
 
 import { NextResponse } from "next/server";
 import { estimateBodyPageCount } from "@/lib/book-layout";
+import { resolveAozoraEditionByXhtmlUrl } from "@/lib/aozora-edition.ts";
+import { createAozoraCommercialRightsSnapshot } from "@/lib/aozora-commercial-rights.ts";
 
 type TextPart = {
   type: "text";
@@ -197,47 +199,37 @@ export async function GET(request: Request) {
     }
 
     const upstreamSignal = AbortSignal.timeout(AOZORA_FETCH_TIMEOUT_MS);
-    let response: Response;
+    let edition: Awaited<ReturnType<typeof resolveAozoraEditionByXhtmlUrl>>;
     try {
-      response = await fetch(sourceUrl, {
-        headers: {
-          "User-Agent": "Amuhon/1.0",
-        },
-        cache: "no-store",
-        signal: upstreamSignal,
+      edition = await resolveAozoraEditionByXhtmlUrl(sourceUrl, async (input, init) => {
+        return fetch(input, { ...init, signal: upstreamSignal });
       });
-    } catch (error) {
+    } catch {
       if (upstreamSignal.aborted) {
         return NextResponse.json(
           { error: "青空文庫からの応答がタイムアウトしました。再試行してください。" },
           { status: 504 },
         );
       }
-      throw error;
-    }
-
-    if (!response.ok) {
       return NextResponse.json(
         { error: "青空文庫から本文を取得できませんでした。" },
         { status: 502 }
       );
     }
-
-    const buffer = await response.arrayBuffer();
-    const contentType = response.headers.get("content-type") ?? "";
+    const bytes = edition.bytes;
+    const contentType = edition.contentType;
 
     let html: string;
 
     if (/shift[_-]?jis|sjis/i.test(contentType)) {
-      html = new TextDecoder("shift_jis").decode(buffer);
+      html = new TextDecoder("shift_jis").decode(bytes);
     } else {
-      const bytes = new Uint8Array(buffer);
       const head = new TextDecoder("ascii").decode(bytes.slice(0, 500));
 
       if (/charset\s*=\s*["']?shift[_-]?jis/i.test(head)) {
-        html = new TextDecoder("shift_jis").decode(buffer);
+        html = new TextDecoder("shift_jis").decode(bytes);
       } else {
-        html = new TextDecoder("utf-8").decode(buffer);
+        html = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       }
     }
 
@@ -253,6 +245,10 @@ export async function GET(request: Request) {
     const includeRuby = new URL(request.url).searchParams.get("ruby") === "1";
     const parsedText = parseMainTextHtml(mainTextHtml, includeRuby);
     const text = includeRuby ? normalizeText(parsedText) : removeRubyAnnotations(parsedText);
+    const catalogRights = createAozoraCommercialRightsSnapshot(edition.work, {
+      fetchedAt: edition.catalogFetchedAt,
+      sha256: edition.catalogSha256,
+    });
 
     if (!text) {
       return NextResponse.json(
@@ -262,16 +258,18 @@ export async function GET(request: Request) {
     }
 
     if (new URL(request.url).searchParams.get("estimate") === "1") {
-      return NextResponse.json({ pageCount: estimateBodyPageCount(text), sourceUrl });
+      return NextResponse.json({ pageCount: estimateBodyPageCount(text), sourceUrl, sourceSha256: edition.work.sourceSha256, catalogRights });
     }
 
     return NextResponse.json({
       text,
       content: makeContent(text),
-      sourceUrl,
+      sourceUrl: edition.work.xhtmlUrl,
+      sourceSha256: edition.work.sourceSha256,
+      catalogRights,
     });
-  } catch (error) {
-    console.error("Aozora text fetch error:", error);
+  } catch {
+    console.error("[aozora] AOZORA_TEXT_RESOLUTION_FAILURE");
 
     return NextResponse.json(
       { error: "本文の取得中にエラーが発生しました。" },

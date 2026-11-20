@@ -9,6 +9,8 @@ import { checkoutRecordExceptionCode, checkoutRecordFailureCode } from "../../..
 import { isTrustedStripeCheckoutUrl, parseTrustedStripeCheckoutHosts, validateCheckoutSessionResponse } from "../../../../../lib/stripe-checkout-session-validation.ts";
 import { isLegacyBuyerAssetFlowEnabled } from "../../../../../lib/order-production-gate.ts";
 import { parseCommercialRightsDecision } from "../../../../../lib/commercial-rights.ts";
+import { resolveAozoraWorkEditionsWithCatalog } from "../../../../../lib/aozora-edition.ts";
+import { createAozoraCommercialRightsSnapshot, sameAozoraRightsFacts } from "../../../../../lib/aozora-commercial-rights.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +26,38 @@ function fail(message: string, status: number) {
 function checkoutRedirectResponse(checkoutUrl: string) {
   const checkoutHost = new URL(checkoutUrl).hostname.toLowerCase();
   return Response.json({ checkoutUrl, checkoutHost }, { headers: { "Cache-Control": "no-store" } });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (isRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function storedWorkMatchesCurrentCatalog(stored: Record<string, unknown>, current: {
+  id: string; title: string; author: string; cardUrl: string; textUrl: string; xhtmlUrl: string;
+  contributors: Array<{ name: string; role: string }>;
+  sourceMetadata: Record<string, string>;
+  sourceSha256: string;
+  catalogRights: ReturnType<typeof createAozoraCommercialRightsSnapshot>;
+}) {
+  const storedRights = stored.catalogRights;
+  if (!isRecord(storedRights) || storedRights.schema !== "amuhon-aozora-commercial-rights/v1" ||
+      storedRights.classification !== "A" || stored.sourceSha256 !== current.sourceSha256) return false;
+  const storedFacts = Object.fromEntries(Object.entries(storedRights).filter(([key]) =>
+    key !== "catalogFetchedAt" && key !== "catalogSha256"));
+  const currentFacts = Object.fromEntries(Object.entries(current.catalogRights).filter(([key]) =>
+    key !== "catalogFetchedAt" && key !== "catalogSha256"));
+  return stored.id === current.id && stored.title === current.title && stored.author === current.author &&
+    stored.cardUrl === current.cardUrl && stored.textUrl === current.textUrl && stored.xhtmlUrl === current.xhtmlUrl &&
+    stableJson(stored.contributors) === stableJson(current.contributors) &&
+    stableJson(stored.sourceMetadata) === stableJson(current.sourceMetadata) &&
+    sameAozoraRightsFacts(storedRights as unknown as typeof current.catalogRights, current.catalogRights) &&
+    stableJson(storedFacts) === stableJson(currentFacts);
 }
 
 async function readTrustedCheckoutHosts(supabase: NonNullable<ReturnType<typeof getSupabaseServerConfig>>) {
@@ -52,14 +86,53 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const supabase = getSupabaseServerConfig();
   if (!stripe || !supabase) return fail("決済サービスの設定を確認できません。", 503);
 
+  const tokenHash = hashOrderUploadToken(token);
   try {
     const rights = await callOrderRpc(supabase, "check_amuhon_order_commercial_rights_v1", {
       p_order_id: orderId,
-      p_upload_token_hash: hashOrderUploadToken(token),
+      p_upload_token_hash: tokenHash,
     });
     const approved = parseCommercialRightsDecision(rights.data);
     if (!rights.ok || approved === null) return fail("作品の利用条件を確認できません。決済は開始していません。", 503);
     if (!approved) return fail("この注文の作品は販売用の利用確認が完了していません。決済は開始していません。", 409);
+
+    const storedRightsSnapshot = await callOrderRpc(supabase, "get_amuhon_order_rights_snapshot_v1", {
+      p_order_id: orderId,
+      p_upload_token_hash: tokenHash,
+    });
+    const snapshotWorks = storedRightsSnapshot.data?.works;
+    if (!storedRightsSnapshot.ok || !Array.isArray(snapshotWorks) || snapshotWorks.length < 1 || snapshotWorks.length > 100 ||
+        !snapshotWorks.every(isRecord)) {
+      return fail("注文の作品情報を確認できません。決済は開始していません。", 503);
+    }
+    const hasOfficialSnapshots = snapshotWorks.some((work) => "catalogRights" in work);
+    if (hasOfficialSnapshots) {
+      if (!snapshotWorks.every((work) => isRecord(work.catalogRights) && work.catalogRights.classification === "A" && typeof work.id === "string")) {
+        return fail("作品の利用条件を確認できません。決済は開始していません。", 409);
+      }
+      const ids = snapshotWorks.map((work) => work.id as string);
+      const currentCatalog = await resolveAozoraWorkEditionsWithCatalog(ids, fetch, true);
+      if (currentCatalog.works.length !== snapshotWorks.length || currentCatalog.works.some((current, index) => {
+        const stored = snapshotWorks[index];
+        return !storedWorkMatchesCurrentCatalog(stored, {
+          id: current.id,
+          title: current.title,
+          author: current.author,
+          cardUrl: current.cardUrl,
+          textUrl: current.textUrl,
+          xhtmlUrl: current.xhtmlUrl,
+          contributors: current.contributors.map(({ name, role }) => ({ name, role })),
+          sourceMetadata: current.sourceMetadata,
+          sourceSha256: current.sourceSha256,
+          catalogRights: createAozoraCommercialRightsSnapshot(current, {
+            fetchedAt: currentCatalog.catalogFetchedAt,
+            sha256: currentCatalog.catalogSha256,
+          }),
+        });
+      })) {
+        return fail("作品の公式情報または本文版が注文時から変わったため、決済を停止しました。注文内容を確認してください。", 409);
+      }
+    }
   } catch {
     return fail("作品の利用条件を確認できません。決済は開始していません。", 503);
   }
@@ -73,7 +146,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
   const trustedHosts = allowlist.hosts;
 
-  const tokenHash = hashOrderUploadToken(token);
   let begin: Awaited<ReturnType<typeof callOrderRpc>>;
   try {
     begin = await callOrderRpc(supabase, "begin_amuhon_order_checkout_v2", {
@@ -87,7 +159,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
   if (!begin.ok || !begin.data) return fail("この注文は決済を開始できません。ファイル検証・ページ数・価格を確認してください。", 409);
   if (begin.data.state === "paid") return fail("この注文の決済はすでに確認されています。", 409);
-
+  try {
+    const rightsAfterBegin = await callOrderRpc(supabase, "check_amuhon_order_commercial_rights_v1", {
+      p_order_id: orderId,
+      p_upload_token_hash: tokenHash,
+    });
+    const approvedAfterBegin = parseCommercialRightsDecision(rightsAfterBegin.data);
+    if (!rightsAfterBegin.ok || approvedAfterBegin === null) return fail("作品の利用条件を確認できません。決済は開始していません。", 503);
+    if (!approvedAfterBegin) return fail("この注文の作品は販売対象外になりました。決済は開始していません。", 409);
+  } catch {
+    return fail("作品の利用条件を確認できません。決済は開始していません。", 503);
+  }
   if (begin.data.state === "session_available") {
     if (typeof begin.data.sessionId === "string" &&
         isCheckoutSessionIdForMode(begin.data.sessionId, stripe.mode) && begin.data.livemode === stripe.livemode &&

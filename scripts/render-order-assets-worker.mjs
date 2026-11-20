@@ -12,6 +12,7 @@ import { renderPdfRendererJob } from "../lib/pdf-renderer-worker.ts";
 import { resolveFinalPdfRendererConfig } from "../lib/final-pdf-renderer-config.ts";
 import { createPdfRenderQueueWorker, PDF_RENDER_LEASE_SECONDS } from "../lib/pdf-render-queue-worker.ts";
 import { createSupabasePdfRenderQueueAdapter } from "../lib/pdf-render-queue-supabase.ts";
+import { sameAozoraRightsFacts } from "../lib/aozora-commercial-rights.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_INPUT_BYTES = 9_000_000;
@@ -290,9 +291,14 @@ async function loadAozoraWorks(renderOrigin, book) {
         throw new Error("aozora_unavailable");
       }
       if (!record || typeof record !== "object" || Array.isArray(record) ||
-          record.sourceUrl !== selected.xhtmlUrl || typeof record.text !== "string" || !record.text.trim()) {
+          record.sourceUrl !== selected.xhtmlUrl || typeof record.text !== "string" || !record.text.trim() ||
+          !/^[a-f0-9]{64}$/.test(selected.sourceSha256 ?? "") || record.sourceSha256 !== selected.sourceSha256 ||
+          !record.catalogRights || record.catalogRights.schema !== "amuhon-aozora-commercial-rights/v1" ||
+          record.catalogRights.classification !== "A" ||
+          (selected.catalogRights && (selected.catalogRights.classification !== "A" ||
+            !sameAozoraRightsFacts(selected.catalogRights, record.catalogRights)))) {
         controller.abort();
-        throw new Error("aozora_unavailable");
+        throw new Error("invalid_snapshot");
       }
       const bytes = Buffer.byteLength(record.text, "utf8");
       totalTextBytes += bytes;

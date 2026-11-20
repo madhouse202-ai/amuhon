@@ -6,7 +6,8 @@ import { serializeOrderUploadCookie } from "../../../lib/order-upload-cookie.ts"
 import { createSupabaseServiceHeaders, getSupabaseServiceCredential } from "../../../lib/supabase-service-credential.ts";
 import { callOrderRpc, getSupabaseServerConfig } from "../../../lib/order-checkout-server.ts";
 import { parseCommercialRightsApproval } from "../../../lib/commercial-rights.ts";
-import { resolveAozoraWorkEditions } from "../../../lib/aozora-edition.ts";
+import { resolveAozoraWorkEditionsWithCatalog } from "../../../lib/aozora-edition.ts";
+import { AOZORA_ATTRIBUTION_NOTICE, createAozoraCommercialRightsSnapshot } from "../../../lib/aozora-commercial-rights.ts";
 import { isLegacyBuyerAssetFlowEnabled } from "../../../lib/order-production-gate.ts";
 
 export const runtime = "nodejs";
@@ -82,7 +83,8 @@ function parseBookSelection(input: unknown): ParsedBookSelection | null {
     const id = boundedString(work.id, 200);
     // The browser cannot claim the catalog metadata, edition URL, digest, or
     // permission conditions used by the commercial-rights ledger.
-    if (!id || !/^\d{1,12}$/.test(id) || seenIds.has(id) || work.sourceSha256 !== undefined || work.rightsNotice !== undefined) return null;
+    if (!id || !/^\d{1,12}$/.test(id) || seenIds.has(id) || work.sourceSha256 !== undefined ||
+        work.rightsNotice !== undefined || work.catalogRights !== undefined) return null;
     seenIds.add(id);
     workIds.push(id);
   }
@@ -170,18 +172,25 @@ export async function POST(request: Request) {
   }
   let requestPayload: OrderDraftRequest;
   try {
-    const catalogWorks = await resolveAozoraWorkEditions(bookSelection.workIds);
-    const rightsWorks: OrderBookSnapshot["works"] = catalogWorks.map(({ id, title, author, cardUrl, textUrl, xhtmlUrl, contributors, sourceMetadata, sourceSha256 }) => ({
-      id,
-      title,
-      author,
-      cardUrl,
-      textUrl,
-      xhtmlUrl,
-      contributors: contributors.map(({ name, role }) => ({ name, role })),
-      sourceMetadata,
-      sourceSha256,
+    const resolved = await resolveAozoraWorkEditionsWithCatalog(bookSelection.workIds, fetch, true);
+    const rightsWorks: OrderBookSnapshot["works"] = resolved.works.map((work) => ({
+      id: work.id,
+      title: work.title,
+      author: work.author,
+      cardUrl: work.cardUrl,
+      textUrl: work.textUrl,
+      xhtmlUrl: work.xhtmlUrl,
+      contributors: work.contributors.map(({ name, role }) => ({ name, role })),
+      sourceMetadata: work.sourceMetadata,
+      sourceSha256: work.sourceSha256,
+      catalogRights: createAozoraCommercialRightsSnapshot(work, {
+        fetchedAt: resolved.catalogFetchedAt,
+        sha256: resolved.catalogSha256,
+      }),
     }));
+    if (rightsWorks.some((work) => work.catalogRights?.classification !== "A")) {
+      return errorResponse("選択した作品は現在の公式情報で利用可と確認できません。注文内容は保存されていません。", 409);
+    }
     const rights = await callOrderRpc(rightsConfig, "check_amuhon_works_commercial_rights_v1", {
       p_works: rightsWorks,
     });
@@ -192,6 +201,7 @@ export async function POST(request: Request) {
     const approvedWorks = rightsWorks.map((work) => {
       const notice = approval.notices.find((item) => item.workId === work.id);
       if (!notice || notice.sourceSha256 !== work.sourceSha256) throw new Error("commercial_rights_notice_mismatch");
+      if (notice.conditions !== AOZORA_ATTRIBUTION_NOTICE) throw new Error("commercial_rights_notice_mismatch");
       return { ...work, sourceSha256: notice.sourceSha256, rightsNotice: notice.conditions };
     });
     requestPayload = {

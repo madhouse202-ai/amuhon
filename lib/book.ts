@@ -1,3 +1,5 @@
+import { parseAozoraCommercialRightsSnapshot, type AozoraCommercialRightsSnapshot } from "./aozora-commercial-rights-schema.ts";
+
 export type CoverStyle = "classic" | "free";
 
 export type CoverColor = "red" | "blue" | "green";
@@ -25,6 +27,8 @@ export type BookWork = {
   sourceSha256?: string;
   /** Server-copied license or permission notice printed in the source note. */
   rightsNotice?: string;
+  /** Server-generated official-catalog rights facts; never accepted from a browser request. */
+  catalogRights?: AozoraCommercialRightsSnapshot;
 };
 
 export type BookData = {
@@ -79,7 +83,8 @@ function isBookWork(value: unknown): value is BookWork {
         ["firstPublication", "baseText", "basePublisher", "inputter", "proofreader"].some((key) => typeof metadata[key] !== "string" || (metadata[key] as string).length > 2000)) return false;
   }
   return (work.sourceSha256 === undefined || (typeof work.sourceSha256 === "string" && /^[a-f0-9]{64}$/.test(work.sourceSha256))) &&
-    (work.rightsNotice === undefined || (typeof work.rightsNotice === "string" && work.rightsNotice.length <= 1000));
+    (work.rightsNotice === undefined || (typeof work.rightsNotice === "string" && work.rightsNotice.length <= 1000)) &&
+    (work.catalogRights === undefined || parseAozoraCommercialRightsSnapshot(work.catalogRights) !== null);
 }
 
 /**

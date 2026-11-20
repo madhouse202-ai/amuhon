@@ -254,7 +254,7 @@ test("batch classification and SQL remain separate from the existing order right
     readFile(new URL("scripts/generate-aozora-rights-registration-sql.mjs", ROOT), "utf8"),
   ]);
   assert.match(review, /policy\.status !== "active" \|\| !policyReady\(policy\)/);
-  assert.match(order, /resolveAozoraWorkEditions\(bookSelection\.workIds\)/);
+  assert.match(order, /resolveAozoraWorkEditionsWithCatalog\(bookSelection\.workIds, fetch, true\)/);
   assert.match(order, /check_amuhon_works_commercial_rights_v1/);
   assert.match(migration, /rights\.status = 'A'/);
   assert.match(migration, /holder\.status = 'A'/);

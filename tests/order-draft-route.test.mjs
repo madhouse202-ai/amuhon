@@ -4,6 +4,7 @@ import test from "node:test";
 import JSZip from "jszip";
 import { POST } from "../app/api/orders/route.ts";
 import { hashOrderUploadToken } from "../lib/order-upload-token.ts";
+import { AOZORA_ATTRIBUTION_NOTICE } from "../lib/aozora-commercial-rights.ts";
 
 const originalEnv = {
   SUPABASE_URL: process.env.SUPABASE_URL,
@@ -43,24 +44,24 @@ const catalogZip = await (async () => {
     "https://www.aozora.gr.jp/cards/000015/card000015.html",
     "https://www.aozora.gr.jp/cards/000015/files/000015_0.txt",
     "https://www.aozora.gr.jp/cards/000015/files/000015_0.html",
-    "初出情報", "底本", "出版社", "入力者", "校正者",
+    "初出情報", "底本", "出版社", "入力者", "校正者", "なし", "000123", "なし",
   ];
   const differentFolderRow = [
     "799", "夢十夜", "夏目", "漱石", "著者", "なつめ", "そうせき", "ゆめじゅうや", "ゆめじゅうや",
     "https://www.aozora.gr.jp/cards/000148/card799.html",
     "https://www.aozora.gr.jp/cards/000148/files/799_ruby_14972.zip",
     "https://www.aozora.gr.jp/cards/000148/files/799_14972.html",
-    "初出情報", "底本", "出版社", "入力者", "校正者",
+    "初出情報", "底本", "出版社", "入力者", "校正者", "なし", "000148", "なし",
   ];
   const unsafeUrlRow = [
     "000016", "確認用作品", "青空", "確認", "著者", "あおぞら", "かくにん", "かくにんようさくひん", "かくにんようさくひん",
     "https://www.aozora.gr.jp/cards/000016/card000016.html",
     "https://www.aozora.gr.jp/cards/000016/files/000016_0.txt",
     "https://example.test/000016.html",
-    "", "", "", "", "",
+    "", "", "", "", "", "なし", "000016", "なし",
   ];
   archive.file("catalog.csv", [
-    ["作品ID", "作品名", "姓", "名", "役割フラグ", "姓読み", "名読み", "作品名読み", "ソート用読み", "図書カードURL", "テキストファイルURL", "XHTMLファイルURL", "初出", "底本名1", "底本出版社名1", "入力者", "校正者"].join(","),
+    ["作品ID", "作品名", "姓", "名", "役割フラグ", "姓読み", "名読み", "作品名読み", "ソート用読み", "図書カードURL", "テキストファイルURL", "XHTMLファイルURL", "初出", "底本名1", "底本出版社名1", "入力者", "校正者", "作品著作権フラグ", "人物ID", "人物著作権フラグ"].join(","),
     row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
     differentFolderRow.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
     unsafeUrlRow.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
@@ -68,7 +69,7 @@ const catalogZip = await (async () => {
   return archive.generateAsync({ type: "uint8array" });
 })();
 
-async function invoke(mockDraftRpc, { payload = input, rightsApproval = { approved: true, notices: [{ workId: "000015", sourceSha256, conditions: "台帳記録済み条件" }] } } = {}) {
+async function invoke(mockDraftRpc, { payload = input, rightsApproval = { approved: true, notices: [{ workId: "000015", sourceSha256, conditions: AOZORA_ATTRIBUTION_NOTICE }] } } = {}) {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, init) => {
@@ -123,6 +124,8 @@ test("order draft RPC stores only upload-token hash and returns the capability i
   assert.equal(rightsArgs.p_works[0].title, "カタログ上の作品");
   assert.equal(rightsArgs.p_works[0].cardUrl, "https://www.aozora.gr.jp/cards/000015/card000015.html");
   assert.equal(rightsArgs.p_works[0].sourceSha256, sourceSha256);
+  assert.equal(rightsArgs.p_works[0].catalogRights.classification, "A");
+  assert.equal(rightsArgs.p_works[0].catalogRights.workCopyrightFlags[0], "なし");
   assert.equal(rpcArgs.p_book_snapshot.works[0].sourceSha256, sourceSha256);
   assert.equal(rpcArgs.p_book_snapshot.works[0].title, "カタログ上の作品");
   assert.doesNotMatch(JSON.stringify(rpcArgs.p_book_snapshot), /偽の作品名|example\.test/);
@@ -177,6 +180,12 @@ test("browser-supplied hashes and non-catalog identifiers are rejected before an
   }, { payload: arbitraryIdPayload });
   assert.equal(arbitraryId.response.status, 400);
   assert.equal(arbitraryId.calls.length, 0);
+
+  const forgedRightsPayload = structuredClone(input);
+  forgedRightsPayload.book.works[0].catalogRights = { classification: "A" };
+  const forgedRights = await invoke(async () => assert.fail("catalog rights must be server-derived"), { payload: forgedRightsPayload });
+  assert.equal(forgedRights.response.status, 400);
+  assert.equal(forgedRights.calls.length, 0);
 });
 
 test("catalog-supplied non-Aozora source URLs are rejected before fetching them", async () => {
@@ -203,7 +212,7 @@ test("official catalog card and file URLs allow the work ID to differ from its c
     uploadTokenAccepted: true,
   }), {
     payload,
-    rightsApproval: { approved: true, notices: [{ workId: "799", sourceSha256, conditions: "台帳記録済み条件" }] },
+    rightsApproval: { approved: true, notices: [{ workId: "799", sourceSha256, conditions: AOZORA_ATTRIBUTION_NOTICE }] },
   });
   assert.equal(response.status, 201);
   const editionCall = calls.find((call) => call.url === "https://www.aozora.gr.jp/cards/000148/files/799_14972.html");

@@ -1,13 +1,47 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import JSZip from "jszip";
 import { POST as checkoutPost } from "../app/api/orders/[id]/checkout/route.ts";
 import { GET as statusGet } from "../app/api/orders/[id]/status/route.ts";
 import { callOrderRpc, getSupabaseServerConfig } from "../lib/order-checkout-server.ts";
+import { AOZORA_ATTRIBUTION_NOTICE, createAozoraCommercialRightsSnapshot } from "../lib/aozora-commercial-rights.ts";
 
 const ORDER_ID = "d9d71ea0-115c-4b26-8c1d-86bead2aecc4";
 const TOKEN = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
 const COOKIE = `amuhon_order_upload_${ORDER_ID}=${TOKEN}`;
 const CHECKOUT_URL = "https://checkout.stripe.com/c/pay/cs_test_abc123";
+const LEGACY_ORDER_WORK = {
+  id: "000015", title: "旧スナップショット作品", author: "作者",
+  cardUrl: "https://www.aozora.gr.jp/cards/000015/card000015.html",
+  textUrl: "https://www.aozora.gr.jp/cards/000015/files/000015_0.txt",
+  xhtmlUrl: "https://www.aozora.gr.jp/cards/000015/files/000015_0.html",
+  sourceSha256: "a".repeat(64), contributors: [{ name: "作者", role: "著者" }],
+  sourceMetadata: { firstPublication: "", baseText: "", basePublisher: "", inputter: "", proofreader: "" },
+};
+const OFFICIAL_XHTML_URL = "https://www.aozora.gr.jp/cards/000015/files/15_0.html";
+const OFFICIAL_XHTML_BYTES = new TextEncoder().encode('<html><body><div class="main_text">本文</div></body></html>');
+const OFFICIAL_WORK = {
+  id: "000015", title: "公式作品", titleReading: "こうしきさくひん", sortReading: "こうしきさくひん", author: "作者 名",
+  cardUrl: "https://www.aozora.gr.jp/cards/000015/card15.html",
+  textUrl: "https://www.aozora.gr.jp/cards/000015/files/15_0.txt",
+  xhtmlUrl: OFFICIAL_XHTML_URL,
+  contributors: [{ name: "作者 名", role: "著者", reading: "さくしゃ めい", personIds: ["000015"], copyrightFlags: ["なし"], missingCopyrightFlagRows: 0 }],
+  sourceMetadata: { firstPublication: "初出", baseText: "底本", basePublisher: "出版社", inputter: "入力者", proofreader: "校正者" },
+  workCopyrightFlags: ["なし"], missingWorkCopyrightFlagRows: 0,
+  catalogPersonCopyrightFlags: ["なし"], missingPersonCopyrightFlagRows: 0,
+  incompleteContributorRows: 0, sourceMetadataConflicts: [], catalogIssues: [], catalogRowCount: 1,
+};
+const officialCatalogZip = await (async () => {
+  const archive = new JSZip();
+  const headers = ["作品ID", "作品名", "姓", "名", "役割フラグ", "姓読み", "名読み", "作品名読み", "ソート用読み",
+    "図書カードURL", "テキストファイルURL", "XHTMLファイルURL", "初出", "底本名1", "底本出版社名1", "入力者", "校正者",
+    "作品著作権フラグ", "人物ID", "人物著作権フラグ"];
+  const values = ["000015", "公式作品", "作者", "名", "著者", "さくしゃ", "めい", "こうしきさくひん", "こうしきさくひん",
+    OFFICIAL_WORK.cardUrl, OFFICIAL_WORK.textUrl, OFFICIAL_WORK.xhtmlUrl, "初出", "底本", "出版社", "入力者", "校正者", "なし", "000015", "なし"];
+  const cell = (value) => `"${String(value).replaceAll('"', '""')}"`;
+  archive.file("catalog.csv", [headers.map(cell).join(","), values.map(cell).join(",")].join("\n"));
+  return archive.generateAsync({ type: "uint8array" });
+})();
 const originalEnv = { ...process.env };
 
 function setTestEnv(stripeKey = "sk_test_server-only-key") {
@@ -55,6 +89,7 @@ async function invoke(mockFetch, options = {}) {
     allowlistResponse = null,
     allowlistError = null,
     rightsResponse = { approved: true },
+    rightsSnapshotResponse = { works: [LEGACY_ORDER_WORK] },
     ...requestOptions
   } = options;
   setTestEnv();
@@ -62,6 +97,9 @@ async function invoke(mockFetch, options = {}) {
     const url = String(input);
     if (url.endsWith("/rpc/check_amuhon_order_commercial_rights_v1")) {
       return Response.json(rightsResponse);
+    }
+    if (url.endsWith("/rpc/get_amuhon_order_rights_snapshot_v1")) {
+      return Response.json(rightsSnapshotResponse);
     }
     if (url.endsWith("/rpc/get_amuhon_stripe_checkout_allowed_hosts_v1")) {
       if (allowlistError) throw allowlistError;
@@ -121,6 +159,32 @@ test("checkout refuses an order whose server-side rights check is not approved",
   assert.equal(calls.length, 0);
 });
 
+test("checkout stops when the selected official edition hash changed after order creation", async () => {
+  const currentRights = createAozoraCommercialRightsSnapshot(OFFICIAL_WORK, {
+    fetchedAt: "2026-11-21T00:00:00.000Z", sha256: "a".repeat(64),
+  });
+  const staleSnapshotWork = {
+    ...OFFICIAL_WORK,
+    contributors: OFFICIAL_WORK.contributors.map(({ name, role }) => ({ name, role })),
+    sourceSha256: "b".repeat(64),
+    rightsNotice: AOZORA_ATTRIBUTION_NOTICE,
+    catalogRights: currentRights,
+  };
+  const upstreamCalls = [];
+  let stripeCalls = 0;
+  const response = await invoke(async (input) => {
+    const url = String(input);
+    upstreamCalls.push(url);
+    if (url === "https://www.aozora.gr.jp/index_pages/list_person_all_extended_utf8.zip") return new Response(officialCatalogZip);
+    if (url === OFFICIAL_XHTML_URL) return new Response(OFFICIAL_XHTML_BYTES, { headers: { "content-type": "application/xhtml+xml" } });
+    if (url.startsWith("https://api.stripe.com/")) stripeCalls += 1;
+    throw new Error("no checkout mutation expected");
+  }, { rightsSnapshotResponse: { works: [staleSnapshotWork] } });
+  assert.equal(response.status, 409);
+  assert.equal(upstreamCalls.length, 2);
+  assert.equal(stripeCalls, 0);
+});
+
 test("live Stripe keys are refused in explicit test mode before checkout state can be changed", async () => {
   const originalFetch = globalThis.fetch;
   setTestEnv("sk_live_never-allowed");
@@ -157,13 +221,14 @@ test("database mode mismatch and missing mode response stop before creating a St
   globalThis.fetch = async (input) => {
     calls += 1;
     if (String(input).endsWith("/rpc/check_amuhon_order_commercial_rights_v1")) return Response.json({ approved: true });
+    if (String(input).endsWith("/rpc/get_amuhon_order_rights_snapshot_v1")) return Response.json({ works: [LEGACY_ORDER_WORK] });
     if (String(input).endsWith("/rpc/get_amuhon_stripe_checkout_allowed_hosts_v1")) return Response.json({ hosts: ["checkout.stripe.com"] });
     return Response.json({ state: "create_session", livemode: true });
   };
   try {
     const response = await checkoutPost(request(), { params: Promise.resolve({ id: ORDER_ID }) });
     assert.equal(response.status, 409);
-    assert.equal(calls, 3);
+    assert.equal(calls, 5);
   } finally { globalThis.fetch = originalFetch; }
 });
 
@@ -182,6 +247,7 @@ test("explicit live mode creates and records only a matching live Checkout Sessi
     const url = String(input);
     calls.push(url);
     if (url.endsWith("/rpc/check_amuhon_order_commercial_rights_v1")) return Response.json({ approved: true });
+    if (url.endsWith("/rpc/get_amuhon_order_rights_snapshot_v1")) return Response.json({ works: [LEGACY_ORDER_WORK] });
     if (url.endsWith("/rpc/begin_amuhon_order_checkout_v2")) {
       const args = JSON.parse(String(init.body));
       assert.equal(args.p_livemode, true);
@@ -210,7 +276,7 @@ test("explicit live mode creates and records only a matching live Checkout Sessi
     const response = await checkoutPost(request(), { params: Promise.resolve({ id: ORDER_ID }) });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { checkoutUrl: liveUrl, checkoutHost: "checkout.stripe.com" });
-    assert.equal(calls.length, 5);
+    assert.equal(calls.length, 7);
   } finally { globalThis.fetch = originalFetch; }
 });
 

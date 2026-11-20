@@ -519,7 +519,9 @@ function SourcePage({
                 ].filter(Boolean).join("／")}</p>
               )}
               <p>青空文庫 作品ID {work.id}：{cardPath || "図書カード情報"}</p>
-              {work.rightsNotice && <p>利用条件：{work.rightsNotice}</p>}
+              {work.rightsNotice && (work.catalogRights
+                ? <p>青空文庫作成ファイル：{work.rightsNotice}</p>
+                : <p>利用条件：{work.rightsNotice}</p>)}
             </li>
           );
         })}

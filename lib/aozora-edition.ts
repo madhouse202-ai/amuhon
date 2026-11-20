@@ -266,8 +266,8 @@ function buildCatalog(csvText: string): Map<string, AozoraRightsCatalogWork> {
   return works;
 }
 
-async function loadCatalog(fetcher: typeof fetch): Promise<LoadedCatalog> {
-  if (catalogCache && catalogCache.expiresAt > Date.now()) return catalogCache.promise;
+async function loadCatalog(fetcher: typeof fetch, forceRefresh = false): Promise<LoadedCatalog> {
+  if (!forceRefresh && catalogCache && catalogCache.expiresAt > Date.now()) return catalogCache.promise;
   {
     const current = (async () => {
       const response = await fetcher(CATALOG_URL, {
@@ -313,7 +313,11 @@ export async function resolveAozoraRightsCatalog(fetcher: typeof fetch = fetch):
   };
 }
 
-async function fetchEdition(work: AozoraRightsCatalogWork, fetcher: typeof fetch): Promise<VerifiedAozoraWork> {
+async function fetchEditionWithBytes(work: AozoraRightsCatalogWork, fetcher: typeof fetch): Promise<{
+  work: VerifiedAozoraWork;
+  bytes: Uint8Array;
+  contentType: string;
+}> {
   const cardUrl = validateAozoraCatalogUrl(work.cardUrl, work.id, "card");
   const textUrl = validateAozoraCatalogUrl(work.textUrl, work.id, "text");
   const xhtmlUrl = validateAozoraCatalogUrl(work.xhtmlUrl, work.id, "xhtml");
@@ -335,30 +339,62 @@ async function fetchEdition(work: AozoraRightsCatalogWork, fetcher: typeof fetch
     throw new Error("edition_body_missing");
   }
   return {
-    ...work,
-    cardUrl,
-    textUrl,
-    xhtmlUrl,
-    sourceSha256: createHash("sha256").update(bytes).digest("hex"),
+    work: {
+      ...work,
+      cardUrl,
+      textUrl,
+      xhtmlUrl,
+      sourceSha256: createHash("sha256").update(bytes).digest("hex"),
+    },
+    bytes,
+    contentType: response.headers.get("content-type") ?? "",
   };
 }
 
 /** Resolves IDs through the fixed Aozora catalog and hashes the exact XHTML bytes used by /final. */
-export async function resolveAozoraWorkEditions(ids: string[], fetcher: typeof fetch = fetch): Promise<VerifiedAozoraWork[]> {
+export async function resolveAozoraWorkEditionsWithCatalog(ids: string[], fetcher: typeof fetch = fetch, forceRefreshCatalog = false): Promise<{
+  catalogFetchedAt: string;
+  catalogSha256: string;
+  works: VerifiedAozoraWork[];
+}> {
   if (!Array.isArray(ids) || ids.length < 1 || ids.length > 100 || ids.some((id) => !/^\d{1,12}$/.test(id)) || new Set(ids).size !== ids.length) {
     throw new Error("work_ids_invalid");
   }
-  const catalog = (await loadCatalog(fetcher)).works;
+  const catalog = await loadCatalog(fetcher, forceRefreshCatalog);
   const selected = ids.map((id) => {
-    const work = catalog.get(id);
+    const work = catalog.works.get(id);
     if (!work) throw new Error("catalog_work_missing");
     return work;
   });
   const verified: VerifiedAozoraWork[] = [];
   // Keep upstream requests bounded while retaining the requested book order.
   for (let offset = 0; offset < selected.length; offset += 4) {
-    const group = await Promise.all(selected.slice(offset, offset + 4).map((work) => fetchEdition(work, fetcher)));
+    const group = await Promise.all(selected.slice(offset, offset + 4).map(async (work) =>
+      (await fetchEditionWithBytes(work, fetcher)).work));
     verified.push(...group);
   }
-  return verified;
+  return { catalogFetchedAt: catalog.fetchedAt, catalogSha256: catalog.sha256, works: verified };
+}
+
+export async function resolveAozoraWorkEditions(ids: string[], fetcher: typeof fetch = fetch, forceRefreshCatalog = false): Promise<VerifiedAozoraWork[]> {
+  return (await resolveAozoraWorkEditionsWithCatalog(ids, fetcher, forceRefreshCatalog)).works;
+}
+
+/** Resolve and read one exact official XHTML URL, returning the same bounded bytes that were hashed. */
+export async function resolveAozoraEditionByXhtmlUrl(value: string, fetcher: typeof fetch = fetch): Promise<{
+  catalogFetchedAt: string;
+  catalogSha256: string;
+  work: VerifiedAozoraWork;
+  bytes: Uint8Array;
+  contentType: string;
+}> {
+  const catalog = await loadCatalog(fetcher);
+  const work = [...catalog.works.values()].find((item) => item.xhtmlUrl === value);
+  if (!work) throw new Error("catalog_work_missing");
+  const edition = await fetchEditionWithBytes(work, fetcher);
+  return {
+    catalogFetchedAt: catalog.fetchedAt,
+    catalogSha256: catalog.sha256,
+    ...edition,
+  };
 }

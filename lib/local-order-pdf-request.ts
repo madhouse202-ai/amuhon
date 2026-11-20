@@ -1,4 +1,5 @@
 import type { BookData, BookWork } from "./book.ts";
+import { parseAozoraCommercialRightsSnapshot } from "./aozora-commercial-rights-schema.ts";
 import { isSubmissionPageCount } from "./production.ts";
 import { parseFinalPreviewWorkTexts, type FinalPreviewWorkText } from "./final-work-text-snapshot.ts";
 
@@ -88,9 +89,13 @@ export function parseLocalOrderPdfRequest(input: unknown): LocalOrderPdfRequest 
       typeof work.sourceSha256 === "string" && /^[a-f0-9]{64}$/.test(work.sourceSha256) ? work.sourceSha256 : null;
     const rightsNotice = work.rightsNotice === undefined ? undefined :
       typeof work.rightsNotice === "string" && work.rightsNotice.trim().length > 0 && work.rightsNotice.length <= 1000 ? work.rightsNotice : null;
-    if (sourceSha256 === null || rightsNotice === null || ((sourceSha256 === undefined) !== (rightsNotice === undefined))) return null;
+    const catalogRights = work.catalogRights === undefined ? undefined : parseAozoraCommercialRightsSnapshot(work.catalogRights);
+    if (sourceSha256 === null || rightsNotice === null || ((sourceSha256 === undefined) !== (rightsNotice === undefined)) ||
+        (work.catalogRights !== undefined && catalogRights === null) || (catalogRights !== undefined &&
+          (sourceSha256 === undefined || rightsNotice === undefined))) return null;
     ids.add(id);
-    works.push({ id, title: workTitle, author: work.author.trim(), cardUrl, textUrl, xhtmlUrl, contributors, sourceMetadata, sourceSha256, rightsNotice });
+    works.push({ id, title: workTitle, author: work.author.trim(), cardUrl, textUrl, xhtmlUrl, contributors, sourceMetadata, sourceSha256, rightsNotice,
+      ...(catalogRights ? { catalogRights } : {}) });
   }
 
   const book: BookData = { title, editor, coverStyle: source.coverStyle, coverColor: source.coverColor, works };

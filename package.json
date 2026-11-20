@@ -21,6 +21,7 @@
     "rights:aozora:batch": "node --experimental-strip-types scripts/prepare-aozora-rights-batch-review.mjs",
     "rights:aozora:sql": "node --experimental-strip-types scripts/generate-aozora-rights-registration-sql.mjs",
     "test:aozora-rights-batch": "node --experimental-strip-types --test tests/aozora-rights-batch.test.mjs",
+    "test:aozora-commercial-rights": "node --experimental-strip-types --test tests/aozora-commercial-rights.test.mjs tests/commercial-rights.test.mjs tests/order-draft-route.test.mjs tests/order-checkout-route.test.mjs",
     "test:order-validation-sql": "node --test tests/order-validation-jobs-migration.test.mjs tests/order-validation-asset-commit-migration.test.mjs tests/order-validation-targeted-claim-migration.test.mjs",
     "generate:order-fixtures": "node --experimental-strip-types scripts/generate-order-validation-fixtures.mjs",
     "benchmark:order-assets": "node --experimental-strip-types scripts/benchmark-order-assets.mjs",

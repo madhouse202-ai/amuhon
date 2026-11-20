@@ -31,27 +31,29 @@ test("public build never accepts legacy buyer-supplied print assets", () => {
   assert.equal(isLegacyBuyerAssetFlowEnabled({ NODE_ENV: "test" }), true);
 });
 
-test("rights ledger requires exact edition, evidence, each contributor review, and explicit terms", async () => {
-  const migration = await read("supabase/migrations/20261118000100_work_commercial_rights_ledger.sql");
+test("official A/B/C rights status is separate from edition verification and keeps legacy approvals", async () => {
+  const legacyMigration = await read("supabase/migrations/20261118000100_work_commercial_rights_ledger.sql");
+  const migration = await read("supabase/migrations/20261121000100_aozora_official_rights_status.sql");
   const orderRoute = await read("app/api/orders/route.ts");
   const checkout = await read("app/api/orders/[id]/checkout/route.ts");
-  const queueMigration = migration.slice(migration.indexOf("create or replace function public.claim_amuhon_order_pdf_render_job"));
-  assert.match(migration, /source_sha256 text not null/);
-  assert.match(migration, /status text not null check \(status in \('A', 'B', 'C'\)\)/);
-  assert.match(migration, /permission_conditions text not null check/);
-  assert.match(migration, /rights_reviews_complete/);
-  assert.match(migration, /holder\.status = 'A'/);
-  assert.match(migration, /holder\.permission_conditions\)\) > 0/);
-  assert.match(migration, /rights\.permission_conditions = target_work ->> 'rightsNotice'/);
-  assert.match(migration, /rights_unverified/);
-  assert.match(queueMigration, /_amuhon_book_works_rights_approved_v1\(target_order\.book_snapshot -> 'works', true\)/);
-  assert.match(migration, /_amuhon_book_works_rights_approved_v1\(target_snapshot -> 'works', true\)/);
-  assert.match(orderRoute, /resolveAozoraWorkEditions\(bookSelection\.workIds\)/);
-  assert.match(orderRoute, /work\.sourceSha256 !== undefined \|\| work\.rightsNotice !== undefined/);
+  assert.match(legacyMigration, /rights\.source_sha256 = target_work ->> 'sourceSha256'/);
+  assert.match(legacyMigration, /rights\.rights_reviews_complete/);
+  assert.match(migration, /classification.*'A'/s);
+  assert.match(migration, /workCopyrightFlags/);
+  assert.match(migration, /catalogPersonCopyrightFlags/);
+  assert.match(migration, /set_amuhon_work_rights_manual_stop_v1/);
+  assert.match(migration, /_amuhon_work_rights_manual_stop_active_v1\(target_work ->> 'id'\)/);
+  assert.match(migration, /get_amuhon_order_rights_snapshot_v1/);
+  assert.match(orderRoute, /resolveAozoraWorkEditionsWithCatalog\(bookSelection\.workIds, fetch, true\)/);
+  assert.match(orderRoute, /work\.catalogRights !== undefined/);
   assert.match(orderRoute, /p_works: rightsWorks/);
   assert.match(orderRoute, /notice\.sourceSha256 !== work\.sourceSha256/);
+  assert.match(orderRoute, /notice\.conditions !== AOZORA_ATTRIBUTION_NOTICE/);
   assert.match(orderRoute, /approval\.notices/);
   assert.match(checkout, /check_amuhon_order_commercial_rights_v1/);
+  assert.match(checkout, /get_amuhon_order_rights_snapshot_v1/);
+  assert.match(checkout, /stored\.sourceSha256 !== current\.sourceSha256/);
+  assert.match(checkout, /sameAozoraRightsFacts/);
   assert.doesNotMatch(migration, /insert into public\.amuhon_work_commercial_rights/i);
 });
 
@@ -61,8 +63,9 @@ test("printing rights notices enter from server ledger and appear in endmatter",
     read("app/final/page.tsx"),
     read("lib/local-order-pdf-request.ts"),
   ]);
-  assert.match(orderRoute, /resolveAozoraWorkEditions\(bookSelection\.workIds\)/);
+  assert.match(orderRoute, /resolveAozoraWorkEditionsWithCatalog\(bookSelection\.workIds, fetch, true\)/);
   assert.match(orderRoute, /sourceSha256: notice\.sourceSha256, rightsNotice: notice\.conditions/);
+  assert.match(sourcePage, /青空文庫作成ファイル：\{work\.rightsNotice\}/);
   assert.match(sourcePage, /利用条件：\{work\.rightsNotice\}/);
   assert.match(localParser, /work\.rightsNotice/);
 });
