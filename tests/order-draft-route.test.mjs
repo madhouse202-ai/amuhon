@@ -40,14 +40,21 @@ const catalogZip = await (async () => {
   const archive = new JSZip();
   const row = [
     "000015", "カタログ上の作品", "青空", "作者", "著者", "あおぞら", "さくしゃ", "かたろぐじょうのさくひん", "かたろぐじょうのさくひん",
-    "https://www.aozora.gr.jp/cards/000015/card.html",
+    "https://www.aozora.gr.jp/cards/000015/card000015.html",
     "https://www.aozora.gr.jp/cards/000015/files/000015_0.txt",
     "https://www.aozora.gr.jp/cards/000015/files/000015_0.html",
     "初出情報", "底本", "出版社", "入力者", "校正者",
   ];
+  const differentFolderRow = [
+    "799", "夢十夜", "夏目", "漱石", "著者", "なつめ", "そうせき", "ゆめじゅうや", "ゆめじゅうや",
+    "https://www.aozora.gr.jp/cards/000148/card799.html",
+    "https://www.aozora.gr.jp/cards/000148/files/799_ruby_14972.zip",
+    "https://www.aozora.gr.jp/cards/000148/files/799_14972.html",
+    "初出情報", "底本", "出版社", "入力者", "校正者",
+  ];
   const unsafeUrlRow = [
     "000016", "確認用作品", "青空", "確認", "著者", "あおぞら", "かくにん", "かくにんようさくひん", "かくにんようさくひん",
-    "https://www.aozora.gr.jp/cards/000016/card.html",
+    "https://www.aozora.gr.jp/cards/000016/card000016.html",
     "https://www.aozora.gr.jp/cards/000016/files/000016_0.txt",
     "https://example.test/000016.html",
     "", "", "", "", "",
@@ -55,6 +62,7 @@ const catalogZip = await (async () => {
   archive.file("catalog.csv", [
     ["作品ID", "作品名", "姓", "名", "役割フラグ", "姓読み", "名読み", "作品名読み", "ソート用読み", "図書カードURL", "テキストファイルURL", "XHTMLファイルURL", "初出", "底本名1", "底本出版社名1", "入力者", "校正者"].join(","),
     row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
+    differentFolderRow.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
     unsafeUrlRow.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
   ].join("\n"));
   return archive.generateAsync({ type: "uint8array" });
@@ -70,6 +78,9 @@ async function invoke(mockDraftRpc, { payload = input, rightsApproval = { approv
       return new Response(catalogZip, { status: 200, headers: { "content-type": "application/zip" } });
     }
     if (target === "https://www.aozora.gr.jp/cards/000015/files/000015_0.html") {
+      return new Response(xhtmlBytes, { status: 200, headers: { "content-type": "application/xhtml+xml; charset=utf-8" } });
+    }
+    if (target === "https://www.aozora.gr.jp/cards/000148/files/799_14972.html") {
       return new Response(xhtmlBytes, { status: 200, headers: { "content-type": "application/xhtml+xml; charset=utf-8" } });
     }
     if (target.endsWith("/rpc/check_amuhon_works_commercial_rights_v1")) {
@@ -110,7 +121,7 @@ test("order draft RPC stores only upload-token hash and returns the capability i
   assert.equal(calls[1].url, "https://www.aozora.gr.jp/cards/000015/files/000015_0.html");
   assert.equal(calls[1].init.redirect, "error");
   assert.equal(rightsArgs.p_works[0].title, "カタログ上の作品");
-  assert.equal(rightsArgs.p_works[0].cardUrl, "https://www.aozora.gr.jp/cards/000015/card.html");
+  assert.equal(rightsArgs.p_works[0].cardUrl, "https://www.aozora.gr.jp/cards/000015/card000015.html");
   assert.equal(rightsArgs.p_works[0].sourceSha256, sourceSha256);
   assert.equal(rpcArgs.p_book_snapshot.works[0].sourceSha256, sourceSha256);
   assert.equal(rpcArgs.p_book_snapshot.works[0].title, "カタログ上の作品");
@@ -179,6 +190,31 @@ test("catalog-supplied non-Aozora source URLs are rejected before fetching them"
   assert.equal(response.status, 503);
   assert.equal(draftCalls, 0);
   assert.equal(calls.some((call) => call.url.startsWith("https://example.test/")), false);
+});
+
+test("official catalog card and file URLs allow the work ID to differ from its card directory and text ZIP", async () => {
+  const payload = structuredClone(input);
+  payload.book.works[0].id = "799";
+  const { response, calls } = await invoke(async () => Response.json({
+    id: "d9d71ea0-115c-4b26-8c1d-86bead2aecc4",
+    status: "draft",
+    createdAt: "2026-10-20T00:00:00.000Z",
+    created: true,
+    uploadTokenAccepted: true,
+  }), {
+    payload,
+    rightsApproval: { approved: true, notices: [{ workId: "799", sourceSha256, conditions: "台帳記録済み条件" }] },
+  });
+  assert.equal(response.status, 201);
+  const editionCall = calls.find((call) => call.url === "https://www.aozora.gr.jp/cards/000148/files/799_14972.html");
+  assert.ok(editionCall);
+  assert.equal(editionCall.init.redirect, "error");
+  const rightsCall = calls.find((call) => call.url.endsWith("/rpc/check_amuhon_works_commercial_rights_v1"));
+  const rightsArgs = JSON.parse(String(rightsCall.init.body));
+  assert.equal(rightsArgs.p_works[0].cardUrl, "https://www.aozora.gr.jp/cards/000148/card799.html");
+  assert.equal(rightsArgs.p_works[0].textUrl, "https://www.aozora.gr.jp/cards/000148/files/799_ruby_14972.zip");
+  assert.equal(rightsArgs.p_works[0].xhtmlUrl, "https://www.aozora.gr.jp/cards/000148/files/799_14972.html");
+  assert.equal(rightsArgs.p_works[0].sourceSha256, sourceSha256);
 });
 
 test("unapproved catalog edition stops before creating an order", async () => {

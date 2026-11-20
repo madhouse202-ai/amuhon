@@ -47,15 +47,22 @@ function normalizeColumnName(value: string): string {
   return value.trim().replace(/^\uFEFF/, "").replace(/^"|"$/g, "").replace(/\s+/g, "").replace(/　/g, "");
 }
 
-function requiredAozoraUrl(value: string, id: string, extension: "html" | "txt" | "card"): string | null {
+function requiredAozoraUrl(value: string, id: string, kind: "xhtml" | "text" | "card"): string | null {
   try {
     const url = new URL(value);
     const allowedHost = url.hostname === "www.aozora.gr.jp" || url.hostname === "aozora.gr.jp";
     if (!allowedHost || url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash) return null;
-    if (extension === "card") {
-      return new RegExp(`^/cards/${id}/[^/]+\\.html$`, "i").test(url.pathname) ? url.toString() : null;
+    // Aozora work IDs name the card/file, while the six-digit card directory
+    // is a separate catalog identifier (for example work 799 is under 000148).
+    const workNumber = id.replace(/^0+(?=\d)/, "");
+    const idPattern = workNumber === id ? id : `(?:${id}|${workNumber})`;
+    if (kind === "card") {
+      return new RegExp(`^/cards/\\d{1,12}/card${idPattern}\\.html$`, "i").test(url.pathname) ? url.toString() : null;
     }
-    return new RegExp(`^/cards/${id}/files/[^/]+\\.${extension}$`, "i").test(url.pathname) ? url.toString() : null;
+    const extensionPattern = kind === "xhtml" ? "(?:html|xhtml)" : "(?:txt|zip)";
+    return new RegExp(`^/cards/\\d{1,12}/files/${idPattern}_[A-Za-z0-9_-]+\\.${extensionPattern}$`, "i").test(url.pathname)
+      ? url.toString()
+      : null;
   } catch {
     return null;
   }
@@ -209,8 +216,8 @@ async function loadCatalog(fetcher: typeof fetch): Promise<Map<string, CatalogWo
 
 async function fetchEdition(work: CatalogWork, fetcher: typeof fetch): Promise<VerifiedAozoraWork> {
   const cardUrl = requiredAozoraUrl(work.cardUrl, work.id, "card");
-  const textUrl = requiredAozoraUrl(work.textUrl, work.id, "txt");
-  const xhtmlUrl = requiredAozoraUrl(work.xhtmlUrl, work.id, "html");
+  const textUrl = requiredAozoraUrl(work.textUrl, work.id, "text");
+  const xhtmlUrl = requiredAozoraUrl(work.xhtmlUrl, work.id, "xhtml");
   if (!cardUrl || !textUrl || !xhtmlUrl || work.contributors.length === 0 || work.contributors.length > 20 ||
       work.title.length > 500 || work.author.length > 300 ||
       work.contributors.some((person) => !person.name || person.name.length > 300 || !person.role || person.role.length > 80) ||
