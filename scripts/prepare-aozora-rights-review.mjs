@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,7 +7,9 @@ import {
   classifyAozoraCatalog,
   classifyAozoraRightsWork,
   isAozoraRightsBatchCandidate,
-  AOZORA_BATCH_APPROVAL_STATEMENT,
+  calculateAozoraRightsPolicySha256,
+  createAozoraRightsBatchApprovalTemplate,
+  createAozoraRightsBatchReviewPackage,
 } from "../lib/aozora-rights-review.ts";
 import { resolveAozoraRightsCatalog, resolveAozoraWorkEditions } from "../lib/aozora-edition.ts";
 
@@ -15,6 +17,7 @@ const CATALOG_URL = "https://www.aozora.gr.jp/index_pages/list_person_all_extend
 const REGRESSION_IDS = ["000042", "000799", "001927"];
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUTPUT_ROOT = path.resolve(ROOT, ".local-assets", "rights-review");
+const POLICY_PATH = path.join(ROOT, "data", "aozora-rights-policy-v1.json");
 
 function usage() {
   console.log("Usage: node --experimental-strip-types scripts/prepare-aozora-rights-review.mjs [--limit 50] [--out .local-assets/rights-review/RUN_ID]");
@@ -50,34 +53,25 @@ function toCsv(rows) {
   return `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
 }
 
-function makeApprovalTemplate(reviewPackage) {
-  return {
-    schema: "amuhon-aozora-rights-approval/v1",
-    packageSha256: reviewPackage.packageSha256,
-    catalogSha256: reviewPackage.catalog.sha256,
-    explicitHumanApproval: false,
-    approvalStatement: AOZORA_BATCH_APPROVAL_STATEMENT,
-    checkedBy: "",
-    checkedAt: "",
-    works: reviewPackage.works.filter((work) => work.classification === "candidate_pending_human_review").map((work) => ({
-      workId: work.workId,
-      sourceSha256: work.sourceSha256,
-      approveAsA: false,
-      domesticOriginalWorkConfirmed: false,
-      allRightsAndProtectionTermConfirmed: false,
-      noTranslationAdaptationCoauthorOrThirdPartyIssueConfirmed: false,
-      commercialUseAndAttributionConfirmed: false,
-      evidenceBasis: "",
-      permissionConditions: "",
-      holders: work.contributors.map((holder) => ({
-        name: holder.name,
-        role: holder.role,
-        reviewedAndApprovedAsA: false,
-        evidenceBasis: "",
-        permissionConditions: "",
-      })),
-    })),
-  };
+async function ensureSafeOutputDirectory(directory) {
+  await mkdir(OUTPUT_ROOT, { recursive: true });
+  const realRoot = await realpath(OUTPUT_ROOT);
+  const relative = path.relative(OUTPUT_ROOT, directory);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("review_path_outside_local_output");
+  let cursor = OUTPUT_ROOT;
+  for (const segment of relative.split(path.sep)) {
+    cursor = path.join(cursor, segment);
+    try {
+      const stat = await lstat(cursor);
+      if (stat.isSymbolicLink()) throw new Error("review_symlink_rejected");
+      if (!stat.isDirectory()) throw new Error("review_output_not_directory");
+    } catch (error) {
+      if (!error || typeof error !== "object" || error.code !== "ENOENT") throw error;
+      await mkdir(cursor);
+    }
+    const realCursor = await realpath(cursor);
+    if (realCursor === realRoot || !realCursor.startsWith(`${realRoot}${path.sep}`)) throw new Error("review_path_outside_local_output");
+  }
 }
 
 function safeErrorCode(error) {
@@ -86,6 +80,7 @@ function safeErrorCode(error) {
     "catalog_header_missing", "catalog_required_column_missing", "catalog_csv_unterminated_quote",
     "catalog_work_missing", "catalog_work_invalid", "edition_fetch_failed", "edition_redirect_rejected",
     "edition_body_missing", "source_too_large", "source_body_missing", "work_ids_invalid",
+    "review_path_outside_local_output", "review_symlink_rejected", "review_output_not_directory",
   ]);
   return error instanceof Error && known.has(error.message) ? error.message : "upstream_or_catalog_error";
 }
@@ -98,7 +93,10 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) return usage();
 
-  const snapshot = await resolveAozoraRightsCatalog();
+  const [snapshot, policy] = await Promise.all([
+    resolveAozoraRightsCatalog(),
+    readFile(POLICY_PATH, "utf8").then((value) => JSON.parse(value)),
+  ]);
   const candidates = snapshot.works.filter(isAozoraRightsBatchCandidate).sort((a, b) => compareIds(a.id, b.id));
   const candidateById = new Map(candidates.map((work) => [work.id, work]));
   const selectedIds = [];
@@ -139,8 +137,8 @@ async function main() {
   delete unsigned.packageSha256;
   const { createHash } = await import("node:crypto");
   packageForOutput.packageSha256 = createHash("sha256").update(JSON.stringify(unsigned)).digest("hex");
-  // The package helper's approval path requires the canonical hash. For successful candidates
-  // only, the separate approval template is generated from the same final package.
+  const batchPackage = createAozoraRightsBatchReviewPackage(packageForOutput, policy);
+  const batchApprovalTemplate = createAozoraRightsBatchApprovalTemplate(batchPackage);
 
   const allRows = [[
     "カタログ取得日時", "カタログCSV SHA-256", "作品ID", "作品名", "読み", "著者表示", "CSV段階分類（版未取得）", "分類理由", "作品著作権フラグ", "人物著作権フラグ",
@@ -184,22 +182,59 @@ async function main() {
     editionFailureCount: editionFailures.size,
     editionFailureCodes: Object.fromEntries(editionFailures),
     packageSha256: packageForOutput.packageSha256,
+    batchPackageSha256: batchPackage.packageSha256,
+    policySha256: calculateAozoraRightsPolicySha256(policy),
+    batchScreening: batchPackage.screening,
   };
-  const template = makeApprovalTemplate(packageForOutput);
-  await mkdir(options.directory, { recursive: true });
+  const batchRows = [[
+    "基準ID", "基準バージョン", "基準SHA-256", "審査パッケージSHA-256", "対象セットSHA-256", "作品ID", "作品名", "関係者・役割",
+    "分類", "理由", "作品フラグ", "人物フラグ", "図書カードURL", "本文XHTML URL", "本文SHA-256", "底本", "初出",
+  ]];
+  for (const work of batchPackage.works) {
+    const source = work.reviewWork;
+    batchRows.push([
+      policy.policyId, policy.version, batchPackage.policy.sha256, batchPackage.packageSha256, batchPackage.selection.sha256,
+      source.workId, source.title, source.contributors.map(({ name, role }) => `${name}（${role}）`).join("; "), work.category,
+      work.reasons.join("; "), source.workCopyrightFlags, source.catalogPersonCopyrightFlags, source.cardUrl,
+      source.xhtmlUrl, source.sourceSha256 ?? "", source.sourceMetadata.baseText, source.sourceMetadata.firstPublication,
+    ]);
+  }
+  const batchSummary = {
+    schema: "amuhon-aozora-rights-batch-summary/v1",
+    policy: {
+      id: policy.policyId,
+      version: policy.version,
+      sha256: calculateAozoraRightsPolicySha256(policy),
+      status: policy.status,
+      legalReviewStatus: policy.legalReviewStatus,
+      aRegistrationAllowed: batchPackage.screening.aRegistrationAllowed,
+    },
+    sourceReviewPackageSha256: packageForOutput.packageSha256,
+    batchPackageSha256: batchPackage.packageSha256,
+    candidateSetSha256: batchPackage.selection.sha256,
+    screening: batchPackage.screening,
+    note: "bulk_candidateは公式CSV等の機械スクリーニング候補。法務確認・基準承認・対象一覧への人間の明示承認が終わるまでAではなく、SQL生成もできません。",
+  };
+  await ensureSafeOutputDirectory(options.directory);
   await Promise.all([
-    writeFile(path.join(options.directory, "catalog-classification.csv"), toCsv(allRows), "utf8"),
-    writeFile(path.join(options.directory, "review-50.csv"), toCsv(selectedRows), "utf8"),
-    writeFile(path.join(options.directory, "review-package.json"), `${JSON.stringify(packageForOutput, null, 2)}\n`, "utf8"),
-    writeFile(path.join(options.directory, "approval-template.json"), `${JSON.stringify(template, null, 2)}\n`, "utf8"),
-    writeFile(path.join(options.directory, "summary.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8"),
+    writeFile(path.join(options.directory, "catalog-classification.csv"), toCsv(allRows), { encoding: "utf8", flag: "wx" }),
+    writeFile(path.join(options.directory, "review-50.csv"), toCsv(selectedRows), { encoding: "utf8", flag: "wx" }),
+    writeFile(path.join(options.directory, "review-package.json"), `${JSON.stringify(packageForOutput, null, 2)}\n`, { encoding: "utf8", flag: "wx" }),
+    writeFile(path.join(options.directory, "batch-review.json"), `${JSON.stringify(batchPackage, null, 2)}\n`, { encoding: "utf8", flag: "wx" }),
+    writeFile(path.join(options.directory, "batch-review.csv"), toCsv(batchRows), { encoding: "utf8", flag: "wx" }),
+    writeFile(path.join(options.directory, "batch-approval-template.json"), `${JSON.stringify(batchApprovalTemplate, null, 2)}\n`, { encoding: "utf8", flag: "wx" }),
+    writeFile(path.join(options.directory, "batch-summary.json"), `${JSON.stringify(batchSummary, null, 2)}\n`, { encoding: "utf8", flag: "wx" }),
+    writeFile(path.join(options.directory, "summary.json"), `${JSON.stringify(report, null, 2)}\n`, { encoding: "utf8", flag: "wx" }),
   ]);
   console.log(`Catalog works: ${snapshot.works.length}`);
   console.log(`Metadata screening: ${JSON.stringify(report.metadataScreeningCounts)}`);
   console.log(`Review sample: ${selectedIds.length}; XHTML verified: ${editionsById.size}; XHTML failures: ${editionFailures.size}`);
   console.log(`Catalog CSV SHA-256: ${snapshot.sha256}`);
   console.log(`Review package SHA-256: ${packageForOutput.packageSha256}`);
+  console.log(`Batch policy SHA-256: ${batchSummary.policy.sha256}`);
+  console.log(`Batch screening: ${JSON.stringify(batchPackage.screening)}`);
   console.log(`Output directory: ${options.directory}`);
+  console.log("No legacy per-work approval template was generated.");
   console.log("No database or Storage connection was made. No rights status was approved.");
 }
 

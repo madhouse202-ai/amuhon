@@ -2,7 +2,7 @@
 
 更新日：2026-11-20
 
-この機能は公式カタログを使って審査候補を絞り、版の識別情報をまとめるためのものです。**機械候補は販売承認ではありません。** CSVの「なし」だけでは原作性、国内での保護期間、第三者素材、個別の商用利用条件を確認できません。候補は、運営者が作品・本文版・全関係者を個別に確認し、明示承認するまで編む本の権利台帳ではB相当のままです。
+この機能は公式カタログを使って審査候補を絞り、版の識別情報をまとめるためのものです。**機械候補は販売承認ではありません。** CSVの「なし」だけでは原作性、国内での保護期間、第三者素材、個別の商用利用条件を確認できません。対象は、バージョン管理された共通基準の組織承認と法務確認、対象セットの明示的な人間承認がそろうまでAにならず、注文ゲートも通過しません。
 
 青空文庫の説明では、カタログの「著作権：なし」はジャパンサーチ連携でPDMに対応付けられていますが、同時に資料固有の「青空文庫収録ファイルの取り扱い規準」が適用されます。[2023年のメタデータ連携説明](https://www.aozora.gr.jp/soramoyou/soramoyou2023.html)。青空文庫は、権利が切れたファイルの有償・無償の複製・再配布を認め、由来情報の維持を希望しています。一方、権利存続作品の私的使用を超える利用には権利者の許諾が必要であり、翻訳者にも独立した権利があるとしています。[収録ファイルの取り扱い規準](https://www.aozora.gr.jp/guide/kijyunn.html)。保護期間は単純な死亡年だけで自動承認せず、法改正の経過措置、外国著作物、翻訳・翻案、共同著作、編集・校訂、素材ごとの事情を人が確認してください。[青空文庫の作業マニュアル](https://www.aozora.gr.jp/aozora-manual/)。
 
@@ -27,12 +27,18 @@ Bの主な理由は、翻訳・翻案・共同著作等の役割確認が1,102�
 - `catalog-classification.csv`：全17,840件のCSV段階の分類、フラグ、関係者、出典情報、除外理由（Excel向けUTF-8 BOM）
 - `review-50.csv`：50件の審査用一覧、取得日時、カタログ・対象セット・審査パッケージのSHA-256、本文版SHA-256
 - `review-package.json`：機械処理用の50件パッケージ
-- `approval-template.json`：人が確認事項・根拠・条件・担当者・日時を入力する未承認テンプレート
-- `summary.json`：件数、取得情報、選定方法、版検証結果
+- `batch-review.csv`／`batch-review.json`：共通基準による候補・個別確認・対象外分類と監査情報
+- `batch-approval-template.json`：対象セットを確認して明示承認する未承認テンプレート
+- `batch-summary.json`：共通基準の状態・候補数・登録可否・各ハッシュ
+- `summary.json`：公式カタログ件数、選定方法、版検証結果
 
 カタログCSV SHA-256：`753987275d2d168d654b1ff4385fcaed14063e21575f9db279c8beff41e9cf4d`
 50件の対象セットSHA-256：`025b147e82b883d18146fb1742bfd7a1e0f6097a5ef82957d82dad9280179804`
 審査パッケージSHA-256：`9ae7bd0aac340d3eaeb135a5995c375537c5f9d06c6290e3218fb19984dc335a`
+
+既存50件へ共通基準v1.0.0を適用したローカル結果では、公式カタログの一次候補が50件、個別確認0件、対象外0件です。ただし基準状態は `draft`／法務確認 `unconfirmed` のため、A登録可能数は0件です。`batch-approval-template.json` は `explicitHumanApproval=false`、`approvedWorkIds=[]` です。基準SHA-256は `bd4d17f7503349fa8706112bbae0ef920335d0c3a3a7a9a7f529f14b3c0a4db0`、バッチパッケージSHA-256は `365b28b7f50ca891db5062a4d5fbeb98a62734ae1984e846fb5fbdef8f28278c`、候補セットSHA-256は `f170d059352301cdad143bb25f06a3a44e7e14402668c3d54277abb468f6c505` です。
+
+出力は同じローカル審査フォルダー内の `batch-review.csv`、`batch-review.json`、`batch-approval-template.json`、`batch-summary.json` です。公式ファイルのSHA-256は前回値と一致しました。『鼻』『夢十夜』『注文の多い料理店』は引き続き候補として含まれますが、いずれも法的承認ではありません。
 
 この作業では全件のXHTMLは取得していません。50件のみ、並列数1・作品間250ms間隔で取得しました。CSVとXHTMLは公式の固定HTTPSホストから取得し、転送を拒否し、既存の応答サイズ・タイムアウト・`main_text` 検査を適用しています。
 
@@ -44,7 +50,13 @@ Bの主な理由は、翻訳・翻案・共同著作等の役割確認が1,102�
 
 作品著作権または人物著作権が「あり」の行があればCを優先します。それ以外の未知値はBです。分類ロジックに死亡年を使っていません。役割が「著者」一名であることも、原作性や国内著作物である法的確認の代わりにはなりません。
 
-## 審査パッケージ作成
+## 共通審査基準
+
+基準定義は [`data/aozora-rights-policy-v1.json`](../data/aozora-rights-policy-v1.json) です。基準ID・バージョン・適用条件・除外条件・公式資料URL・人間が確認する内容・状態を保持します。現在は `status=draft`、`legalReviewStatus=unconfirmed` で、承認者・日付・法務根拠は未設定です。この状態ではA登録SQLを生成できません。
+
+実際に基準を承認するときは、事実に基づいてこのバージョン付き基準を更新し、運営承認者・日時、法務確認者・日時・根拠を入力して `status=active`、`legalReviewStatus=confirmed` とします。変更後に基準SHA-256が変わるため、審査パッケージを再生成してください。法務確認済みと推測で入力してはいけません。基準停止時は `status=suspended` にし、新規SQL生成を停止します。
+
+## 50作品の一括審査パッケージ
 
 Windows PowerShell（リポジトリルート）から実行します。
 
@@ -52,26 +64,43 @@ Windows PowerShell（リポジトリルート）から実行します。
 npm run rights:aozora:prepare -- --limit 50 --out run-YYYYMMDD
 ```
 
-全件CSV分類のあと、著者役割一名の候補を作品ID数値順に選びます。回帰確認の3作品が条件を満たしていれば先頭に含めます。本文は選定50件だけを直列取得します。出力は `.local-assets/rights-review/run-YYYYMMDD/` に作られ、Gitへ追加されません。`--limit` は1〜50に制限されています。
+全件CSV分類のあと、著者役割一名の機械候補を作品ID数値順に選びます。回帰確認の3作品が条件を満たしていれば先頭に含めます。本文は選定50件だけを直列取得します。出力は `.local-assets/rights-review/run-YYYYMMDD/` に作られ、Gitへ追加されません。`--limit` は1〜50に制限されています。既存出力を上書きしないため、新しい `--out` ディレクトリを指定してください。
+
+このコマンドは一次審査パッケージと共通基準による一括審査パッケージの両方を作ります。新規運用で旧 `approval-template.json` は使いません。過去の実行フォルダーに同名ファイルが残っていても旧形式として扱い、SQL生成コマンドには渡さないでください。
+
+すでにあるv1 `review-package.json` から一括審査出力だけを再作成する場合に使います。これはローカル処理で、追加の本文取得やDBアクセスはありません。新しいフルパッケージ作成では上の `prepare` が一括審査出力も生成するため、この変換コマンドは通常不要です。
+
+```powershell
+npm run rights:aozora:batch -- --package .local-assets/rights-review/run-20261120/review-package.json --out .local-assets/rights-review/run-20261120
+```
+
+出力は `batch-review.csv`（承認候補・個別確認・対象外、理由、権利フラグ、版SHA-256）、`batch-review.json`（監査用スナップショット）、`batch-approval-template.json`（未承認テンプレート）、`batch-summary.json` です。候補は「公式CSVの一次スクリーニングを通過した集合」で、法務確認が未完了の今は販売用A対象数は0です。
+
+## 人間による一括承認
+
+1. `batch-review.csv` と `batch-review.json` を確認し、対象作品、全関係者・役割・公式フラグ、出典情報、本文版ハッシュ、B/Cの理由を照合します。共通基準の適用条件と例外も確認します。
+2. `batch-approval-template.json` を `batch-approval-confirmed.json` として複製します。承認対象を `approvedWorkIds` に明示し、承認しない候補はすべて `exceptions` に `individual_review` または `excluded` と実際の理由を記録します。対象集合に抜けや重複があると停止します。
+3. `explicitHumanApproval` を `true` にし、規定の一括承認文言を維持します。実際の担当者名・日時、共通の確認根拠、出典・利用条件を一度だけ入力します。各作品・権利者ごとに同じ文を重複入力しません。共通基準でカバーできない作品は承認せず、個別審査へ回します。
+
+一括承認は基準の法務確認や作品の法的安全性を機械が保証するものではありません。基準ファイルの状態がactiveかつ法務確認済みでなければ、次のSQL生成コマンドはネットワーク取得前に停止します。
 
 ## A登録SQLの生成
 
-1. `approval-template.json` を同じフォルダー内に `approval-confirmed.json` としてコピーします。
-2. 作品を一件ずつ確認し、承認しない作品は `works` から取り除きます。承認する場合だけ全確認項目を `true` にし、担当者の実名、実際の確認日時、各作品・各権利者の根拠と条件を記入します。根拠や条件を推測で補わないでください。
-3. すべての対象を承認するときだけ、`explicitHumanApproval` を `true` にし、`approvalStatement` はテンプレートの固定文のままにします。
-4. 次のコマンドを実行します。
+基準がactive・法務確認済みで、対象セットの人間承認を実際に記録した場合だけ実行します。
 
 ```powershell
-npm run rights:aozora:sql -- --package .local-assets/rights-review/run-YYYYMMDD/review-package.json --approval .local-assets/rights-review/run-YYYYMMDD/approval-confirmed.json --out .local-assets/rights-review/run-YYYYMMDD/register-approved-a.sql
+npm run rights:aozora:sql -- --package .local-assets/rights-review/run-YYYYMMDD/batch-review.json --approval .local-assets/rights-review/run-YYYYMMDD/batch-approval-confirmed.json --out .local-assets/rights-review/run-YYYYMMDD/register-approved-a.sql
 ```
 
-このコマンドは、最新の公式カタログCSVハッシュ、選択作品の権利フラグ・関係者・URL・出典情報、承認作品のXHTML実バイトSHA-256を再取得して完全一致を確認します。カタログまたは本文版が変わっていればSQLを生成しません。入力・出力パスはローカル審査フォルダー内に制限し、出力ファイルの上書きも拒否します。無効な承認テンプレートではSQLを生成しません。
+コマンドは最新CSVを取得し、**承認対象作品だけ**の作品ID・権利フラグ・全関係者・書誌情報・URLを審査パッケージと照合します。全CSVのSHA-256は審査時と最新時の両方を監査情報として記録しますが、無関係な作品だけの変更では停止しません。承認対象の情報が変わった場合、またはその作品のXHTML実バイトSHA-256が変わった場合は停止します。最新カタログに接続できない場合も停止します。取得は固定HTTPSホスト、リダイレクト拒否、サイズ・タイムアウト制限を維持し、対象XHTMLのみ直列に再取得します。
 
-生成SQLはレビュー専用ファイルです。DBへ接続・適用はしません。既存レコードがある場合は上書き・削除せずトランザクションを失敗させる挿入専用のSQLです。実行前に内容を独立レビューし、既存のB行が同じ主キーで存在する場合は別途安全な昇格手順を設計してください。承認後の処理でも既存の注文API・権利RPCは変更せず、Aの作品・版と全権利者がAでなければ注文を拒否する現行ゲートを維持します。
+生成SQLはレビュー専用で、自動実行しません。基準ID・バージョン・SHA-256と法務確認状態、対象/バッチSHA、レビュー時と最新時のCSVハッシュ、作品・関係者のフラグと書誌情報、実際の担当者・日時、根拠・利用条件を各レコードの監査情報に展開します。SQLは挿入専用で、既存の同一版レコードがあれば上書きせずトランザクションを停止します。既存のB行のA昇格は別のレビュー・手順が必要です。DBへ接続・適用しません。
+
+既存の注文API・権利RPCは変更せず、使用版が完全一致し、作品と全権利者がAでなければ注文を拒否する現行ゲートを維持します。
 
 ## 検証・制約
 
-- `npm run test:aozora-rights-batch`：公式カタログCSVのヘッダー解析、複数人物行・引用符・改行、A候補/B/C分類、実バイトSHA-256、未承認・B/C・ハッシュ不一致のSQL拒否、既存注文権利ゲートを確認。
+- `npm run test:aozora-rights-batch`：公式CSV解析、基準の状態・法務ゲート、対象セット全体の明示承認、B/C除外、対象作品変更・XHTMLハッシュ変更の拒否、無関係な全体CSV更新の許容、監査情報を含むSQL草案、既存注文権利ゲートを確認。
 - `npx tsc --noEmit`：確認済み。
 - DB接続、Stripe、Supabase Storage、注文APIの実呼び出しはしていません。
 - 本分類は法律意見ではありません。Aozoraの「なし」区分は有力な一次スクリーニング情報ですが、別個の権利・利用条件確認を置き換えません。

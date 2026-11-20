@@ -18,6 +18,7 @@
     "test:staging-e2e-contract": "node --experimental-strip-types --test tests/staging-e2e-contract.test.mjs",
     "test:bookshelf-ui": "node --test tests/bookshelf-kana-ui.local.test.mjs",
     "rights:aozora:prepare": "node --experimental-strip-types scripts/prepare-aozora-rights-review.mjs",
+    "rights:aozora:batch": "node --experimental-strip-types scripts/prepare-aozora-rights-batch-review.mjs",
     "rights:aozora:sql": "node --experimental-strip-types scripts/generate-aozora-rights-registration-sql.mjs",
     "test:aozora-rights-batch": "node --experimental-strip-types --test tests/aozora-rights-batch.test.mjs",
     "test:order-validation-sql": "node --test tests/order-validation-jobs-migration.test.mjs tests/order-validation-asset-commit-migration.test.mjs tests/order-validation-targeted-claim-migration.test.mjs",
