@@ -8,25 +8,46 @@ const MAX_CATALOG_CSV_CHARS = 100 * 1024 * 1024;
 const MAX_XHTML_BYTES = 8 * 1024 * 1024;
 const CATALOG_CACHE_MS = 5 * 60 * 1000;
 
-type CatalogContributor = { name: string; role: string; reading: string };
-type CatalogWork = BookWork & {
+export type AozoraCatalogContributor = {
+  name: string;
+  role: string;
+  reading: string;
+  personIds: string[];
+  copyrightFlags: string[];
+  missingCopyrightFlagRows: number;
+};
+export type AozoraRightsCatalogWork = Omit<BookWork, "contributors" | "sourceMetadata"> & {
   titleReading: string;
   sortReading: string;
-  contributors: CatalogContributor[];
+  contributors: AozoraCatalogContributor[];
   sourceMetadata: CatalogSourceMetadata;
+  workCopyrightFlags: string[];
+  missingWorkCopyrightFlagRows: number;
+  catalogPersonCopyrightFlags: string[];
+  missingPersonCopyrightFlagRows: number;
+  incompleteContributorRows: number;
+  sourceMetadataConflicts: string[];
+  catalogIssues: string[];
+  catalogRowCount: number;
 };
-export type VerifiedAozoraWork = CatalogWork & { sourceSha256: string };
+export type VerifiedAozoraWork = AozoraRightsCatalogWork & { sourceSha256: string };
 
-let catalogCache: { expiresAt: number; promise: Promise<Map<string, CatalogWork>> } | null = null;
+type LoadedCatalog = {
+  fetchedAt: string;
+  sha256: string;
+  works: Map<string, AozoraRightsCatalogWork>;
+};
+let catalogCache: { expiresAt: number; promise: Promise<LoadedCatalog> } | null = null;
 
-function parseCsvLine(line: string): string[] {
-  const values: string[] = [];
+function parseCsvRecords(csv: string): string[][] {
+  const records: string[][] = [];
+  let values: string[] = [];
   let current = "";
   let inQuotes = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
+  for (let index = 0; index < csv.length; index += 1) {
+    const char = csv[index];
     if (char === '"') {
-      if (inQuotes && line[index + 1] === '"') {
+      if (inQuotes && csv[index + 1] === '"') {
         current += '"';
         index += 1;
       } else {
@@ -35,19 +56,29 @@ function parseCsvLine(line: string): string[] {
     } else if (char === "," && !inQuotes) {
       values.push(current);
       current = "";
+    } else if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && csv[index + 1] === "\n") index += 1;
+      values.push(current);
+      records.push(values);
+      values = [];
+      current = "";
     } else {
       current += char;
     }
   }
-  values.push(current);
-  return values;
+  if (current.length > 0 || values.length > 0) {
+    values.push(current);
+    records.push(values);
+  }
+  if (inQuotes) throw new Error("catalog_csv_unterminated_quote");
+  return records;
 }
 
 function normalizeColumnName(value: string): string {
   return value.trim().replace(/^\uFEFF/, "").replace(/^"|"$/g, "").replace(/\s+/g, "").replace(/　/g, "");
 }
 
-function requiredAozoraUrl(value: string, id: string, kind: "xhtml" | "text" | "card"): string | null {
+export function validateAozoraCatalogUrl(value: string, id: string, kind: "xhtml" | "text" | "card"): string | null {
   try {
     const url = new URL(value);
     const allowedHost = url.hostname === "www.aozora.gr.jp" || url.hostname === "aozora.gr.jp";
@@ -98,11 +129,11 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<Ui
   return bytes;
 }
 
-function buildCatalog(csvText: string): Map<string, CatalogWork> {
+function buildCatalog(csvText: string): Map<string, AozoraRightsCatalogWork> {
   if (csvText.length > MAX_CATALOG_CSV_CHARS) throw new Error("catalog_too_large");
-  const lines = csvText.split(/\r?\n/);
-  if (!lines[0]) throw new Error("catalog_header_missing");
-  const header = parseCsvLine(lines[0]).map(normalizeColumnName);
+  const rows = parseCsvRecords(csvText);
+  if (!rows[0]) throw new Error("catalog_header_missing");
+  const header = rows[0].map(normalizeColumnName);
   const find = (...names: string[]) => header.findIndex((column) => names.some((name) => column === normalizeColumnName(name)));
   const indexes = {
     id: find("作品ID", "作品ＩＤ", "作品id"),
@@ -117,6 +148,9 @@ function buildCatalog(csvText: string): Map<string, CatalogWork> {
     firstNameReading: find("名読み", "名よみ"),
     titleReading: find("作品名読み", "作品名よみ"),
     sortReading: find("ソート用読み", "ソート用よみ"),
+    workCopyright: find("作品著作権フラグ"),
+    personId: find("人物ID", "人物ＩＤ"),
+    personCopyright: find("人物著作権フラグ"),
     firstPublication: find("初出"),
     baseText: find("底本名1", "底本1", "底本名"),
     basePublisher: find("底本出版社名1", "底本出版社1", "底本出版社名"),
@@ -127,14 +161,13 @@ function buildCatalog(csvText: string): Map<string, CatalogWork> {
     throw new Error("catalog_required_column_missing");
   }
 
-  const works = new Map<string, CatalogWork>();
-  const ambiguousIds = new Set<string>();
-  for (const line of lines.slice(1)) {
-    if (!line.trim()) continue;
-    const columns = parseCsvLine(line);
+  const works = new Map<string, AozoraRightsCatalogWork>();
+  const metadataValues = new Map<string, Record<keyof CatalogSourceMetadata, Set<string>>>();
+  for (const columns of rows.slice(1)) {
+    if (columns.length === 1 && !columns[0].trim()) continue;
     const id = columns[indexes.id]?.trim() ?? "";
     const title = columns[indexes.title]?.trim() ?? "";
-    if (!/^\d{1,12}$/.test(id) || !title) continue;
+    if (!/^\d{1,12}$/.test(id)) continue;
     const cardUrl = columns[indexes.cardUrl]?.trim() ?? "";
     const textUrl = columns[indexes.textUrl]?.trim() ?? "";
     const xhtmlUrl = columns[indexes.xhtmlUrl]?.trim() ?? "";
@@ -143,11 +176,10 @@ function buildCatalog(csvText: string): Map<string, CatalogWork> {
     const name = `${lastName} ${firstName}`.trim();
     const role = indexes.role < 0 ? "著者" : columns[indexes.role]?.trim() ?? "";
     const reading = `${indexes.lastNameReading < 0 ? "" : columns[indexes.lastNameReading]?.trim() ?? ""} ${indexes.firstNameReading < 0 ? "" : columns[indexes.firstNameReading]?.trim() ?? ""}`.trim();
+    const workCopyright = indexes.workCopyright < 0 ? "" : columns[indexes.workCopyright]?.trim() ?? "";
+    const personId = indexes.personId < 0 ? "" : columns[indexes.personId]?.trim() ?? "";
+    const personCopyright = indexes.personCopyright < 0 ? "" : columns[indexes.personCopyright]?.trim() ?? "";
     let work = works.get(id);
-    if (work && (work.title !== title || work.cardUrl !== cardUrl || work.textUrl !== textUrl || work.xhtmlUrl !== xhtmlUrl)) {
-      ambiguousIds.add(id);
-      continue;
-    }
     if (!work) {
       work = {
         id,
@@ -160,11 +192,36 @@ function buildCatalog(csvText: string): Map<string, CatalogWork> {
         xhtmlUrl,
         contributors: [],
         sourceMetadata: { firstPublication: "", baseText: "", basePublisher: "", inputter: "", proofreader: "" },
+        workCopyrightFlags: [],
+        missingWorkCopyrightFlagRows: 0,
+        catalogPersonCopyrightFlags: [],
+        missingPersonCopyrightFlagRows: 0,
+        incompleteContributorRows: 0,
+        sourceMetadataConflicts: [],
+        catalogIssues: [],
+        catalogRowCount: 0,
       };
       works.set(id, work);
     }
-    if (!work.titleReading && indexes.titleReading >= 0) work.titleReading = columns[indexes.titleReading]?.trim() ?? "";
-    if (!work.sortReading && indexes.sortReading >= 0) work.sortReading = columns[indexes.sortReading]?.trim() ?? "";
+    work.catalogRowCount += 1;
+    if (!title && !work.catalogIssues.includes("title_missing")) work.catalogIssues.push("title_missing");
+    if (!workCopyright) work.missingWorkCopyrightFlagRows += 1;
+    if (!work.workCopyrightFlags.includes(workCopyright)) work.workCopyrightFlags.push(workCopyright);
+    if (!personCopyright) work.missingPersonCopyrightFlagRows += 1;
+    if (!work.catalogPersonCopyrightFlags.includes(personCopyright)) work.catalogPersonCopyrightFlags.push(personCopyright);
+    if (work.title !== title || work.cardUrl !== cardUrl || work.textUrl !== textUrl || work.xhtmlUrl !== xhtmlUrl) {
+      if (!work.catalogIssues.includes("work_identity_conflict")) work.catalogIssues.push("work_identity_conflict");
+    }
+    const titleReading = indexes.titleReading < 0 ? "" : columns[indexes.titleReading]?.trim() ?? "";
+    const sortReading = indexes.sortReading < 0 ? "" : columns[indexes.sortReading]?.trim() ?? "";
+    if (!work.titleReading && titleReading) work.titleReading = titleReading;
+    else if (work.titleReading && titleReading && work.titleReading !== titleReading && !work.catalogIssues.includes("title_reading_conflict")) {
+      work.catalogIssues.push("title_reading_conflict");
+    }
+    if (!work.sortReading && sortReading) work.sortReading = sortReading;
+    else if (work.sortReading && sortReading && work.sortReading !== sortReading && !work.catalogIssues.includes("sort_reading_conflict")) {
+      work.catalogIssues.push("sort_reading_conflict");
+    }
     const metadata: CatalogSourceMetadata = {
       firstPublication: indexes.firstPublication < 0 ? "" : columns[indexes.firstPublication]?.trim() ?? "",
       baseText: indexes.baseText < 0 ? "" : columns[indexes.baseText]?.trim() ?? "",
@@ -175,18 +232,41 @@ function buildCatalog(csvText: string): Map<string, CatalogWork> {
     for (const key of Object.keys(metadata) as Array<keyof CatalogSourceMetadata>) {
       if (!work.sourceMetadata[key] && metadata[key]) work.sourceMetadata[key] = metadata[key];
     }
-    if (name && role && !work.contributors.some((person) => person.name === name && person.role === role)) {
-      work.contributors.push({ name, role, reading });
+    let knownValues = metadataValues.get(id);
+    if (!knownValues) {
+      knownValues = { firstPublication: new Set(), baseText: new Set(), basePublisher: new Set(), inputter: new Set(), proofreader: new Set() };
+      metadataValues.set(id, knownValues);
+    }
+    for (const key of Object.keys(metadata) as Array<keyof CatalogSourceMetadata>) {
+      if (metadata[key]) knownValues[key].add(metadata[key]);
+    }
+    if (name && role) {
+      let contributor = work.contributors.find((person) => person.name === name && person.role === role);
+      if (!contributor) {
+        contributor = { name, role, reading, personIds: [], copyrightFlags: [], missingCopyrightFlagRows: 0 };
+        work.contributors.push(contributor);
+      }
+      if (personId && !contributor.personIds.includes(personId)) contributor.personIds.push(personId);
+      if (!personCopyright) contributor.missingCopyrightFlagRows += 1;
+      if (!contributor.copyrightFlags.includes(personCopyright)) contributor.copyrightFlags.push(personCopyright);
+    } else if (name || role || personId || personCopyright) {
+      work.incompleteContributorRows += 1;
     }
     if (["著者", "作者", "原著者"].includes(role) && name) {
       work.author = [...new Set(work.contributors.filter((person) => ["著者", "作者", "原著者"].includes(person.role)).map((person) => person.name))].join("・");
     }
   }
-  for (const id of ambiguousIds) works.delete(id);
+  for (const [id, work] of works) {
+    const knownValues = metadataValues.get(id);
+    if (knownValues) {
+      work.sourceMetadataConflicts = (Object.keys(knownValues) as Array<keyof CatalogSourceMetadata>)
+        .filter((key) => knownValues?.[key].size > 1);
+    }
+  }
   return works;
 }
 
-async function loadCatalog(fetcher: typeof fetch): Promise<Map<string, CatalogWork>> {
+async function loadCatalog(fetcher: typeof fetch): Promise<LoadedCatalog> {
   if (catalogCache && catalogCache.expiresAt > Date.now()) return catalogCache.promise;
   {
     const current = (async () => {
@@ -202,8 +282,13 @@ async function loadCatalog(fetcher: typeof fetch): Promise<Map<string, CatalogWo
       const zip = await JSZip.loadAsync(archive);
       const csvName = Object.keys(zip.files).find((name) => name.endsWith(".csv"));
       if (!csvName) throw new Error("catalog_csv_missing");
-      const csvText = await zip.files[csvName].async("string");
-      return buildCatalog(csvText);
+      const csvBytes = await zip.files[csvName].async("uint8array");
+      const csvText = new TextDecoder("utf-8", { fatal: true }).decode(csvBytes);
+      return {
+        fetchedAt: new Date().toISOString(),
+        sha256: createHash("sha256").update(csvBytes).digest("hex"),
+        works: buildCatalog(csvText),
+      };
     })();
     const entry = { expiresAt: Date.now() + CATALOG_CACHE_MS, promise: current };
     catalogCache = entry;
@@ -214,11 +299,25 @@ async function loadCatalog(fetcher: typeof fetch): Promise<Map<string, CatalogWo
   }
 }
 
-async function fetchEdition(work: CatalogWork, fetcher: typeof fetch): Promise<VerifiedAozoraWork> {
-  const cardUrl = requiredAozoraUrl(work.cardUrl, work.id, "card");
-  const textUrl = requiredAozoraUrl(work.textUrl, work.id, "text");
-  const xhtmlUrl = requiredAozoraUrl(work.xhtmlUrl, work.id, "xhtml");
-  if (!cardUrl || !textUrl || !xhtmlUrl || work.contributors.length === 0 || work.contributors.length > 20 ||
+/** Returns a bounded, header-parsed snapshot of official catalog metadata without downloading work texts. */
+export async function resolveAozoraRightsCatalog(fetcher: typeof fetch = fetch): Promise<{
+  fetchedAt: string;
+  sha256: string;
+  works: AozoraRightsCatalogWork[];
+}> {
+  const catalog = await loadCatalog(fetcher);
+  return {
+    fetchedAt: catalog.fetchedAt,
+    sha256: catalog.sha256,
+    works: [...catalog.works.values()].map((work) => ({ ...work, contributors: work.contributors.map((person) => ({ ...person })) })),
+  };
+}
+
+async function fetchEdition(work: AozoraRightsCatalogWork, fetcher: typeof fetch): Promise<VerifiedAozoraWork> {
+  const cardUrl = validateAozoraCatalogUrl(work.cardUrl, work.id, "card");
+  const textUrl = validateAozoraCatalogUrl(work.textUrl, work.id, "text");
+  const xhtmlUrl = validateAozoraCatalogUrl(work.xhtmlUrl, work.id, "xhtml");
+  if (work.catalogIssues.length > 0 || !cardUrl || !textUrl || !xhtmlUrl || work.contributors.length === 0 || work.contributors.length > 20 ||
       work.title.length > 500 || work.author.length > 300 ||
       work.contributors.some((person) => !person.name || person.name.length > 300 || !person.role || person.role.length > 80) ||
       Object.values(work.sourceMetadata).some((value) => value.length > 2000)) throw new Error("catalog_work_invalid");
@@ -249,7 +348,7 @@ export async function resolveAozoraWorkEditions(ids: string[], fetcher: typeof f
   if (!Array.isArray(ids) || ids.length < 1 || ids.length > 100 || ids.some((id) => !/^\d{1,12}$/.test(id)) || new Set(ids).size !== ids.length) {
     throw new Error("work_ids_invalid");
   }
-  const catalog = await loadCatalog(fetcher);
+  const catalog = (await loadCatalog(fetcher)).works;
   const selected = ids.map((id) => {
     const work = catalog.get(id);
     if (!work) throw new Error("catalog_work_missing");

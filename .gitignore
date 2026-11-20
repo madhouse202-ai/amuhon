@@ -21,6 +21,7 @@
 /tmp/final-toc-comparison/
 /tmp/pdf-renderer-worker/
 /.local-assets/fonts/
+/.local-assets/rights-review/
 
 # production
 /build
