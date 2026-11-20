@@ -6,7 +6,7 @@ import { serializeOrderUploadCookie } from "../../../lib/order-upload-cookie.ts"
 import { createSupabaseServiceHeaders, getSupabaseServiceCredential } from "../../../lib/supabase-service-credential.ts";
 import { callOrderRpc, getSupabaseServerConfig } from "../../../lib/order-checkout-server.ts";
 import { parseCommercialRightsApproval } from "../../../lib/commercial-rights.ts";
-import type { BookWork } from "../../../lib/book.ts";
+import { resolveAozoraWorkEditions } from "../../../lib/aozora-edition.ts";
 import { isLegacyBuyerAssetFlowEnabled } from "../../../lib/order-production-gate.ts";
 
 export const runtime = "nodejs";
@@ -61,18 +61,9 @@ function boundedString(value: unknown, maxLength: number): string | null {
   return clean.length > 0 && clean.length <= maxLength ? clean : null;
 }
 
-function safeHttpUrl(value: unknown): string | null {
-  const input = boundedString(value, 2048);
-  if (!input) return null;
-  try {
-    const url = new URL(input);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
-  } catch {
-    return null;
-  }
-}
+type ParsedBookSelection = Omit<OrderBookSnapshot, "works"> & { workIds: string[] };
 
-function parseBookSnapshot(input: unknown): OrderBookSnapshot | null {
+function parseBookSelection(input: unknown): ParsedBookSelection | null {
   if (!input || typeof input !== "object") return null;
   const raw = input as Record<string, unknown>;
   if (!Array.isArray(raw.works) || raw.works.length < 1 || raw.works.length > MAX_WORKS) return null;
@@ -83,53 +74,20 @@ function parseBookSnapshot(input: unknown): OrderBookSnapshot | null {
   const editor = boundedString(raw.editor, 100);
   if (!title || !editor) return null;
 
-  const works: BookWork[] = [];
+  const workIds: string[] = [];
   const seenIds = new Set<string>();
   for (const item of raw.works) {
     if (!item || typeof item !== "object") return null;
     const work = item as Record<string, unknown>;
     const id = boundedString(work.id, 200);
-    const workTitle = boundedString(work.title, 500);
-    const author = typeof work.author === "string" && work.author.length <= 300 ? work.author.trim() : null;
-    const cardUrl = safeHttpUrl(work.cardUrl);
-    const textUrl = safeHttpUrl(work.textUrl);
-    const xhtmlUrl = safeHttpUrl(work.xhtmlUrl);
-    if (!id || !workTitle || author === null || !cardUrl || !textUrl || !xhtmlUrl || seenIds.has(id)) return null;
-    let contributors: BookWork["contributors"];
-    if (work.contributors !== undefined) {
-      if (!Array.isArray(work.contributors) || work.contributors.length > 20) return null;
-      contributors = [];
-      for (const contributorValue of work.contributors) {
-        if (!contributorValue || typeof contributorValue !== "object" || Array.isArray(contributorValue)) return null;
-        const contributor = contributorValue as Record<string, unknown>;
-        const name = boundedString(contributor.name, 300);
-        const role = boundedString(contributor.role, 80);
-        if (!name || !role || Object.keys(contributor).some((key) => !["name", "role"].includes(key))) return null;
-        contributors.push({ name, role });
-      }
-    }
-    let sourceMetadata: BookWork["sourceMetadata"];
-    if (work.sourceMetadata !== undefined) {
-      if (!work.sourceMetadata || typeof work.sourceMetadata !== "object" || Array.isArray(work.sourceMetadata)) return null;
-      const metadata = work.sourceMetadata as Record<string, unknown>;
-      const keys = ["firstPublication", "baseText", "basePublisher", "inputter", "proofreader"];
-      if (Object.keys(metadata).some((key) => !keys.includes(key)) || keys.some((key) => typeof metadata[key] !== "string" || (metadata[key] as string).length > 2000)) return null;
-      sourceMetadata = {
-        firstPublication: metadata.firstPublication as string,
-        baseText: metadata.baseText as string,
-        basePublisher: metadata.basePublisher as string,
-        inputter: metadata.inputter as string,
-        proofreader: metadata.proofreader as string,
-      };
-    }
-    // The browser is not allowed to claim an approved source revision. A
-    // future server preflight must calculate and attach sourceSha256 itself.
-    if (work.sourceSha256 !== undefined || work.rightsNotice !== undefined) return null;
+    // The browser cannot claim the catalog metadata, edition URL, digest, or
+    // permission conditions used by the commercial-rights ledger.
+    if (!id || !/^\d{1,12}$/.test(id) || seenIds.has(id) || work.sourceSha256 !== undefined || work.rightsNotice !== undefined) return null;
     seenIds.add(id);
-    works.push({ id, title: workTitle, author, cardUrl, textUrl, xhtmlUrl, contributors, sourceMetadata });
+    workIds.push(id);
   }
 
-  return { title, editor, coverStyle: raw.coverStyle, coverColor: raw.coverColor, works };
+  return { title, editor, coverStyle: raw.coverStyle, coverColor: raw.coverColor, workIds };
 }
 
 function safePageCount(value: unknown): number | null | undefined {
@@ -174,9 +132,9 @@ export async function POST(request: Request) {
     ? raw.idempotencyKey
     : null;
   const { customer, errors } = validateOrderCustomer(raw.customer);
-  const book = parseBookSnapshot(raw.book);
+  const bookSelection = parseBookSelection(raw.book);
   const declaredBodyPdfPageCount = safePageCount(raw.declaredBodyPdfPageCount);
-  if (!idempotencyKey || !customer || !book || declaredBodyPdfPageCount === undefined) {
+  if (!idempotencyKey || !customer || !bookSelection || declaredBodyPdfPageCount === undefined) {
     return Response.json({
       error: "入力内容または本の情報を確認してください。",
       fields: errors,
@@ -195,7 +153,6 @@ export async function POST(request: Request) {
   if (!clientIp) return errorResponse("注文保存サービスの接続情報が不足しています。入力内容は保存されていません。", 503);
 
   const rateLimitKeyHash = createHmac("sha256", rateLimitSecret).update(clientIp).digest("hex");
-  const requestPayload: OrderDraftRequest = { idempotencyKey, customer, book, declaredBodyPdfPageCount };
 
   let databaseUrl: URL;
   try {
@@ -211,19 +168,44 @@ export async function POST(request: Request) {
   if (!rightsConfig || rightsConfig.url.origin !== databaseUrl.origin) {
     return errorResponse("作品の利用条件を確認できません。入力内容は保存されていません。", 503);
   }
+  let requestPayload: OrderDraftRequest;
   try {
+    const catalogWorks = await resolveAozoraWorkEditions(bookSelection.workIds);
+    const rightsWorks: OrderBookSnapshot["works"] = catalogWorks.map(({ id, title, author, cardUrl, textUrl, xhtmlUrl, contributors, sourceMetadata, sourceSha256 }) => ({
+      id,
+      title,
+      author,
+      cardUrl,
+      textUrl,
+      xhtmlUrl,
+      contributors: contributors.map(({ name, role }) => ({ name, role })),
+      sourceMetadata,
+      sourceSha256,
+    }));
     const rights = await callOrderRpc(rightsConfig, "check_amuhon_works_commercial_rights_v1", {
-      p_works: requestPayload.book.works,
+      p_works: rightsWorks,
     });
     const approval = parseCommercialRightsApproval(rights.data);
     if (!rights.ok || approval === null) return errorResponse("作品の利用条件を確認できません。入力内容は保存されていません。", 503);
     if (!approval.approved) return errorResponse("選択した作品は販売用の利用確認が完了していません。注文内容は保存されていません。", 409);
-    if (approval.notices.length !== requestPayload.book.works.length) return errorResponse("作品の利用条件を確認できません。入力内容は保存されていません。", 503);
-    requestPayload.book.works = requestPayload.book.works.map((work) => {
+    if (approval.notices.length !== rightsWorks.length) return errorResponse("作品の利用条件を確認できません。入力内容は保存されていません。", 503);
+    const approvedWorks = rightsWorks.map((work) => {
       const notice = approval.notices.find((item) => item.workId === work.id);
-      if (!notice) throw new Error("commercial_rights_notice_mismatch");
+      if (!notice || notice.sourceSha256 !== work.sourceSha256) throw new Error("commercial_rights_notice_mismatch");
       return { ...work, sourceSha256: notice.sourceSha256, rightsNotice: notice.conditions };
     });
+    requestPayload = {
+      idempotencyKey,
+      customer,
+      book: {
+        title: bookSelection.title,
+        editor: bookSelection.editor,
+        coverStyle: bookSelection.coverStyle,
+        coverColor: bookSelection.coverColor,
+        works: approvedWorks,
+      },
+      declaredBodyPdfPageCount,
+    };
   } catch {
     return errorResponse("作品の利用条件を確認できません。入力内容は保存されていません。", 503);
   }

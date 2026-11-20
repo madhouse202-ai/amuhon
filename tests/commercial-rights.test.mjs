@@ -46,8 +46,10 @@ test("rights ledger requires exact edition, evidence, each contributor review, a
   assert.match(migration, /rights_unverified/);
   assert.match(queueMigration, /_amuhon_book_works_rights_approved_v1\(target_order\.book_snapshot -> 'works', true\)/);
   assert.match(migration, /_amuhon_book_works_rights_approved_v1\(target_snapshot -> 'works', true\)/);
+  assert.match(orderRoute, /resolveAozoraWorkEditions\(bookSelection\.workIds\)/);
   assert.match(orderRoute, /work\.sourceSha256 !== undefined \|\| work\.rightsNotice !== undefined/);
-  assert.match(orderRoute, /requestPayload\.book\.works = requestPayload\.book\.works\.map/);
+  assert.match(orderRoute, /p_works: rightsWorks/);
+  assert.match(orderRoute, /notice\.sourceSha256 !== work\.sourceSha256/);
   assert.match(orderRoute, /approval\.notices/);
   assert.match(checkout, /check_amuhon_order_commercial_rights_v1/);
   assert.doesNotMatch(migration, /insert into public\.amuhon_work_commercial_rights/i);
@@ -59,8 +61,8 @@ test("printing rights notices enter from server ledger and appear in endmatter",
     read("app/final/page.tsx"),
     read("lib/local-order-pdf-request.ts"),
   ]);
-  assert.match(orderRoute, /work\.sourceSha256 !== undefined \|\| work\.rightsNotice !== undefined/);
-  assert.match(orderRoute, /return \{ \.\.\.work, sourceSha256: notice\.sourceSha256, rightsNotice: notice\.conditions \}/);
+  assert.match(orderRoute, /resolveAozoraWorkEditions\(bookSelection\.workIds\)/);
+  assert.match(orderRoute, /sourceSha256: notice\.sourceSha256, rightsNotice: notice\.conditions/);
   assert.match(sourcePage, /利用条件：\{work\.rightsNotice\}/);
   assert.match(localParser, /work\.rightsNotice/);
 });
