@@ -1,5 +1,7 @@
 # Isolated PDF renderer worker (phase 1)
 
+> 2026-11-21: Cloud Build / staging Job rollout / Schedulerの現行手順は [`STAGING_AUTOMATION.md`](STAGING_AUTOMATION.md) を参照してください。以下の状態説明はこれまでの実装履歴で、クラウドの最新状態を独立確認したものではありません。
+
 This document covers both the original local synthetic render check and the opt-in paid-order queue mode. The self-test remains isolated from Supabase, Storage, Stripe and orders. The operator reports that the additive SQL migration and its queue objects, grants, and RLS were verified on staging. On 2026-11-16 the operator also reported that the Cloud Run Job, pushed image, dedicated service account, Secret Manager configuration, private bucket, and 1 GiB temporary disk were configured, and that an empty-queue execution exited successfully. This environment did not independently inspect those cloud resources or run a paid-order job; see [`STAGING_E2E_RUNBOOK.md`](STAGING_E2E_RUNBOOK.md) for the current staging procedure. Keep the manual upload route and existing payment state transitions in place.
 
 ## What the worker does

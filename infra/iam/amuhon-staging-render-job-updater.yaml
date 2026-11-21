@@ -1,0 +1,6 @@
+title: Amuhon staging PDF job updater
+description: Read and update the existing amuhon-pdf-renderer job only. Does not include create, delete, execute, or IAM policy permissions.
+stage: GA
+includedPermissions:
+  - run.jobs.get
+  - run.jobs.update

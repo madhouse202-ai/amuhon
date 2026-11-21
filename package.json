@@ -16,6 +16,7 @@
     "test:order-checkout": "node --experimental-strip-types --test tests/order-pricing.test.mjs tests/order-checkout-route.test.mjs tests/stripe-webhook-route.test.mjs tests/stripe-paid-session-validation.test.mjs tests/order-payment-reconciliation-route.test.mjs tests/order-checkout-migration.test.mjs tests/order-stripe-livemode-migration.test.mjs tests/order-stripe-checkout-host-allowlist-migration.test.mjs tests/order-stripe-payment-reconciliation-migration.test.mjs tests/dev-stripe-webhook.test.mjs",
     "test:order-admin": "node --experimental-strip-types --test tests/admin-management.test.mjs",
     "test:staging-e2e-contract": "node --experimental-strip-types --test tests/staging-e2e-contract.test.mjs",
+    "test:staging-automation-config": "node --test tests/staging-automation-config.test.mjs",
     "test:bookshelf-ui": "node --test tests/bookshelf-kana-ui.local.test.mjs",
     "rights:aozora:prepare": "node --experimental-strip-types scripts/prepare-aozora-rights-review.mjs",
     "rights:aozora:batch": "node --experimental-strip-types scripts/prepare-aozora-rights-batch-review.mjs",

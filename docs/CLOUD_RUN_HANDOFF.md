@@ -1,5 +1,7 @@
 # PDF製本ワーカー Cloud Run 引き継ぎ
 
+> 2026-11-21: 現在のstaging自動ビルド・Job更新・Scheduler設計は [`STAGING_AUTOMATION.md`](STAGING_AUTOMATION.md) を正とします。この文書は過去の手動セットアップ記録です。以下の旧コマンドをそのまま再実行しないでください。
+
 更新日: 2026-11-15
 
 > 2026-11-16更新: この文書のCloud Run作成手順は、それ以前の未作成状態に対する履歴です。運営者から、staging Job `amuhon-pdf-renderer`、Artifact Registry image、専用サービスアカウント、Secret Manager設定、非公開バケット、1 GiB一時ディスクの構成と、空キューでの正常終了が報告されています。現在の実設定・digestはこの作業環境から独立確認できていません。既存Jobの現在の事前確認と一回限りのE2E手順は [`STAGING_E2E_RUNBOOK.md`](STAGING_E2E_RUNBOOK.md) を参照し、以下の旧 `jobs create` コマンドをそのまま再実行しないでください。

@@ -1,0 +1,7 @@
+title: Amuhon staging Run operation reader
+description: Read Cloud Run operation completion state and project location metadata for the staging renderer deployment.
+stage: GA
+includedPermissions:
+  - run.operations.get
+  - run.locations.list
+  - resourcemanager.projects.get
