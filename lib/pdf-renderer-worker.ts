@@ -12,6 +12,7 @@ import {
   findFinalPdfChromiumExecutable,
   renderLocalFinalBodyPdf,
   type LocalFinalPdfDiagnosticCode,
+  type LocalFinalPdfNotoDiagnosticCounts,
 } from "./local-final-pdf.ts";
 import { MAX_ORDER_ASSET_BYTES, validateCoverPng } from "./order-assets.ts";
 import { calculateSpineTextLayout, isSubmissionPageCount } from "./production.ts";
@@ -127,6 +128,7 @@ export async function renderPdfRendererJob(
   onStage?: (stage: PdfRendererStage) => void,
   onDiagnosticCode?: (code: LocalFinalPdfDiagnosticCode) => void,
   expectedBodyPdfPageCount: number | null = null,
+  onNotoDiagnosticCounts?: (counts: LocalFinalPdfNotoDiagnosticCounts) => void,
 ): Promise<PdfRendererAssetResult> {
   if (expectedBodyPdfPageCount !== null &&
       (!isSubmissionPageCount(expectedBodyPdfPageCount) || expectedBodyPdfPageCount > 300)) {
@@ -146,6 +148,7 @@ export async function renderPdfRendererJob(
     blockExternalRequests: true,
     timeoutMs: 180_000,
     onDiagnosticCode,
+    onNotoDiagnosticCounts,
   });
   onStage?.("BODY_RENDER_COMPLETE");
 

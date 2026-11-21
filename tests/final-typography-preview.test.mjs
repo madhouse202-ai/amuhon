@@ -13,9 +13,11 @@ import {
 } from "../lib/final-typography-preview.ts";
 import { isNotoSerifJpFontFamily, isNotoSerifJpRenderedFont } from "../lib/noto-serif-jp-preview.ts";
 import {
+  LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS,
   LOCAL_FINAL_PDF_DIAGNOSTIC_CODES,
   classifyNotoFontUsageFailure,
   createNotoFallbackTextNodeSample,
+  hasNotoInspectionGlyphText,
   runLocalFinalPdfDiagnosticStage,
 } from "../lib/local-final-pdf.ts";
 
@@ -103,6 +105,31 @@ test("Noto usage inspection reports readiness, empty targets, empty CDP reports,
     "NOTO_FALLBACK_FONT_FAILURE",
   );
   assert.equal(classifyNotoFontUsageFailure(true, counts), null);
+});
+
+test("empty text is excluded, but a missing report for inspected glyph text remains fatal", async () => {
+  assert.equal(hasNotoInspectionGlyphText(" \u200b\ufeff\n"), false);
+  assert.equal(hasNotoInspectionGlyphText("出典一覧"), true);
+  assert.deepEqual(LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS, [
+    "column", "body-cell", "ruby", "title", "toc", "colophon", "page-number", "sources",
+  ]);
+
+  const renderer = await readFile(new URL("../lib/local-final-pdf.ts", import.meta.url), "utf8");
+  assert.match(renderer, /\.filter\(\(target\) => hasGlyphText\(target\.text\)\)/);
+  assert.match(renderer, /emptyFontReportCountByKind\[target\.kind\] \+= 1/);
+  assert.match(renderer, /DOM\.scrollIntoViewIfNeeded/);
+  assert.match(renderer, /await page\.emulateMedia\(\{ media: "print" \}\)/);
+  assert.match(renderer, /requestAnimationFrame\(\(\) => requestAnimationFrame\(\(\) => resolve\(\)\)\)/);
+
+  const reportableGlyphCounts = {
+    glyphTextColumnCount: 1,
+    inspectedNodeCount: 1,
+    emptyFontReportCount: 0,
+    fallbackFontNodeCount: 0,
+  };
+  assert.equal(classifyNotoFontUsageFailure(true, reportableGlyphCounts), null);
+  assert.equal(classifyNotoFontUsageFailure(true, { ...reportableGlyphCounts, emptyFontReportCount: 1 }),
+    "NOTO_CDP_FONTS_EMPTY_FAILURE");
 });
 
 test("Noto fallback samples expose bounded code points and safe font metadata, never source text", () => {
@@ -229,6 +256,7 @@ test("local PDF diagnostic stages emit only fixed start, success, and failure co
   assert.match(renderer, /maxLeafScan = 4096/);
   assert.match(renderer, /observedBy: next\.roots\.map/);
   assert.match(renderer, /fallbackFontNodeCount \+= 1/);
+  assert.match(renderer, /inspectionTargetCountByKind\[target\.kind\] \+= 1/);
   assert.match(renderer, /await document\.fonts\.ready/);
   assert.match(renderer, /document\.fonts\.load\(/);
   assert.match(renderer, /document\.fonts\.check\(/);
@@ -258,7 +286,7 @@ test("source-page text is accepted as a Noto usage inspection target", async () 
 
   assert.match(page, /<ol[^>]*data-noto-inspection-kind=\{bodyTypography === "noto-serif-jp" \? "sources" : undefined\}/);
   assert.match(renderer, /LocalFinalPdfNotoInspectionKind = [^;]*\| "sources"/);
-  assert.match(renderer, /new Set\(\["title", "toc", "colophon", "page-number", "sources"\]\)/);
+  assert.match(renderer, /LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS\.includes\(kind\)/);
 });
 
 test("D toggle is development-only, starts at serif, and keeps ordinary order PDF on the default path", async () => {

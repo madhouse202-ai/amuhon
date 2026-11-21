@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { parsePdfRenderJob } from "../lib/pdf-render-job.ts";
 import { renderPdfRendererJob } from "../lib/pdf-renderer-worker.ts";
+import { LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS } from "../lib/local-final-pdf.ts";
 import { resolveFinalPdfRendererConfig } from "../lib/final-pdf-renderer-config.ts";
 import { createPdfRenderQueueWorker, PDF_RENDER_LEASE_SECONDS } from "../lib/pdf-render-queue-worker.ts";
 import { createSupabasePdfRenderQueueAdapter } from "../lib/pdf-render-queue-supabase.ts";
@@ -27,6 +28,16 @@ const DEFAULT_FONT_PATH = path.join(ROOT, ".local-assets", "fonts", "NotoSerifCJ
 function logCode(code, metrics = "") {
   const safeMetrics = metrics ? ` ${metrics}` : "";
   console.log(`[pdf-renderer-worker] ${code}${safeMetrics}`);
+}
+
+function logNotoDiagnosticCounts(counts) {
+  const safeCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  const targets = LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS
+    .map((kind) => `${kind}:${safeCount(counts.inspectionTargetCountByKind[kind])}`).join(",");
+  const empty = LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS
+    .map((kind) => `${kind}:${safeCount(counts.emptyFontReportCountByKind[kind])}`).join(",");
+  logCode("NOTO_DIAGNOSTIC_COUNTS",
+    `inspected=${safeCount(counts.inspectedNodeCount)} empty=${safeCount(counts.emptyFontReportCount)} fallback=${safeCount(counts.fallbackFontNodeCount)} targets_by_kind=${targets} empty_by_kind=${empty}`);
 }
 
 async function readInput() {
@@ -346,6 +357,7 @@ async function runQueueOnce(renderOrigin, fontBytes, adapter, claimedJob) {
             if (diagnosticCode === "LAYOUT_PAGE_COUNT_FAILURE") renderFailureCode = "page_count_mismatch";
           },
           expectedPageCount,
+          logNotoDiagnosticCounts,
         );
       } catch {
         throw new Error(renderFailureCode ?? transientCode ?? "invalid_render");
@@ -424,6 +436,8 @@ async function main() {
         fontBytes,
         (stage) => logCode(stage),
         (diagnosticCode) => logCode(diagnosticCode),
+        null,
+        logNotoDiagnosticCounts,
       );
       if (selfTest && result.rubyCount <= 0) throw new Error("self_test_ruby_missing");
       const saved = await saveAssets(result);

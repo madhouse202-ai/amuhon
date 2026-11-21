@@ -58,10 +58,24 @@ export type LocalFinalPdfNotoDiagnosticCounts = {
   inspectedNodeCount: number;
   emptyFontReportCount: number;
   fallbackFontNodeCount: number;
+  inspectionTargetCountByKind: Record<LocalFinalPdfNotoInspectionKind, number>;
+  emptyFontReportCountByKind: Record<LocalFinalPdfNotoInspectionKind, number>;
 };
 
 export type LocalFinalPdfNotoCategory = "kanji" | "hiragana" | "katakana" | "punctuation" | "other";
 export type LocalFinalPdfNotoInspectionKind = "column" | "body-cell" | "ruby" | "title" | "toc" | "colophon" | "page-number" | "sources";
+export const LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS: readonly LocalFinalPdfNotoInspectionKind[] = [
+  "column", "body-cell", "ruby", "title", "toc", "colophon", "page-number", "sources",
+];
+
+export function hasNotoInspectionGlyphText(value: string): boolean {
+  return /[^\s\u200B\uFEFF]/u.test(value);
+}
+
+function createNotoInspectionKindCounts(): Record<LocalFinalPdfNotoInspectionKind, number> {
+  return Object.fromEntries(LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS.map((kind) => [kind, 0])) as
+    Record<LocalFinalPdfNotoInspectionKind, number>;
+}
 
 export type LocalFinalPdfNotoFallbackFont = {
   family: string;
@@ -278,6 +292,14 @@ function reportNotoDiagnosticCounts(
       inspectedNodeCount: counts.inspectedNodeCount,
       emptyFontReportCount: counts.emptyFontReportCount,
       fallbackFontNodeCount: counts.fallbackFontNodeCount,
+      inspectionTargetCountByKind: Object.fromEntries(LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS.map((kind) => [
+        kind,
+        counts.inspectionTargetCountByKind[kind],
+      ])) as Record<LocalFinalPdfNotoInspectionKind, number>,
+      emptyFontReportCountByKind: Object.fromEntries(LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS.map((kind) => [
+        kind,
+        counts.emptyFontReportCountByKind[kind],
+      ])) as Record<LocalFinalPdfNotoInspectionKind, number>,
     });
   } catch {
     // Safe numeric diagnostics must never affect PDF generation.
@@ -671,6 +693,8 @@ export async function renderLocalFinalBodyPdf(
           inspectedNodeCount: 0,
           emptyFontReportCount: 0,
           fallbackFontNodeCount: 0,
+          inspectionTargetCountByKind: createNotoInspectionKindCounts(),
+          emptyFontReportCountByKind: createNotoInspectionKindCounts(),
         };
         let specificFailureCode: LocalFinalPdfDiagnosticCode | null = null;
         let countsAvailable = false;
@@ -683,6 +707,8 @@ export async function renderLocalFinalBodyPdf(
         try {
           const activeSession = await context.newCDPSession(page);
           session = activeSession;
+          // Measure the same media mode used by page.pdf(), not the screen preview.
+          await page.emulateMedia({ media: "print" });
           const fontSetReady = await page.evaluate(async () => {
             await document.fonts.ready;
             const family = "Noto Serif JP";
@@ -725,6 +751,8 @@ export async function renderLocalFinalBodyPdf(
             const hasRubyGlyph = (cell: Element) => [...cell.querySelectorAll(".print-character-cell__ruby")]
               .some((ruby) => hasGlyphText(ruby.textContent ?? ""));
             const columns = [...document.querySelectorAll(".body-content > div")];
+            const sheets = [...document.querySelectorAll(".print-sheet")];
+            const sheetIndexFor = (element: Element) => sheets.findIndex((sheet) => sheet.contains(element));
             const categoryIndexes = {
               kanji: cellText.findIndex((text) => hasGlyphText(text) && /\p{Script=Han}/u.test(text)),
               hiragana: cellText.findIndex((text) => hasGlyphText(text) && /\p{Script=Hiragana}/u.test(text)),
@@ -747,8 +775,13 @@ export async function renderLocalFinalBodyPdf(
               .map((element, index) => ({
                 index,
                 kind: element.dataset.notoInspectionKind ?? "title",
+                sheetIndex: sheetIndexFor(element),
+                text: element.textContent ?? "",
                 categories: classifyText(element.textContent ?? ""),
-              }));
+              }))
+              // Empty marker nodes have no glyphs and therefore legitimately produce no CDP font report.
+              // Non-empty text remains a required target; an empty CDP report for it is still fatal.
+              .filter((target) => hasGlyphText(target.text));
             return {
               bodyGlyphCellCount: cellText.filter(hasGlyphText).length,
               nonEmptyRubyNodeCount: nonEmptyRubyIndexes.length,
@@ -763,10 +796,15 @@ export async function renderLocalFinalBodyPdf(
               rubyCategories: rubyNodes.map((ruby) => classifyText(ruby.textContent ?? "")),
               rubyColumnIndexes: rubyNodes.map((ruby) => columns.findIndex((column) => column.contains(ruby))),
               columnCategories,
+              columnSheetIndexes: columns.map(sheetIndexFor),
               cellCount: cells.length,
               rubyNodeCount: rubyNodes.length,
               columnCount: columns.length,
+              sheetCount: sheets.length,
+              layoutTextMarkerCount: document.querySelectorAll("[data-noto-inspection-kind]").length,
               layoutTextRoots,
+              cellSheetIndexes: cells.map(sheetIndexFor),
+              rubySheetIndexes: rubyNodes.map(sheetIndexFor),
             };
           });
           counts.bodyGlyphCellCount = targets.bodyGlyphCellCount;
@@ -795,13 +833,23 @@ export async function renderLocalFinalBodyPdf(
             nodeId: root.nodeId,
             selector: ".print-character-cell__ruby",
           });
+          const { nodeIds: sheetNodeIds } = await activeSession.send("DOM.querySelectorAll", {
+            nodeId: root.nodeId,
+            selector: ".print-sheet",
+          });
           const { nodeIds: layoutTextNodeIds } = await activeSession.send("DOM.querySelectorAll", {
             nodeId: root.nodeId,
             selector: "[data-noto-inspection-kind]",
           });
           if (columnNodeIds.length !== targets.columnCount || cellNodeIds.length !== targets.cellCount ||
               rubyNodeIds.length !== targets.rubyNodeCount ||
-              layoutTextNodeIds.length !== targets.layoutTextRoots.length ||
+              sheetNodeIds.length !== targets.sheetCount ||
+              layoutTextNodeIds.length !== targets.layoutTextMarkerCount ||
+              targets.columnSheetIndexes.some((index) => index < 0 || index >= sheetNodeIds.length) ||
+              targets.cellSheetIndexes.some((index) => index < 0 || index >= sheetNodeIds.length) ||
+              targets.rubySheetIndexes.some((index) => index < 0 || index >= sheetNodeIds.length) ||
+              targets.layoutTextRoots.some((target) => target.index < 0 || target.index >= layoutTextNodeIds.length ||
+                target.sheetIndex < 0 || target.sheetIndex >= sheetNodeIds.length) ||
               targets.glyphColumnIndexes.some((index) => index >= columnNodeIds.length) ||
               targets.representativeCellIndexes.some((index) => index >= cellNodeIds.length) ||
               targets.representativeCellIndexes.some((index) => targets.cellColumnIndexes[index] < 0) ||
@@ -815,18 +863,21 @@ export async function renderLocalFinalBodyPdf(
             kind: LocalFinalPdfNotoInspectionKind;
             index: number;
             columnIndex: number;
+            sheetIndex: number;
             categories: LocalFinalPdfNotoCategory[];
           };
           const inspectionTargets = new Map<number, InspectionTarget>();
           for (const index of targets.glyphColumnIndexes) {
             inspectionTargets.set(columnNodeIds[index], {
               nodeId: columnNodeIds[index], kind: "column", index, columnIndex: index,
+              sheetIndex: targets.columnSheetIndexes[index],
               categories: targets.columnCategories[index] as LocalFinalPdfNotoCategory[],
             });
           }
           for (const index of targets.representativeCellIndexes) {
             inspectionTargets.set(cellNodeIds[index], {
               nodeId: cellNodeIds[index], kind: "body-cell", index, columnIndex: targets.cellColumnIndexes[index],
+              sheetIndex: targets.cellSheetIndexes[index],
               categories: targets.cellCategories[index] as LocalFinalPdfNotoCategory[],
             });
           }
@@ -834,29 +885,42 @@ export async function renderLocalFinalBodyPdf(
             inspectionTargets.set(rubyNodeIds[targets.representativeRubyIndex], {
               nodeId: rubyNodeIds[targets.representativeRubyIndex], kind: "ruby",
               index: targets.representativeRubyIndex, columnIndex: targets.rubyColumnIndexes[targets.representativeRubyIndex],
+              sheetIndex: targets.rubySheetIndexes[targets.representativeRubyIndex],
               categories: targets.rubyCategories[targets.representativeRubyIndex] as LocalFinalPdfNotoCategory[],
             });
           }
-          for (const [index, target] of targets.layoutTextRoots.entries()) {
+          for (const target of targets.layoutTextRoots) {
             const kind = target.kind as LocalFinalPdfNotoInspectionKind;
-            if (!(new Set(["title", "toc", "colophon", "page-number", "sources"])).has(kind)) {
+            if (!LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS.includes(kind)) {
               throw new Error("noto_layout_text_kind_invalid");
             }
-            inspectionTargets.set(layoutTextNodeIds[index], {
-              nodeId: layoutTextNodeIds[index], kind, index: target.index, columnIndex: 0,
+            inspectionTargets.set(layoutTextNodeIds[target.index], {
+              nodeId: layoutTextNodeIds[target.index], kind, index: target.index, columnIndex: 0,
+              sheetIndex: target.sheetIndex,
               categories: target.categories as LocalFinalPdfNotoCategory[],
             });
           }
+          for (const target of inspectionTargets.values()) counts.inspectionTargetCountByKind[target.kind] += 1;
           const fallbackRoots: LocalFinalPdfNotoFallbackRoot[] = [];
           const failedRootTargets = new Map<number, LocalFinalPdfNotoFallbackRoot>();
           const isNotoUsedFont = isNotoSerifJpRenderedFont;
-          for (const target of inspectionTargets.values()) {
+          const orderedInspectionTargets = [...inspectionTargets.values()].sort((a, b) => a.sheetIndex - b.sheetIndex);
+          let paintedSheetIndex = -1;
+          for (const target of orderedInspectionTargets) {
+            if (target.sheetIndex !== paintedSheetIndex) {
+              await activeSession.send("DOM.scrollIntoViewIfNeeded", { nodeId: sheetNodeIds[target.sheetIndex] });
+              await page.evaluate(() => new Promise<void>((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+              }));
+              paintedSheetIndex = target.sheetIndex;
+            }
             const { fonts } = await activeSession.send("CSS.getPlatformFontsForNode", { nodeId: target.nodeId });
             const usedFonts = (fonts as Array<{ familyName?: string; postScriptName?: string; glyphCount?: number; isCustomFont?: boolean }>)
               .filter((font) => Number(font.glyphCount) > 0);
             counts.inspectedNodeCount += 1;
             if (usedFonts.length === 0) {
               counts.emptyFontReportCount += 1;
+              counts.emptyFontReportCountByKind[target.kind] += 1;
               continue;
             }
             const fallbackFonts = usedFonts.filter((font) => !isNotoUsedFont(font));
@@ -882,7 +946,7 @@ export async function renderLocalFinalBodyPdf(
               fallbackBodyCellRootCount: fallbackRoots.filter((root) => root.kind === "body-cell").length,
               fallbackRubyRootCount: fallbackRoots.filter((root) => root.kind === "ruby").length,
               fallbackLayoutTextRootCount: fallbackRoots.filter((root) =>
-                ["title", "toc", "colophon", "page-number"].includes(root.kind)).length,
+                ["title", "toc", "colophon", "page-number", "sources"].includes(root.kind)).length,
               uniqueFallbackTextNodeCount: 0,
               textNodesObservedByMultipleRoots: 0,
               leafScanComplete: false,

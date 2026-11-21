@@ -82,6 +82,8 @@ test("container and worker keep the browser, font, output, and DB boundaries exp
   assert.match(fontScript, /SIL OPEN FONT LICENSE Version 1\.1/);
   assert.match(worker, /process\.env\.ORDER_PDF_RENDER_URL = `http:\/\/127\.0\.0\.1:\$\{port\}\/final`/);
   assert.match(worker, /HOSTNAME: "127\.0\.0\.1"/);
+  assert.match(worker, /NOTO_DIAGNOSTIC_COUNTS/);
+  assert.match(worker, /targets_by_kind=\$\{targets\} empty_by_kind=\$\{empty\}/);
   assert.match(worker, /passage\.repeat\(140\)/);
   assert.match(worker, /if \(selfTest && result\.rubyCount <= 0\) throw new Error\("self_test_ruby_missing"\)/);
   assert.match(worker, /minimalServerEnvironment/);

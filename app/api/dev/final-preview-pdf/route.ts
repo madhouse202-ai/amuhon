@@ -1,4 +1,5 @@
 import {
+  LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS,
   renderLocalFinalBodyPdf,
   type LocalFinalPdfNotoDiagnosticDetails,
   type LocalFinalPdfNotoDiagnosticCounts,
@@ -43,14 +44,22 @@ const NOTO_COUNT_KEYS = [
 ] as const satisfies readonly (keyof LocalFinalPdfNotoDiagnosticCounts)[];
 
 function safeNotoDiagnosticCounts(counts: LocalFinalPdfNotoDiagnosticCounts): LocalFinalPdfNotoDiagnosticCounts {
-  return Object.fromEntries(NOTO_COUNT_KEYS.map((key) => {
+  const scalarCounts = Object.fromEntries(NOTO_COUNT_KEYS.map((key) => {
     const value = counts[key];
     return [key, Number.isSafeInteger(value) && value >= 0 ? value : 0];
-  })) as unknown as LocalFinalPdfNotoDiagnosticCounts;
+  }));
+  const safeKindCounts = (values: Record<string, number>) => Object.fromEntries(
+    LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS.map((kind) => [kind, safeDiagnosticInteger(values[kind])]),
+  ) as Record<(typeof LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS)[number], number>;
+  return {
+    ...scalarCounts,
+    inspectionTargetCountByKind: safeKindCounts(counts.inspectionTargetCountByKind),
+    emptyFontReportCountByKind: safeKindCounts(counts.emptyFontReportCountByKind),
+  } as LocalFinalPdfNotoDiagnosticCounts;
 }
 
 const NOTO_CATEGORIES = new Set(["kanji", "hiragana", "katakana", "punctuation", "other"]);
-const NOTO_KINDS = new Set(["column", "body-cell", "ruby", "title", "toc", "colophon", "page-number"]);
+const NOTO_KINDS = new Set(["column", "body-cell", "ruby", "title", "toc", "colophon", "page-number", "sources"]);
 
 function safeDiagnosticInteger(value: unknown): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Math.min(Number(value), 1_000_000) : 0;
