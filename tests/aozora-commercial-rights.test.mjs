@@ -144,7 +144,7 @@ test("101 older manually stopped jobs do not starve a later eligible claim", asy
   assert.ok(pausedBranch);
   assert.doesNotMatch(pausedBranch, /update public\.amuhon_order_pdf_render_jobs/i);
   assert.match(claimFunction, /if not public\._amuhon_book_works_rights_approved_v1\(target_order\.book_snapshot -> 'works', true\) then\s+update public\.amuhon_order_pdf_render_jobs set\s+state = 'failed',[\s\S]*?error_code = 'rights_ineligible'/);
-  assert.match(migration, /'page_count_mismatch', 'internal_error', 'rights_ineligible'/);
+  assert.match(migration, /'page_count_mismatch', 'internal_error', 'rights_unverified', 'rights_ineligible'/);
 
   const backlog = Array.from({ length: 101 }, (_, index) => ({ id: `stopped-${index + 1}`, stopped: true }));
   backlog.push({ id: "later-eligible", stopped: false });
@@ -158,6 +158,23 @@ test("101 older manually stopped jobs do not starve a later eligible claim", asy
   const stopBeforeLimit = candidateQuery.indexOf("_amuhon_book_works_manual_stop_active_v1");
   const limitAt = candidateQuery.indexOf("limit 100");
   assert.ok(stopBeforeLimit >= 0 && limitAt > stopBeforeLimit);
+});
+
+test("render-job error constraint preserves legacy and current rights codes", async () => {
+  const [migration, legacyMigration] = await Promise.all([
+    read("supabase/migrations/20261121000100_aozora_official_rights_status.sql"),
+    read("supabase/migrations/20261118000100_work_commercial_rights_ledger.sql"),
+  ]);
+  const constraintStart = migration.indexOf("add constraint amuhon_order_pdf_render_job_error_code");
+  const constraintEnd = migration.indexOf("\n  );", constraintStart);
+  assert.ok(constraintStart >= 0 && constraintEnd > constraintStart);
+  const constraint = migration.slice(constraintStart, constraintEnd);
+  const permittedCodes = [...constraint.matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+
+  assert.ok(permittedCodes.includes("rights_unverified"));
+  assert.ok(permittedCodes.includes("rights_ineligible"));
+  assert.match(legacyMigration, /error_code := 'rights_unverified'/);
+  assert.match(migration, /error_code = 'rights_ineligible'/);
 });
 
 test("text API and renderer bind fetched content to official catalog rights and exact edition SHA", async () => {

@@ -10,7 +10,7 @@ alter table public.amuhon_order_pdf_render_jobs
     error_code is null or error_code in (
       'aozora_unavailable', 'storage_unavailable', 'processing_timeout',
       'worker_unavailable', 'invalid_snapshot', 'invalid_render',
-      'page_count_mismatch', 'internal_error', 'rights_ineligible'
+      'page_count_mismatch', 'internal_error', 'rights_unverified', 'rights_ineligible'
     )
   );
 
