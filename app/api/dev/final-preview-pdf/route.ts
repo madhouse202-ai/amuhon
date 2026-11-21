@@ -41,6 +41,7 @@ const NOTO_COUNT_KEYS = [
   "inspectedNodeCount",
   "emptyFontReportCount",
   "fallbackFontNodeCount",
+  "sourceVisibleTextNodeCount",
 ] as const satisfies readonly (keyof LocalFinalPdfNotoDiagnosticCounts)[];
 
 function safeNotoDiagnosticCounts(counts: LocalFinalPdfNotoDiagnosticCounts): LocalFinalPdfNotoDiagnosticCounts {

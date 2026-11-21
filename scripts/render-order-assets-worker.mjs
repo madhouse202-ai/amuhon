@@ -37,7 +37,7 @@ function logNotoDiagnosticCounts(counts) {
   const empty = LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS
     .map((kind) => `${kind}:${safeCount(counts.emptyFontReportCountByKind[kind])}`).join(",");
   logCode("NOTO_DIAGNOSTIC_COUNTS",
-    `inspected=${safeCount(counts.inspectedNodeCount)} empty=${safeCount(counts.emptyFontReportCount)} fallback=${safeCount(counts.fallbackFontNodeCount)} targets_by_kind=${targets} empty_by_kind=${empty}`);
+    `inspected=${safeCount(counts.inspectedNodeCount)} empty=${safeCount(counts.emptyFontReportCount)} fallback=${safeCount(counts.fallbackFontNodeCount)} sources_target_type=TEXT_NODE sources_visible_text_nodes=${safeCount(counts.sourceVisibleTextNodeCount)} targets_by_kind=${targets} empty_by_kind=${empty}`);
 }
 
 async function readInput() {

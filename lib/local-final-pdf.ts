@@ -58,6 +58,7 @@ export type LocalFinalPdfNotoDiagnosticCounts = {
   inspectedNodeCount: number;
   emptyFontReportCount: number;
   fallbackFontNodeCount: number;
+  sourceVisibleTextNodeCount: number;
   inspectionTargetCountByKind: Record<LocalFinalPdfNotoInspectionKind, number>;
   emptyFontReportCountByKind: Record<LocalFinalPdfNotoInspectionKind, number>;
 };
@@ -70,6 +71,53 @@ export const LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS: readonly LocalFinalPdfNotoIn
 
 export function hasNotoInspectionGlyphText(value: string): boolean {
   return /[^\s\u200B\uFEFF]/u.test(value);
+}
+
+export type LocalFinalPdfCdpNode = {
+  nodeId?: number;
+  nodeType?: number;
+  nodeValue?: string;
+  attributes?: string[];
+  children?: LocalFinalPdfCdpNode[];
+};
+
+export type LocalFinalPdfNotoTextNodeTarget = {
+  nodeId: number;
+  index: number;
+  sheetIndex: number;
+  categories: LocalFinalPdfNotoCategory[];
+};
+
+/** Collect only non-empty text nodes under the marked sources page; never return text values. */
+export function collectNotoSourceTextNodeTargets(
+  root: LocalFinalPdfCdpNode,
+  sheetNodeIds: readonly number[],
+): LocalFinalPdfNotoTextNodeTarget[] {
+  const sheetIndexByNodeId = new Map(sheetNodeIds.map((nodeId, index) => [nodeId, index]));
+  const targets: LocalFinalPdfNotoTextNodeTarget[] = [];
+
+  const visit = (node: LocalFinalPdfCdpNode, inSources: boolean, sheetIndex: number) => {
+    const nodeId = Number(node.nodeId ?? 0);
+    const nextSheetIndex = sheetIndexByNodeId.get(nodeId) ?? sheetIndex;
+    const attributes = node.attributes ?? [];
+    const markerIndex = attributes.indexOf("data-noto-inspection-kind");
+    const nextInSources = inSources || (node.nodeType === 1 && markerIndex >= 0 &&
+      attributes[markerIndex + 1] === "sources");
+
+    if (nextInSources && node.nodeType === 3 && nodeId > 0 && hasNotoInspectionGlyphText(node.nodeValue ?? "")) {
+      targets.push({
+        nodeId,
+        index: targets.length,
+        sheetIndex: nextSheetIndex,
+        categories: classifyNotoDiagnosticText(node.nodeValue ?? ""),
+      });
+    }
+
+    for (const child of node.children ?? []) visit(child, nextInSources, nextSheetIndex);
+  };
+
+  visit(root, false, -1);
+  return targets;
 }
 
 function createNotoInspectionKindCounts(): Record<LocalFinalPdfNotoInspectionKind, number> {
@@ -234,6 +282,7 @@ export const LOCAL_FINAL_PDF_DIAGNOSTIC_CODES = {
   notoBodyColumnsEmptyFailure: "NOTO_BODY_COLUMNS_EMPTY_FAILURE",
   notoCdpFontsEmptyFailure: "NOTO_CDP_FONTS_EMPTY_FAILURE",
   notoFallbackFontFailure: "NOTO_FALLBACK_FONT_FAILURE",
+  notoSourcesTextTargetFailure: "NOTO_SOURCES_TEXT_TARGET_FAILURE",
   notoInspectionExceptionFailure: "NOTO_CHECK_EXCEPTION_FAILURE",
   pdfStart: "PDF_GENERATION_START",
   pdfSuccess: "PDF_GENERATION_SUCCESS",
@@ -292,6 +341,7 @@ function reportNotoDiagnosticCounts(
       inspectedNodeCount: counts.inspectedNodeCount,
       emptyFontReportCount: counts.emptyFontReportCount,
       fallbackFontNodeCount: counts.fallbackFontNodeCount,
+      sourceVisibleTextNodeCount: counts.sourceVisibleTextNodeCount,
       inspectionTargetCountByKind: Object.fromEntries(LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS.map((kind) => [
         kind,
         counts.inspectionTargetCountByKind[kind],
@@ -693,6 +743,7 @@ export async function renderLocalFinalBodyPdf(
           inspectedNodeCount: 0,
           emptyFontReportCount: 0,
           fallbackFontNodeCount: 0,
+          sourceVisibleTextNodeCount: 0,
           inspectionTargetCountByKind: createNotoInspectionKindCounts(),
           emptyFontReportCountByKind: createNotoInspectionKindCounts(),
         };
@@ -771,6 +822,34 @@ export async function renderLocalFinalBodyPdf(
                   .map((ruby) => ruby.textContent ?? "").join(" ")}`)
                 .join(" "),
             ));
+            const sourceRoots = [...document.querySelectorAll<HTMLElement>('[data-noto-inspection-kind="sources"]')];
+            const sourceVisibleTextNodeCount = sourceRoots.reduce((total, sourceRoot) => {
+              const walker = document.createTreeWalker(sourceRoot, NodeFilter.SHOW_TEXT);
+              let visibleTextNodeCount = 0;
+              let textNode: Node | null;
+              while ((textNode = walker.nextNode())) {
+                if (!hasGlyphText(textNode.nodeValue ?? "")) continue;
+                let element = textNode.parentElement;
+                let visible = true;
+                while (element) {
+                  const style = getComputedStyle(element);
+                  if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" ||
+                      Number(style.opacity) === 0) {
+                    visible = false;
+                    break;
+                  }
+                  if (element === sourceRoot) break;
+                  element = element.parentElement;
+                }
+                if (!visible) continue;
+                const range = document.createRange();
+                range.selectNodeContents(textNode);
+                if ([...range.getClientRects()].some((rect) => rect.width > 0 && rect.height > 0)) {
+                  visibleTextNodeCount += 1;
+                }
+              }
+              return total + visibleTextNodeCount;
+            }, 0);
             const layoutTextRoots = [...document.querySelectorAll<HTMLElement>("[data-noto-inspection-kind]")]
               .map((element, index) => ({
                 index,
@@ -781,7 +860,7 @@ export async function renderLocalFinalBodyPdf(
               }))
               // Empty marker nodes have no glyphs and therefore legitimately produce no CDP font report.
               // Non-empty text remains a required target; an empty CDP report for it is still fatal.
-              .filter((target) => hasGlyphText(target.text));
+              .filter((target) => target.kind !== "sources" && hasGlyphText(target.text));
             return {
               bodyGlyphCellCount: cellText.filter(hasGlyphText).length,
               nonEmptyRubyNodeCount: nonEmptyRubyIndexes.length,
@@ -802,6 +881,7 @@ export async function renderLocalFinalBodyPdf(
               columnCount: columns.length,
               sheetCount: sheets.length,
               layoutTextMarkerCount: document.querySelectorAll("[data-noto-inspection-kind]").length,
+              sourceVisibleTextNodeCount,
               layoutTextRoots,
               cellSheetIndexes: cells.map(sheetIndexFor),
               rubySheetIndexes: rubyNodes.map(sheetIndexFor),
@@ -813,6 +893,7 @@ export async function renderLocalFinalBodyPdf(
           counts.kanjiCellCount = targets.kanjiCellCount;
           counts.hiraganaCellCount = targets.hiraganaCellCount;
           counts.punctuationCellCount = targets.punctuationCellCount;
+          counts.sourceVisibleTextNodeCount = targets.sourceVisibleTextNodeCount;
           countsAvailable = true;
           if (counts.glyphTextColumnCount === 0) {
             refuse(LOCAL_FINAL_PDF_DIAGNOSTIC_CODES.notoBodyColumnsEmptyFailure);
@@ -841,6 +922,8 @@ export async function renderLocalFinalBodyPdf(
             nodeId: root.nodeId,
             selector: "[data-noto-inspection-kind]",
           });
+          const sourceTextNodeTargets = collectNotoSourceTextNodeTargets(root as LocalFinalPdfCdpNode, sheetNodeIds);
+          counts.inspectionTargetCountByKind.sources = sourceTextNodeTargets.length;
           if (columnNodeIds.length !== targets.columnCount || cellNodeIds.length !== targets.cellCount ||
               rubyNodeIds.length !== targets.rubyNodeCount ||
               sheetNodeIds.length !== targets.sheetCount ||
@@ -850,11 +933,17 @@ export async function renderLocalFinalBodyPdf(
               targets.rubySheetIndexes.some((index) => index < 0 || index >= sheetNodeIds.length) ||
               targets.layoutTextRoots.some((target) => target.index < 0 || target.index >= layoutTextNodeIds.length ||
                 target.sheetIndex < 0 || target.sheetIndex >= sheetNodeIds.length) ||
+              sourceTextNodeTargets.length === 0 || sourceTextNodeTargets.length !== targets.sourceVisibleTextNodeCount ||
+              sourceTextNodeTargets.some((target) => target.sheetIndex < 0 || target.sheetIndex >= sheetNodeIds.length) ||
               targets.glyphColumnIndexes.some((index) => index >= columnNodeIds.length) ||
               targets.representativeCellIndexes.some((index) => index >= cellNodeIds.length) ||
               targets.representativeCellIndexes.some((index) => targets.cellColumnIndexes[index] < 0) ||
               (targets.representativeRubyIndex >= 0 && targets.rubyColumnIndexes[targets.representativeRubyIndex] < 0) ||
               targets.representativeRubyIndex >= rubyNodeIds.length) {
+            if (sourceTextNodeTargets.length === 0 || sourceTextNodeTargets.length !== targets.sourceVisibleTextNodeCount ||
+                sourceTextNodeTargets.some((target) => target.sheetIndex < 0 || target.sheetIndex >= sheetNodeIds.length)) {
+              refuse(LOCAL_FINAL_PDF_DIAGNOSTIC_CODES.notoSourcesTextTargetFailure);
+            }
             throw new Error("noto_dom_target_mismatch");
           }
 
@@ -900,7 +989,19 @@ export async function renderLocalFinalBodyPdf(
               categories: target.categories as LocalFinalPdfNotoCategory[],
             });
           }
-          for (const target of inspectionTargets.values()) counts.inspectionTargetCountByKind[target.kind] += 1;
+          for (const target of sourceTextNodeTargets) {
+            inspectionTargets.set(target.nodeId, {
+              nodeId: target.nodeId,
+              kind: "sources",
+              index: target.index,
+              columnIndex: 0,
+              sheetIndex: target.sheetIndex,
+              categories: target.categories,
+            });
+          }
+          for (const target of inspectionTargets.values()) {
+            if (target.kind !== "sources") counts.inspectionTargetCountByKind[target.kind] += 1;
+          }
           const fallbackRoots: LocalFinalPdfNotoFallbackRoot[] = [];
           const failedRootTargets = new Map<number, LocalFinalPdfNotoFallbackRoot>();
           const isNotoUsedFont = isNotoSerifJpRenderedFont;

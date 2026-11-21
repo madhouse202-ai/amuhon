@@ -492,10 +492,10 @@ function SourcePage({
   bodyTypography: FinalBodyTypography;
 }) {
   return (
-    <section className="print-page print-sources-page relative" data-source-page="true" style={{ width: PAGE_WIDTH, height: PAGE_HEIGHT, background: "#f8f3df", padding: "9mm 9mm 14mm", boxSizing: "border-box", fontFamily: printFontFamily(bodyTypography), color: "#28241f" }}>
+    <section className="print-page print-sources-page relative" data-source-page="true" data-noto-inspection-kind={bodyTypography === "noto-serif-jp" ? "sources" : undefined} style={{ width: PAGE_WIDTH, height: PAGE_HEIGHT, background: "#f8f3df", padding: "9mm 9mm 14mm", boxSizing: "border-box", fontFamily: printFontFamily(bodyTypography), color: "#28241f" }}>
       <h2 className="mb-3 border-b border-stone-400 pb-2 text-center text-[10pt] font-semibold">収録作品と出典</h2>
       <p className="mb-2 text-[6.5pt] leading-[1.4]">本文・書誌情報：青空文庫公開カタログおよび各図書カード。</p>
-      <ol className="space-y-2 text-[6.5pt] leading-[1.35]" data-noto-inspection-kind={bodyTypography === "noto-serif-jp" ? "sources" : undefined}>
+      <ol className="space-y-2 text-[6.5pt] leading-[1.35]">
         {works.map((work, index) => {
           const metadata = work.sourceMetadata;
           const contributors = work.contributors?.filter((person) => !["著者", "作者", "原著者"].includes(person.role)) ?? [];

@@ -16,6 +16,7 @@ import {
   LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS,
   LOCAL_FINAL_PDF_DIAGNOSTIC_CODES,
   classifyNotoFontUsageFailure,
+  collectNotoSourceTextNodeTargets,
   createNotoFallbackTextNodeSample,
   hasNotoInspectionGlyphText,
   runLocalFinalPdfDiagnosticStage,
@@ -115,7 +116,7 @@ test("empty text is excluded, but a missing report for inspected glyph text rema
   ]);
 
   const renderer = await readFile(new URL("../lib/local-final-pdf.ts", import.meta.url), "utf8");
-  assert.match(renderer, /\.filter\(\(target\) => hasGlyphText\(target\.text\)\)/);
+  assert.match(renderer, /\.filter\(\(target\) => target\.kind !== "sources" && hasGlyphText\(target\.text\)\)/);
   assert.match(renderer, /emptyFontReportCountByKind\[target\.kind\] \+= 1/);
   assert.match(renderer, /DOM\.scrollIntoViewIfNeeded/);
   assert.match(renderer, /await page\.emulateMedia\(\{ media: "print" \}\)/);
@@ -279,14 +280,69 @@ test("local PDF diagnostic stages emit only fixed start, success, and failure co
 });
 
 test("source-page text is accepted as a Noto usage inspection target", async () => {
-  const [page, renderer] = await Promise.all([
+  const [page, renderer, worker] = await Promise.all([
     readFile(new URL("../app/final/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../lib/local-final-pdf.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/render-order-assets-worker.mjs", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /<ol[^>]*data-noto-inspection-kind=\{bodyTypography === "noto-serif-jp" \? "sources" : undefined\}/);
+  assert.match(page, /<section className="print-page print-sources-page relative"[^\n]*data-noto-inspection-kind=\{bodyTypography === "noto-serif-jp" \? "sources" : undefined\}/);
+  assert.match(page, /<h2[^>]*>収録作品と出典<\/h2>/);
+  assert.match(page, /<p[^>]*>本文・書誌情報：青空文庫公開カタログおよび各図書カード。<\/p>/);
+  assert.match(renderer, /collectNotoSourceTextNodeTargets\(root as LocalFinalPdfCdpNode, sheetNodeIds\)/);
+  assert.match(renderer, /sourceTextNodeTargets\.length !== targets\.sourceVisibleTextNodeCount/);
+  assert.match(renderer, /kind: "sources"/);
+  assert.match(worker, /sources_target_type=TEXT_NODE/);
   assert.match(renderer, /LocalFinalPdfNotoInspectionKind = [^;]*\| "sources"/);
   assert.match(renderer, /LOCAL_FINAL_PDF_NOTO_INSPECTION_KINDS\.includes\(kind\)/);
+  assert.doesNotMatch(page, /<ol[^>]*data-noto-inspection-kind=\{bodyTypography === "noto-serif-jp" \? "sources"/);
+});
+
+test("source-page CDP inspection targets every non-empty descendant text node without returning text", () => {
+  const tree = {
+    nodeType: 9,
+    children: [{
+      nodeId: 10,
+      nodeType: 1,
+      attributes: ["class", "print-sheet"],
+      children: [{
+        nodeId: 11,
+        nodeType: 1,
+        attributes: ["data-noto-inspection-kind", "sources"],
+        children: [
+          { nodeId: 12, nodeType: 3, nodeValue: "収録作品と出典" },
+          { nodeId: 13, nodeType: 3, nodeValue: "  \n" },
+          { nodeId: 14, nodeType: 1, attributes: ["class", "source-item"], children: [
+            { nodeId: 15, nodeType: 3, nodeValue: "著者：夏目漱石" },
+            { nodeId: 16, nodeType: 1, attributes: ["data-noto-inspection-kind", "page-number"], children: [
+              { nodeId: 17, nodeType: 3, nodeValue: "12" },
+            ] },
+          ] },
+        ],
+      }],
+    }],
+  };
+
+  const targets = collectNotoSourceTextNodeTargets(tree, [10]);
+  assert.deepEqual(targets.map(({ nodeId, index, sheetIndex, categories }) => ({ nodeId, index, sheetIndex, categories })), [
+    { nodeId: 12, index: 0, sheetIndex: 0, categories: ["kanji", "hiragana"] },
+    { nodeId: 15, index: 1, sheetIndex: 0, categories: ["kanji", "punctuation"] },
+    { nodeId: 17, index: 2, sheetIndex: 0, categories: ["other"] },
+  ]);
+  assert.equal(JSON.stringify(targets).includes("夏目漱石"), false);
+  assert.equal(LOCAL_FINAL_PDF_DIAGNOSTIC_CODES.notoSourcesTextTargetFailure, "NOTO_SOURCES_TEXT_TARGET_FAILURE");
+  assert.equal(classifyNotoFontUsageFailure(true, {
+    glyphTextColumnCount: 1,
+    inspectedNodeCount: targets.length,
+    emptyFontReportCount: 1,
+    fallbackFontNodeCount: 0,
+  }), "NOTO_CDP_FONTS_EMPTY_FAILURE");
+  assert.equal(classifyNotoFontUsageFailure(true, {
+    glyphTextColumnCount: 1,
+    inspectedNodeCount: targets.length,
+    emptyFontReportCount: 0,
+    fallbackFontNodeCount: 1,
+  }), "NOTO_FALLBACK_FONT_FAILURE");
 });
 
 test("D toggle is development-only, starts at serif, and keeps ordinary order PDF on the default path", async () => {
