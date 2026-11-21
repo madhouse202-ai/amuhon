@@ -27,6 +27,10 @@ test("tests and offline renderer self-test gate publication and Job update", () 
   const push = stepIndex("push-staging-image");
   const update = stepIndex("update-staging-job-by-digest");
   assert.ok(checks < build && build < smoke && smoke < preflight && preflight < push && push < update);
+  const checksConfig = config.slice(checks, build);
+  const typegen = checksConfig.indexOf("npx next typegen");
+  const typecheck = checksConfig.indexOf("npx tsc --noEmit");
+  assert.ok(typegen >= 0 && typecheck > typegen, "Next.js route types must be generated before TypeScript checks");
   assert.match(config, /--network=none/);
   assert.match(config, /--self-test/);
   assert.match(config, /npm run test:pdf-render-queue/);

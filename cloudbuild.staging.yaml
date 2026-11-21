@@ -27,6 +27,7 @@ steps:
         npm ci
         npm run test:staging-automation-config
         npm run lint
+        npx next typegen
         npx tsc --noEmit
         npm run test:order-assets
         npm run test:order-checkout

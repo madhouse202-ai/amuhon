@@ -21,7 +21,7 @@ The operator reports that the staging Job, repository, runtime service account, 
 `cloudbuild.staging.yaml` implements this sequence:
 
 1. Require a Git commit SHA and the `amuhon-staging` project.
-2. Run `npm ci`, ESLint, TypeScript, and the order/rights/queue contract suites.
+2. Run `npm ci`, the staging automation config test, ESLint, `next typegen`, TypeScript, and the order/rights/queue contract suites. `next typegen` runs before `tsc --noEmit` so generated App Router helper types such as `LayoutProps` exist in a clean build environment.
 3. Build the `linux/amd64` renderer image. `Dockerfile.pdf-renderer` keeps Playwright/Chromium version pinning and the official Noto font hash check. `.dockerignore` excludes local worktrees, environment files, local assets, and generated artifacts from the image context.
 4. Run the synthetic renderer self-test with networking disabled. If any prior step fails, the pipeline stops before publication.
 5. With the default `_DEPLOY_STAGING=false`, stop after build and smoke test; do not push an image or update the Job.
