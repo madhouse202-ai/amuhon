@@ -122,6 +122,44 @@ test("new migration keeps the old edition-bound fallback and applies manual stop
   assert.match(previous, /rights\.source_sha256 = target_work ->> 'sourceSha256'/);
 });
 
+test("101 older manually stopped jobs do not starve a later eligible claim", async () => {
+  const migration = await read("supabase/migrations/20261121000100_aozora_official_rights_status.sql");
+  const claimStart = migration.indexOf("create or replace function public.claim_amuhon_order_pdf_render_job");
+  const claimEnd = migration.indexOf("revoke all on function public.claim_amuhon_order_pdf_render_job", claimStart);
+  const claimFunction = migration.slice(claimStart, claimEnd);
+  const candidateStart = claimFunction.indexOf("for candidate in");
+  const candidateEnd = claimFunction.indexOf("loop", candidateStart);
+  const candidateQuery = claimFunction.slice(candidateStart, candidateEnd);
+
+  assert.match(candidateQuery, /join public\.amuhon_orders as candidate_order on candidate_order\.id = jobs\.order_id/);
+  assert.match(candidateQuery, /and not public\._amuhon_book_works_manual_stop_active_v1\(candidate_order\.book_snapshot -> 'works'\)/);
+  assert.ok(candidateQuery.indexOf("_amuhon_book_works_manual_stop_active_v1") < candidateQuery.indexOf("limit 100"));
+  const stopHelperStart = migration.indexOf("create or replace function public._amuhon_book_works_manual_stop_active_v1");
+  const stopHelperEnd = migration.indexOf("revoke all on function public._amuhon_book_works_manual_stop_active_v1", stopHelperStart);
+  const stopHelper = migration.slice(stopHelperStart, stopHelperEnd);
+  assert.match(stopHelper, /stable\s+security definer\s+set search_path = pg_catalog, pg_temp/i);
+  assert.match(migration, /revoke all on function public\._amuhon_book_works_manual_stop_active_v1\(jsonb\) from public, anon, authenticated, service_role/i);
+  assert.match(claimFunction, /pg_advisory_xact_lock\([\s\S]*?hashtextextended\(target_work ->> 'id', 0\)[\s\S]*?\)/);
+  const pausedBranch = claimFunction.match(/if public\._amuhon_book_works_manual_stop_active_v1\(target_order\.book_snapshot -> 'works'\) then\s+continue;\s+end if;/)?.[0];
+  assert.ok(pausedBranch);
+  assert.doesNotMatch(pausedBranch, /update public\.amuhon_order_pdf_render_jobs/i);
+  assert.match(claimFunction, /if not public\._amuhon_book_works_rights_approved_v1\(target_order\.book_snapshot -> 'works', true\) then\s+update public\.amuhon_order_pdf_render_jobs set\s+state = 'failed',[\s\S]*?error_code = 'rights_ineligible'/);
+  assert.match(migration, /'page_count_mismatch', 'internal_error', 'rights_ineligible'/);
+
+  const backlog = Array.from({ length: 101 }, (_, index) => ({ id: `stopped-${index + 1}`, stopped: true }));
+  backlog.push({ id: "later-eligible", stopped: false });
+  const selected = backlog.filter((job) => !job.stopped).slice(0, 100);
+  assert.deepEqual(selected.map((job) => job.id), ["later-eligible"]);
+  assert.equal(backlog.find((job) => job.id === "stopped-1").stopped, true);
+  const afterResume = backlog.map((job) => job.id === "stopped-1" ? { ...job, stopped: false } : job)
+    .filter((job) => !job.stopped).slice(0, 100);
+  assert.equal(afterResume[0].id, "stopped-1");
+
+  const stopBeforeLimit = candidateQuery.indexOf("_amuhon_book_works_manual_stop_active_v1");
+  const limitAt = candidateQuery.indexOf("limit 100");
+  assert.ok(stopBeforeLimit >= 0 && limitAt > stopBeforeLimit);
+});
+
 test("text API and renderer bind fetched content to official catalog rights and exact edition SHA", async () => {
   const [route, worker, parser] = await Promise.all([
     read("app/api/aozora/route.ts"),

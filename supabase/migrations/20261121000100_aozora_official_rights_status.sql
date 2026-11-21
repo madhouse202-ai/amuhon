@@ -1,5 +1,19 @@
 begin;
 
+-- Keep a distinct terminal reason for permanent rights ineligibility. A
+-- temporary manual stop is deliberately not recorded as a failure: its job
+-- remains queued and becomes claimable after a resume event.
+alter table public.amuhon_order_pdf_render_jobs
+  drop constraint if exists amuhon_order_pdf_render_job_error_code;
+alter table public.amuhon_order_pdf_render_jobs
+  add constraint amuhon_order_pdf_render_job_error_code check (
+    error_code is null or error_code in (
+      'aozora_unavailable', 'storage_unavailable', 'processing_timeout',
+      'worker_unavailable', 'invalid_snapshot', 'invalid_render',
+      'page_count_mismatch', 'internal_error', 'rights_ineligible'
+    )
+  );
+
 -- Manual stop/resume is append-only. The latest event controls the status;
 -- no order or historical event is deleted when a stop is lifted.
 create table if not exists public.amuhon_work_rights_manual_stop_events (
@@ -231,9 +245,38 @@ end;
 $$;
 revoke all on function public._amuhon_book_works_rights_approved_v1(jsonb, boolean) from public, anon, authenticated, service_role;
 
+-- Used to filter only temporary manual stops during candidate discovery.
+-- Invalid snapshots are not treated as stopped; the claim function will
+-- terminally fail those after locking the corresponding order and job.
+create or replace function public._amuhon_book_works_manual_stop_active_v1(p_works jsonb)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, pg_temp
+as $$
+declare
+  target_work jsonb;
+begin
+  if jsonb_typeof(p_works) is distinct from 'array' then
+    return false;
+  end if;
+
+  for target_work in select item.value from jsonb_array_elements(p_works) as item(value) loop
+    if jsonb_typeof(target_work) = 'object' and
+       coalesce(target_work ->> 'id', '') ~ '^[0-9]{1,12}$' and
+       public._amuhon_work_rights_manual_stop_active_v1(target_work ->> 'id') then
+      return true;
+    end if;
+  end loop;
+  return false;
+end;
+$$;
+revoke all on function public._amuhon_book_works_manual_stop_active_v1(jsonb) from public, anon, authenticated, service_role;
+
 -- Do not lease a paid order while its current rights decision is stopped or
--- no longer passes the shared A/B/C gate. The job remains queued; a recorded
--- resume lets the next scheduled claim proceed without changing the order.
+-- no longer passes the shared A/B/C gate. Temporary stops remain queued;
+-- permanently ineligible snapshots are terminally marked for operator review.
 create or replace function public.claim_amuhon_order_pdf_render_job(
   p_lease_seconds integer default 900
 ) returns jsonb
@@ -245,6 +288,7 @@ declare
   candidate record;
   target_order public.amuhon_orders%rowtype;
   target_job public.amuhon_order_pdf_render_jobs%rowtype;
+  target_work jsonb;
   checked_at timestamptz;
   new_lease_id uuid;
 begin
@@ -255,8 +299,10 @@ begin
   for candidate in
     select jobs.order_id
     from public.amuhon_order_pdf_render_jobs as jobs
-    where jobs.state = 'queued' or
-      (jobs.state = 'rendering' and jobs.lease_expires_at <= clock_timestamp())
+    join public.amuhon_orders as candidate_order on candidate_order.id = jobs.order_id
+    where (jobs.state = 'queued' or
+      (jobs.state = 'rendering' and jobs.lease_expires_at <= clock_timestamp()))
+      and not public._amuhon_book_works_manual_stop_active_v1(candidate_order.book_snapshot -> 'works')
     order by jobs.created_at, jobs.order_id
     limit 100
   loop
@@ -274,6 +320,25 @@ begin
       target_job.state = 'queued' or
       (target_job.state = 'rendering' and target_job.lease_expires_at <= clock_timestamp())
     ) then
+      continue;
+    end if;
+
+    -- Serialize the final manual-stop check with operator stop/resume writes.
+    -- Stable ordering prevents deadlocks when a book contains multiple works.
+    if jsonb_typeof(target_order.book_snapshot -> 'works') = 'array' then
+      for target_work in
+        select item.value
+        from jsonb_array_elements(target_order.book_snapshot -> 'works') as item(value)
+        where jsonb_typeof(item.value) = 'object'
+          and coalesce(item.value ->> 'id', '') ~ '^[0-9]{1,12}$'
+        order by item.value ->> 'id'
+      loop
+        perform pg_catalog.pg_advisory_xact_lock(
+          pg_catalog.hashtextextended(target_work ->> 'id', 0)
+        );
+      end loop;
+    end if;
+    if public._amuhon_book_works_manual_stop_active_v1(target_order.book_snapshot -> 'works') then
       continue;
     end if;
 
@@ -315,6 +380,10 @@ begin
     end if;
 
     if not public._amuhon_book_works_rights_approved_v1(target_order.book_snapshot -> 'works', true) then
+      update public.amuhon_order_pdf_render_jobs set
+        state = 'failed', lease_id = null, lease_expires_at = null,
+        error_code = 'rights_ineligible', updated_at = checked_at
+      where order_id = candidate.order_id;
       continue;
     end if;
 
