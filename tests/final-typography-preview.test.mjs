@@ -250,6 +250,17 @@ test("local PDF diagnostic stages emit only fixed start, success, and failure co
   assert.match(renderer, /page\.pdf\(\{\s*preferCSSPageSize: true,\s*printBackground: true,\s*displayHeaderFooter: false,/s);
 });
 
+test("source-page text is accepted as a Noto usage inspection target", async () => {
+  const [page, renderer] = await Promise.all([
+    readFile(new URL("../app/final/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/local-final-pdf.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /<ol[^>]*data-noto-inspection-kind=\{bodyTypography === "noto-serif-jp" \? "sources" : undefined\}/);
+  assert.match(renderer, /LocalFinalPdfNotoInspectionKind = [^;]*\| "sources"/);
+  assert.match(renderer, /new Set\(\["title", "toc", "colophon", "page-number", "sources"\]\)/);
+});
+
 test("D toggle is development-only, starts at serif, and keeps ordinary order PDF on the default path", async () => {
   const [page, renderer, orderPage, oldOrderRoute] = await Promise.all([
     readFile(new URL("../app/final/page.tsx", import.meta.url), "utf8"),

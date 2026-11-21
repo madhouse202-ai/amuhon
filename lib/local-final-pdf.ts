@@ -61,7 +61,7 @@ export type LocalFinalPdfNotoDiagnosticCounts = {
 };
 
 export type LocalFinalPdfNotoCategory = "kanji" | "hiragana" | "katakana" | "punctuation" | "other";
-export type LocalFinalPdfNotoInspectionKind = "column" | "body-cell" | "ruby" | "title" | "toc" | "colophon" | "page-number";
+export type LocalFinalPdfNotoInspectionKind = "column" | "body-cell" | "ruby" | "title" | "toc" | "colophon" | "page-number" | "sources";
 
 export type LocalFinalPdfNotoFallbackFont = {
   family: string;
@@ -839,7 +839,7 @@ export async function renderLocalFinalBodyPdf(
           }
           for (const [index, target] of targets.layoutTextRoots.entries()) {
             const kind = target.kind as LocalFinalPdfNotoInspectionKind;
-            if (!(new Set(["title", "toc", "colophon", "page-number"])).has(kind)) {
+            if (!(new Set(["title", "toc", "colophon", "page-number", "sources"])).has(kind)) {
               throw new Error("noto_layout_text_kind_invalid");
             }
             inspectionTargets.set(layoutTextNodeIds[index], {
