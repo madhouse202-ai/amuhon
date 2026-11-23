@@ -12,6 +12,7 @@ This is the current operational guide for the staging PDF renderer. The older `C
 - Queue mode revalidates the paid state, the already validated source files, rights decision, snapshot and page count; it reuses `/final` and `/cover`, Playwright 1.65.0 / its pinned Chromium, the SHA-256 checked Noto Serif CJK JP 2.003 font, and strict PDF/PNG validators.
 - Both outputs are uploaded to the existing private bucket under lease-specific object keys with create-only semantics. Only the completion RPC can attach both objects to the order after hashes, sizes, lease and page count match. Failure does not change payment state or replace the previously verified files.
 - The admin order detail already reports queued, rendering, succeeded, failed and unavailable states after administrator authorization.
+- Paid-order email notifications use a separate private outbox and a separate Cloud Run Job/Scheduler. This worker reuses the image but overrides the PDF ENTRYPOINT with `scripts/send-order-paid-notifications-worker.mjs`; it never starts the PDF render loop or touches Storage.
 - `--self-test` uses synthetic content. The Cloud Build configuration below runs it in a container with `--network=none` before any image push or Cloud Run update.
 
 The operator reports that the staging Job, repository, runtime service account, secret reference, private bucket and 1 GiB temporary volume exist, and that an empty-queue run previously succeeded. Those facts were not independently confirmed here. Read-only `gcloud` calls in this environment could not open the local Cloud SDK credential database, so current cloud configuration, triggers, Scheduler state, IAM and image digest remain unverified.
@@ -25,7 +26,7 @@ The operator reports that the staging Job, repository, runtime service account, 
 3. Build the `linux/amd64` renderer image. `Dockerfile.pdf-renderer` keeps Playwright/Chromium version pinning and the official Noto font hash check. `.dockerignore` excludes local worktrees, environment files, local assets, and generated artifacts from the image context.
 4. Run the synthetic renderer self-test with networking disabled. If any prior step fails, the pipeline stops before publication.
 5. With the default `_DEPLOY_STAGING=false`, stop after build and smoke test; do not push an image or update the Job.
-6. A deliberately configured push trigger can set `_DEPLOY_STAGING=true`. Only the named staging branch is accepted. The pipeline checks that the existing Artifact Registry repository and Cloud Run Job are present, pushes an image tagged with the full commit SHA, resolves its SHA-256 digest, then updates only the existing Job's image and `source-commit` label. It never executes the Job and does not alter arguments, environment, secret versions, identity, task settings or volume mounts.
+6. A deliberately configured push trigger can set `_DEPLOY_STAGING=true`. Only the named staging branch is accepted. The pipeline checks that the existing Artifact Registry repository, PDF Job and notification Job are present, pushes an image tagged with the full commit SHA, resolves its SHA-256 digest, then updates only both existing Jobs' images and `source-commit` labels. It never executes the Jobs and does not alter arguments, environment, secret versions, identity, task settings or volume mounts.
 
 The YAML `serviceAccount` is used for direct Cloud Build submissions. GitHub repository triggers use the service account selected on the trigger; Cloud Build ignores the YAML service account for trigger-invoked builds. The trigger must therefore explicitly select the dedicated build account and set `_DEPLOY_STAGING=true`.
 
@@ -42,6 +43,7 @@ gcloud config get-value project
 gcloud builds triggers list --project=amuhon-staging --format="table(name,filename,serviceAccount)"
 gcloud artifacts docker images list asia-northeast1-docker.pkg.dev/amuhon-staging/amuhon-pdf-renderer/pdf-renderer --include-tags --format="table(version,tags)"
 gcloud run jobs describe amuhon-pdf-renderer --project=amuhon-staging --region=asia-northeast1 --format="json(name,labels,template.taskCount,template.parallelism,template.template.maxRetries,template.template.timeout,template.template.serviceAccount,template.template.containers[0].image,template.template.containers[0].command,template.template.containers[0].args,template.template.containers[0].env[].name,template.template.containers[0].env[].valueSource.secretKeyRef.name,template.template.containers[0].env[].valueSource.secretKeyRef.version)"
+gcloud run jobs describe amuhon-order-notification-worker --project=amuhon-staging --region=asia-northeast1 --format="json(name,labels,template.taskCount,template.parallelism,template.template.maxRetries,template.template.timeout,template.template.serviceAccount,template.template.containers[0].image,template.template.containers[0].command,template.template.containers[0].args,template.template.containers[0].env[].name,template.template.containers[0].env[].valueSource.secretKeyRef.name,template.template.containers[0].env[].valueSource.secretKeyRef.version)"
 gcloud scheduler jobs list --project=amuhon-staging --location=asia-northeast1 --format="table(name,state,schedule,timeZone)"
 ```
 
@@ -58,8 +60,10 @@ Use separate identities:
 | `amuhon-cloudbuild-deployer@amuhon-staging.iam.gserviceaccount.com` | `roles/logging.logWriter` at the staging project; `roles/artifactregistry.writer` on only `asia-northeast1/amuhon-pdf-renderer`; custom job-updater role from `infra/iam/amuhon-staging-render-job-updater.yaml` bound to only `amuhon-pdf-renderer`; the read-only operation-reader role from `infra/iam/amuhon-staging-run-operation-reader.yaml` at project scope; `roles/iam.serviceAccountUser` on only the PDF worker service account if required for Job updates | Supabase secret access, Storage access, Stripe credentials, job execution, project Editor/Owner |
 | `amuhon-pdf-worker@amuhon-staging.iam.gserviceaccount.com` | `roles/secretmanager.secretAccessor` on only the staging Supabase secret | Artifact Registry writer, broad project roles, Stripe secret |
 | `amuhon-pdf-scheduler@amuhon-staging.iam.gserviceaccount.com` | `roles/run.invoker` on only `amuhon-pdf-renderer` | Supabase, Storage, Artifact Registry, job configuration update |
+| `amuhon-order-notification-worker@amuhon-staging.iam.gserviceaccount.com` | `roles/secretmanager.secretAccessor` on only the staging Supabase and Resend secrets | Storage, Stripe, Artifact Registry writer, broad project roles |
+| `amuhon-order-notification-scheduler@amuhon-staging.iam.gserviceaccount.com` | `roles/run.invoker` on only `amuhon-order-notification-worker` | Supabase, Storage, Artifact Registry, job configuration update |
 
-The custom job role intentionally contains only `run.jobs.get` and `run.jobs.update`; it has no create, delete, execute, or IAM policy permissions. The operation-reader role is read-only. Cloud Build's service agent must be able to impersonate the selected build service account as documented by Google; first inspect its existing service-agent grant and only repair the specific missing impersonation permission if Cloud Build reports it. Do not grant broad roles to a default Cloud Build account as a workaround. The trigger creator needs `roles/iam.serviceAccountUser` on the build identity. If a Cloud Storage source archive is used and logs specifically report a source object read denial, grant `roles/storage.objectViewer` on that exact source bucket to the build account; do not grant project-wide Storage access.
+The custom job role intentionally contains only `run.jobs.get` and `run.jobs.update`; bind it on each of the two named Jobs only. It has no create, delete, execute, or IAM policy permissions. The operation-reader role is read-only. Cloud Build's service agent must be able to impersonate the selected build service account as documented by Google; first inspect its existing service-agent grant and only repair the specific missing impersonation permission if Cloud Build reports it. Do not grant broad roles to a default Cloud Build account as a workaround. The trigger creator needs `roles/iam.serviceAccountUser` on the build identity. If a Cloud Storage source archive is used and logs specifically report a source object read denial, grant `roles/storage.objectViewer` on that exact source bucket to the build account; do not grant project-wide Storage access.
 
 Example operator commands (review project and resource names first; do not run in this task):
 
@@ -68,8 +72,11 @@ $Project = 'amuhon-staging'
 $Region = 'asia-northeast1'
 $BuildSa = 'amuhon-cloudbuild-deployer@amuhon-staging.iam.gserviceaccount.com'
 $WorkerSa = 'amuhon-pdf-worker@amuhon-staging.iam.gserviceaccount.com'
+$NotificationWorkerSa = 'amuhon-order-notification-worker@amuhon-staging.iam.gserviceaccount.com'
 gcloud iam service-accounts create amuhon-cloudbuild-deployer --project=$Project --display-name="Amuhon staging image builder"
 gcloud iam service-accounts create amuhon-pdf-scheduler --project=$Project --display-name="Amuhon staging PDF queue scheduler"
+gcloud iam service-accounts create amuhon-order-notification-worker --project=$Project --display-name="Amuhon staging notification worker"
+gcloud iam service-accounts create amuhon-order-notification-scheduler --project=$Project --display-name="Amuhon staging notification scheduler"
 gcloud iam roles create amuhonStagingPdfJobUpdater --project=$Project --file=infra/iam/amuhon-staging-render-job-updater.yaml
 gcloud iam roles create amuhonStagingRunOperationReader --project=$Project --file=infra/iam/amuhon-staging-run-operation-reader.yaml
 gcloud artifacts repositories add-iam-policy-binding amuhon-pdf-renderer --project=$Project --location=$Region --member="serviceAccount:$BuildSa" --role=roles/artifactregistry.writer
@@ -77,6 +84,13 @@ gcloud run jobs add-iam-policy-binding amuhon-pdf-renderer --project=$Project --
 gcloud projects add-iam-policy-binding $Project --member="serviceAccount:$BuildSa" --role="projects/$Project/roles/amuhonStagingRunOperationReader"
 gcloud iam service-accounts add-iam-policy-binding $WorkerSa --project=$Project --member="serviceAccount:$BuildSa" --role=roles/iam.serviceAccountUser
 gcloud projects add-iam-policy-binding $Project --member="serviceAccount:$BuildSa" --role=roles/logging.logWriter
+```
+
+After the notification Job exists, bind the existing update role to that Job and grant its Scheduler identity invoke-only access. Bind `roles/secretmanager.secretAccessor` on the Supabase and Resend secrets individually to `$NotificationWorkerSa`; do not grant it project-level Secret Manager access. These are operator setup instructions, not executed here.
+
+```powershell
+gcloud run jobs add-iam-policy-binding amuhon-order-notification-worker --project=$Project --region=$Region --member="serviceAccount:$BuildSa" --role="projects/$Project/roles/amuhonStagingPdfJobUpdater"
+gcloud run jobs add-iam-policy-binding amuhon-order-notification-worker --project=$Project --region=$Region --member="serviceAccount:amuhon-order-notification-scheduler@amuhon-staging.iam.gserviceaccount.com" --role=roles/run.invoker
 ```
 
 These commands create role definitions or change IAM and are intentionally documented only. If the project already has equivalent narrowly scoped bindings, reuse them rather than adding duplicates. Confirm the project number, Cloud Build service agent, existing service accounts and repository location in Console before applying any command.

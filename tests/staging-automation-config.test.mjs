@@ -44,6 +44,8 @@ test("deployment pins the resolved digest and never executes or creates a Job", 
   assert.match(config, /gcloud artifacts docker images describe/);
   assert.match(config, /sha256:\[0-9a-f\]\{64\}/);
   assert.match(config, /--image="\$\$image@\$\$digest"/);
+  assert.match(config, /jobs describe amuhon-order-notification-worker/);
+  assert.match(config, /jobs update amuhon-order-notification-worker/);
   assert.doesNotMatch(config, /--execute-now|jobs execute|jobs create/);
 });
 

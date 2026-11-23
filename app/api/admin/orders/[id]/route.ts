@@ -31,7 +31,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
             state: candidate.state,
             ...(Number.isSafeInteger(attempts) && (attempts as number) >= 0 && (attempts as number) <= 5
               ? { attemptCount: attempts } : {}),
-            ...(typeof errorCode === "string" && /^[a-z_]{1,40}$/.test(errorCode) ? { errorCode } : {}),
+            ...(typeof errorCode === "string" && new Set([
+              "resend_retryable_failure", "resend_rejected", "resend_outcome_unknown",
+              "notification_job_invalid", "order_not_paid", "retry_window_expired", "retry_limit_reached",
+            ]).has(errorCode) ? { errorCode } : {}),
             ...(typeof candidate.updatedAt === "string" && Number.isFinite(Date.parse(candidate.updatedAt))
               ? { updatedAt: candidate.updatedAt } : {}),
             ...(typeof candidate.completedAt === "string" && Number.isFinite(Date.parse(candidate.completedAt))
@@ -41,6 +44,34 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       }
     } catch {
       // The queue migration may not be deployed yet; keep the admin order view available.
+    }
+    let paidNotification: Record<string, unknown> = { state: "unavailable" };
+    try {
+      const notificationStatus = await supabase.rpc("get_amuhon_admin_order_paid_notification_status_v1", { p_order_id: id });
+      if (!notificationStatus.error && notificationStatus.data && typeof notificationStatus.data === "object" && !Array.isArray(notificationStatus.data)) {
+        const candidate = notificationStatus.data as Record<string, unknown>;
+        const allowedStates = new Set(["not_created", "queued", "sending", "sent", "needs_review", "suppressed"]);
+        const allowedNotificationErrors = new Set([
+          "resend_retryable_failure", "resend_rejected", "resend_outcome_unknown",
+          "notification_job_invalid", "order_not_paid", "retry_window_expired", "retry_limit_reached",
+        ]);
+        if (typeof candidate.state === "string" && allowedStates.has(candidate.state)) {
+          const attempts = candidate.attemptCount;
+          const errorCode = candidate.errorCode;
+          paidNotification = {
+            state: candidate.state,
+            ...(Number.isSafeInteger(attempts) && (attempts as number) >= 0 && (attempts as number) <= 8
+              ? { attemptCount: attempts } : {}),
+            ...(typeof errorCode === "string" && allowedNotificationErrors.has(errorCode) ? { errorCode } : {}),
+            ...(typeof candidate.nextAttemptAt === "string" && Number.isFinite(Date.parse(candidate.nextAttemptAt))
+              ? { nextAttemptAt: candidate.nextAttemptAt } : {}),
+            ...(typeof candidate.sentAt === "string" && Number.isFinite(Date.parse(candidate.sentAt))
+              ? { sentAt: candidate.sentAt } : {}),
+          };
+        }
+      }
+    } catch {
+      // The notification migration may not be deployed yet; keep admin order data available.
     }
     let productionReadiness: Record<string, unknown> = { rightsApproved: false, assetsReady: false };
     let fulfillmentAudit: unknown[] = [];
@@ -84,7 +115,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       // Missing additive fulfillment migration is represented as unavailable and fail-closed.
     }
     const canDownloadAssets = (data as Record<string, unknown>).canDownloadAssets === true && productionReadiness.assetsReady === true;
-    return Response.json({ order: { ...(data as Record<string, unknown>), canDownloadAssets, pdfRenderJob, productionReadiness, fulfillmentAudit } }, { headers: { "Cache-Control": "no-store, private" } });
+    return Response.json({ order: { ...(data as Record<string, unknown>), canDownloadAssets, pdfRenderJob, paidNotification, productionReadiness, fulfillmentAudit } }, { headers: { "Cache-Control": "no-store, private" } });
   } catch {
     return Response.json({ error: "注文詳細を取得できませんでした。" }, { status: 502, headers: { "Cache-Control": "no-store" } });
   }

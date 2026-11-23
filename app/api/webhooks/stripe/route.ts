@@ -11,6 +11,15 @@ function fail(status: number) {
   return Response.json({ received: false }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
+function logNotificationCode(code: string) {
+  // Only fixed diagnostic codes are allowed here; never include RPC or provider details.
+  console.error(`[stripe-webhook] ${code}`);
+}
+
+function received() {
+  return Response.json({ received: true }, { headers: { "Cache-Control": "no-store" } });
+}
+
 async function readLimitedBody(request: Request): Promise<Uint8Array | null> {
   const length = request.headers.get("content-length");
   if (length !== null) {
@@ -89,6 +98,7 @@ export async function POST(request: Request) {
 
   const supabase = getSupabaseServerConfig();
   if (!supabase) return fail(503);
+  let paymentState: "paid" | "duplicate";
   try {
     const result = await callOrderRpc(supabase, "apply_amuhon_stripe_checkout_paid_v2", {
       p_event_id: event.id,
@@ -103,8 +113,32 @@ export async function POST(request: Request) {
       p_livemode: stripe.livemode,
     });
     if (!result.ok || !result.data || !["paid", "duplicate"].includes(String(result.data.state))) return fail(500);
+    paymentState = result.data.state as "paid" | "duplicate";
   } catch {
     return fail(500);
   }
-  return Response.json({ received: true }, { headers: { "Cache-Control": "no-store" } });
+
+  // The paid-state transition and outbox insert are atomic in Postgres. This
+  // read-only check makes a missing trigger/migration visible to Stripe for a
+  // safe webhook retry, while email delivery is handled by a separate worker.
+  let notification: Awaited<ReturnType<typeof callOrderRpc>>;
+  try {
+    notification = await callOrderRpc(supabase, "get_amuhon_order_paid_notification_webhook_status_v1", {
+      p_order_id: orderId,
+    });
+  } catch {
+    logNotificationCode("NOTIFICATION_OUTBOX_VERIFY_FAILED");
+    return fail(503);
+  }
+  if (!notification.ok || !notification.data || typeof notification.data.state !== "string") {
+    logNotificationCode("NOTIFICATION_OUTBOX_VERIFY_FAILED");
+    return fail(503);
+  }
+  const outboxState = notification.data.state;
+  if (outboxState === "missing" && paymentState === "duplicate") return received();
+  if (!["queued", "suppressed", "sending", "sent", "needs_review"].includes(outboxState)) {
+    logNotificationCode("NOTIFICATION_OUTBOX_NOT_PERSISTED");
+    return fail(503);
+  }
+  return received();
 }

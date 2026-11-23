@@ -55,49 +55,120 @@ test("signature verifier accepts the exact timestamped payload and rejects tampe
   assert.equal(verifyStripeWebhookSignature(raw, signature(raw, now, "sk_test_not-a-webhook-secret"), "sk_test_not-a-webhook-secret", now), false);
 });
 
-test("only a verified test-mode paid Checkout event reaches the atomic payment RPC", async () => {
+test("paid webhook atomically applies payment, verifies durable outbox, and never sends email inline", async () => {
   const event = paidEvent();
-  let rpcArgs;
+  const calls = [];
+  let paymentArgs;
   const response = await invoke(event, { mockFetch: async (input, init) => {
-    assert.match(String(input), /apply_amuhon_stripe_checkout_paid_v2$/);
-    rpcArgs = JSON.parse(String(init.body));
-    return Response.json({ state: "paid", orderId: ORDER_ID });
+    const url = String(input);
+    const name = url.split("/rpc/").at(-1);
+    calls.push(name);
+    if (name === "apply_amuhon_stripe_checkout_paid_v2") {
+      paymentArgs = JSON.parse(String(init.body));
+      return Response.json({ state: "paid", orderId: ORDER_ID });
+    }
+    if (name === "get_amuhon_order_paid_notification_webhook_status_v1") {
+      assert.deepEqual(JSON.parse(String(init.body)), { p_order_id: ORDER_ID });
+      return Response.json({ state: "queued" });
+    }
+    assert.fail(`unexpected request target: ${url.startsWith("https://api.resend.com") ? "provider" : "RPC"}`);
   } });
   assert.equal(response.status, 200);
-  assert.equal(rpcArgs.p_event_id, event.id);
-  assert.equal(rpcArgs.p_event_type, event.type);
-  assert.equal(rpcArgs.p_order_id, ORDER_ID);
-  assert.equal(rpcArgs.p_checkout_attempt_id, ATTEMPT_ID);
-  assert.equal(rpcArgs.p_session_id, "cs_test_abc123");
-  assert.equal(rpcArgs.p_amount_total, 1980);
-  assert.equal(rpcArgs.p_currency, "jpy");
-  assert.equal(rpcArgs.p_payment_intent_id, "pi_testABC123");
-  assert.equal(rpcArgs.p_livemode, false);
+  assert.deepEqual(calls, ["apply_amuhon_stripe_checkout_paid_v2", "get_amuhon_order_paid_notification_webhook_status_v1"]);
+  assert.equal(paymentArgs.p_event_id, event.id);
+  assert.equal(paymentArgs.p_event_type, event.type);
+  assert.equal(paymentArgs.p_order_id, ORDER_ID);
+  assert.equal(paymentArgs.p_checkout_attempt_id, ATTEMPT_ID);
+  assert.equal(paymentArgs.p_session_id, "cs_test_abc123");
+  assert.equal(paymentArgs.p_amount_total, 1980);
+  assert.equal(paymentArgs.p_currency, "jpy");
+  assert.equal(paymentArgs.p_payment_intent_id, "pi_testABC123");
+  assert.equal(paymentArgs.p_livemode, false);
   assert.doesNotMatch(await response.text(), /service-role-test-only|whsec_/);
 });
 
-test("only a verified live-mode paid Checkout event reaches the live-bound payment RPC", async () => {
+test("live-mode paid webhook uses live-bound payment validation and verifies the outbox", async () => {
   const event = paidEvent({
     id: "cs_live_abc123",
     livemode: true,
     payment_intent: "pi_liveABC123",
   });
   event.livemode = true;
-  const liveSecret = "whsec_live-webhook-secret-only";
-  let rpcArgs;
+  const calls = [];
+  let paymentArgs;
+  const webhookSecret = "whsec_test_live-mode-only";
   const response = await invoke(event, {
     mode: "live",
-    webhookSecret: liveSecret,
+    stripeKey: "sk_live_mock-only-key",
+    webhookSecret,
     mockFetch: async (input, init) => {
-      assert.match(String(input), /apply_amuhon_stripe_checkout_paid_v2$/);
-      rpcArgs = JSON.parse(String(init.body));
-      return Response.json({ state: "paid", orderId: ORDER_ID, livemode: true });
+      const name = String(input).split("/rpc/").at(-1);
+      calls.push(name);
+      if (name === "apply_amuhon_stripe_checkout_paid_v2") {
+        paymentArgs = JSON.parse(String(init.body));
+        return Response.json({ state: "paid", orderId: ORDER_ID, livemode: true });
+      }
+      if (name === "get_amuhon_order_paid_notification_webhook_status_v1") {
+        return Response.json({ state: "suppressed" });
+      }
+      assert.fail(`unexpected RPC: ${name}`);
     },
   });
+
   assert.equal(response.status, 200);
-  assert.equal(rpcArgs.p_session_id, "cs_live_abc123");
-  assert.equal(rpcArgs.p_payment_intent_id, "pi_liveABC123");
-  assert.equal(rpcArgs.p_livemode, true);
+  assert.deepEqual(calls, ["apply_amuhon_stripe_checkout_paid_v2", "get_amuhon_order_paid_notification_webhook_status_v1"]);
+  assert.equal(paymentArgs.p_session_id, "cs_live_abc123");
+  assert.equal(paymentArgs.p_payment_intent_id, "pi_liveABC123");
+  assert.equal(paymentArgs.p_livemode, true);
+});
+
+test("future paid rows in enabled or disabled state are acknowledged after outbox verification", async () => {
+  for (const state of ["queued", "suppressed", "sending", "sent", "needs_review"]) {
+    const response = await invoke(paidEvent(), { mockFetch: async (input) =>
+      String(input).endsWith("apply_amuhon_stripe_checkout_paid_v2")
+        ? Response.json({ state: "paid" })
+        : Response.json({ state }) });
+    assert.equal(response.status, 200, `state ${state}`);
+  }
+});
+
+test("newly paid order without durable outbox returns retryable failure, while historical duplicate is not backfilled", async () => {
+  const callNames = [];
+  const mockFetch = async (input) => {
+    const name = String(input).split("/rpc/").at(-1);
+    callNames.push(name);
+    return name === "apply_amuhon_stripe_checkout_paid_v2"
+      ? Response.json({ state: "paid" })
+      : Response.json({ state: "missing" });
+  };
+  assert.equal((await invoke(paidEvent(), { mockFetch })).status, 503);
+  assert.deepEqual(callNames, ["apply_amuhon_stripe_checkout_paid_v2", "get_amuhon_order_paid_notification_webhook_status_v1"]);
+
+  callNames.length = 0;
+  const duplicateFetch = async (input) => {
+    const name = String(input).split("/rpc/").at(-1);
+    callNames.push(name);
+    return name === "apply_amuhon_stripe_checkout_paid_v2"
+      ? Response.json({ state: "duplicate" })
+      : Response.json({ state: "missing" });
+  };
+  assert.equal((await invoke(paidEvent(), { mockFetch: duplicateFetch })).status, 200);
+  assert.deepEqual(callNames, ["apply_amuhon_stripe_checkout_paid_v2", "get_amuhon_order_paid_notification_webhook_status_v1"]);
+});
+
+test("outbox verification errors remain opaque and return a retryable webhook status", async () => {
+  const oldConsoleError = console.error;
+  const lines = [];
+  console.error = (...args) => lines.push(args.join(" "));
+  try {
+    const response = await invoke(paidEvent(), { mockFetch: async (input) =>
+      String(input).endsWith("apply_amuhon_stripe_checkout_paid_v2")
+        ? Response.json({ state: "paid" })
+        : Response.json({ detail: "private database response" }, { status: 503 }) });
+    assert.equal(response.status, 503);
+    assert.doesNotMatch(await response.text(), /private database response/);
+    assert.deepEqual(lines, ["[stripe-webhook] NOTIFICATION_OUTBOX_VERIFY_FAILED"]);
+  } finally { console.error = oldConsoleError; }
 });
 
 test("invalid signatures, live-mode events, and unpaid sessions never reach the database", async () => {
@@ -115,8 +186,7 @@ test("invalid signatures, live-mode events, and unpaid sessions never reach the 
 test("mode/key mismatch and session/event livemode mismatch never reach the database", async () => {
   let calls = 0;
   const mockFetch = async () => { calls += 1; throw new Error("RPC must not be called"); };
-  const testEvent = paidEvent();
-  const responseWithModeMismatch = await invoke(testEvent, {
+  const responseWithModeMismatch = await invoke(paidEvent(), {
     mode: "live", stripeKey: "sk_test_wrong-mode-key", mockFetch,
   });
   assert.equal(responseWithModeMismatch.status, 503);

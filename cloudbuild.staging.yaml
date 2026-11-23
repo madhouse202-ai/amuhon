@@ -79,6 +79,11 @@ steps:
           echo "STAGING_RENDER_JOB_UNAVAILABLE"
           exit 1
         fi
+        if ! gcloud run jobs describe amuhon-order-notification-worker \
+          --project=amuhon-staging --region=asia-northeast1 --format='value(name)' >/dev/null 2>&1; then
+          echo "STAGING_NOTIFICATION_JOB_UNAVAILABLE"
+          exit 1
+        fi
   - id: push-staging-image
     name: gcr.io/cloud-builders/docker
     entrypoint: /bin/sh
@@ -117,6 +122,11 @@ steps:
           exit 1
         fi
         gcloud run jobs update amuhon-pdf-renderer \
+          --project=amuhon-staging \
+          --region=asia-northeast1 \
+          --image="$$image@$$digest" \
+          --update-labels="source-commit=${COMMIT_SHA}"
+        gcloud run jobs update amuhon-order-notification-worker \
           --project=amuhon-staging \
           --region=asia-northeast1 \
           --image="$$image@$$digest" \

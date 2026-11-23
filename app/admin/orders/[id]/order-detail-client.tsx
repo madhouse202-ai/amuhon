@@ -38,6 +38,13 @@ type AdminOrderDetail = {
     attemptCount?: number;
     errorCode?: string;
   };
+  paidNotification?: {
+    state: "not_created" | "queued" | "sending" | "sent" | "needs_review" | "suppressed" | "unavailable";
+    attemptCount?: number;
+    errorCode?: string;
+    nextAttemptAt?: string;
+    sentAt?: string;
+  };
   customer: { name: string; postalCode: string; prefecture: string; city: string; address: string; phone: string; email: string };
 };
 
@@ -145,6 +152,22 @@ export function AdminOrderDetailClient({ orderId }: { orderId: string }) {
         </p>
         {order.pdfRenderJob?.attemptCount !== undefined &&
           <p className="mt-1 text-sm text-stone-600">試行回数：{order.pdfRenderJob.attemptCount}</p>}
+      </section>
+      <section className="rounded border border-stone-200 bg-white p-5">
+        <h2 className="font-semibold">決済通知メール</h2>
+        <p className="mt-3" role="status">
+          {order.paidNotification?.state === "queued" ? "送信待ち" :
+            order.paidNotification?.state === "sending" ? "送信中" :
+              order.paidNotification?.state === "sent" ? "送信済み" :
+                order.paidNotification?.state === "needs_review" ? `要確認（${order.paidNotification.errorCode ?? "原因コード未取得"}）` :
+                  order.paidNotification?.state === "suppressed" ? "通知機能が無効だった期間の注文のため、送信対象外です" :
+                    order.paidNotification?.state === "not_created" ? "通知記録なし（既存注文など）" :
+                      "通知状態を確認できません。通知キューの設定を確認してください。"}
+        </p>
+        {order.paidNotification?.attemptCount !== undefined &&
+          <p className="mt-1 text-sm text-stone-600">送信試行回数：{order.paidNotification.attemptCount}回（上限8回）</p>}
+        {order.paidNotification?.nextAttemptAt && <p className="mt-1 text-sm text-stone-600">次回確認予定：{new Date(order.paidNotification.nextAttemptAt).toLocaleString("ja-JP")}</p>}
+        {order.paidNotification?.sentAt && <p className="mt-1 text-sm text-stone-600">送信日時：{new Date(order.paidNotification.sentAt).toLocaleString("ja-JP")}</p>}
       </section>
       <section className="rounded border border-stone-200 bg-white p-5">
         <h2 className="font-semibold">製本ファイル</h2>
