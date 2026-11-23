@@ -99,6 +99,8 @@ test("signed paid webhook, duplicate delivery, queue claim, private create-only 
   const state = {
     paid: false,
     jobState: "absent",
+    notificationState: "absent",
+    notificationsEnabled: false,
     webhookEventIds: new Set(),
     claimCount: 0,
     completionCount: 0,
@@ -130,7 +132,16 @@ test("signed paid webhook, duplicate delivery, queue claim, private create-only 
       state.paid = true;
       // Model the SQL after-update trigger's transaction boundary and unique order key.
       if (newlyPaid && state.jobState === "absent") state.jobState = "queued";
+      if (newlyPaid && state.notificationState === "absent") {
+        state.notificationState = state.notificationsEnabled ? "queued" : "suppressed";
+      }
       return Response.json({ state: "paid" });
+    }
+
+    if (url.pathname === "/rest/v1/rpc/get_amuhon_order_paid_notification_webhook_status_v1") {
+      state.rpcCalls.push("notification_status");
+      assert.deepEqual(JSON.parse(String(init.body)), { p_order_id: ORDER_ID });
+      return Response.json({ state: state.notificationState });
     }
 
     if (url.pathname === "/rest/v1/rpc/claim_amuhon_order_pdf_render_job") {
@@ -188,6 +199,7 @@ test("signed paid webhook, duplicate delivery, queue claim, private create-only 
     assert.equal(duplicateWebhook.status, 200);
     assert.equal(state.paid, true);
     assert.equal(state.jobState, "queued");
+    assert.equal(state.notificationState, "suppressed");
     assert.equal(state.webhookEventIds.size, 1);
 
     const adapter = createSupabasePdfRenderQueueAdapter(process.env);
@@ -208,7 +220,11 @@ test("signed paid webhook, duplicate delivery, queue claim, private create-only 
       `${ORDER_ID}/${LEASE_ID}/body.pdf`,
       `${ORDER_ID}/${LEASE_ID}/cover.png`,
     ]);
-    assert.deepEqual(state.rpcCalls, ["payment", "payment", "claim", "storage", "storage", "complete"]);
+    assert.deepEqual(state.rpcCalls, [
+      "payment", "notification_status",
+      "payment", "notification_status",
+      "claim", "storage", "storage", "complete",
+    ]);
   } finally {
     globalThis.fetch = previousFetch;
     for (const key of envKeys) {
