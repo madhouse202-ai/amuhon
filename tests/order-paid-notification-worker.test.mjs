@@ -4,7 +4,7 @@ import {
   createPaidNotificationQueueAdapter,
   parsePaidNotificationQueueConfig,
 } from "../lib/order-paid-notification-queue-supabase.ts";
-import { createOrderPaidEmailPayload } from "../lib/order-paid-notification.ts";
+import { createOrderPaidEmailPayload, createCustomerOrderEmailPayload } from "../lib/order-paid-notification.ts";
 import { runPaidNotificationWorkerOnce } from "../lib/order-paid-notification-worker.ts";
 
 const ORDER = {
@@ -18,7 +18,7 @@ const LEASE_ID = "6ea4cc75-ccad-4f3f-bedd-f57d408ad6a3";
 const CONFIG = { apiKey: "re_test_only_mock_key_12345678", appOrigin: "https://amuhon.jp" };
 
 function claimed() {
-  return { state: "claimed", order: ORDER, leaseId: LEASE_ID };
+  return { state: "claimed", notificationType: "operator_paid", order: ORDER, leaseId: LEASE_ID };
 }
 
 test("queue adapter is pinned to the staging project and sends the secret only as apikey", async () => {
@@ -35,10 +35,50 @@ test("queue adapter is pinned to the staging project and sends the secret only a
     return Response.json({ state: "idle" });
   });
   assert.deepEqual(await adapter.claimNext(90), { state: "idle" });
-  assert.match(request.url, /claim_next_amuhon_order_paid_notification_v1$/);
+  assert.match(request.url, /claim_next_amuhon_email_notification_v1$/);
   assert.equal(request.headers.get("apikey"), env.SUPABASE_SECRET_KEY);
   assert.equal(request.headers.get("authorization"), null);
   assert.equal(request.body.p_lease_seconds, 90);
+});
+
+test("queue adapter parses customer claims and dispatches lifecycle RPCs by event without exposing responses", async () => {
+  const env = {
+    SUPABASE_URL: "https://ahxnmkuvdpzctcwcyadl.supabase.co",
+    AMUHON_NOTIFICATION_QUEUE_PROJECT_REF: "ahxnmkuvdpzctcwcyadl",
+    SUPABASE_SECRET_KEY: "sb_secret_mock_only_for_tests",
+  };
+  const requests = [];
+  const customer = {
+    state: "claimed", notificationType: "customer_order_confirmed",
+    orderId: ORDER.id, orderNumber: ORDER.orderNumber, title: ORDER.title,
+    amountYen: ORDER.amountYen, recipientEmail: "tester@example.net", leaseId: LEASE_ID,
+  };
+  const adapter = createPaidNotificationQueueAdapter(env, async (url, init) => {
+    const name = String(url).split("/rpc/").at(-1);
+    requests.push({ name, body: JSON.parse(String(init.body)), headers: new Headers(init.headers) });
+    return name === "claim_next_amuhon_email_notification_v1"
+      ? Response.json(customer)
+      : Response.json({ state: name.startsWith("complete_") ? "sent" : "needs_review" });
+  });
+  assert.deepEqual(await adapter.claimNext(90), {
+    state: "claimed", notificationType: "customer_order_confirmed",
+    order: { id: ORDER.id, orderNumber: ORDER.orderNumber, title: ORDER.title, amountYen: 1980, recipientEmail: "tester@example.net" },
+    leaseId: LEASE_ID,
+  });
+  assert.equal(await adapter.complete(ORDER.id, LEASE_ID, "email_customer_1", "customer_order_confirmed"), true);
+  assert.equal(await adapter.fail(ORDER.id, LEASE_ID, "customer_recipient_not_allowlisted", "customer_order_confirmed"), "needs_review");
+  assert.deepEqual(requests.map((request) => request.name), [
+    "claim_next_amuhon_email_notification_v1",
+    "complete_amuhon_customer_order_notification_v1",
+    "fail_amuhon_customer_order_notification_v1",
+  ]);
+  assert.deepEqual(requests[1].body, {
+    p_order_id: ORDER.id, p_notification_type: "order_confirmed",
+    p_lease_id: LEASE_ID, p_resend_email_id: "email_customer_1",
+  });
+  assert.equal(requests[2].body.p_error_code, "customer_recipient_not_allowlisted");
+  assert.equal(requests[0].headers.get("apikey"), env.SUPABASE_SECRET_KEY);
+  assert.equal(requests[0].headers.has("authorization"), false);
 });
 
 test("one transient delivery failure is persisted and a later poll retries with a stable provider key", async () => {
@@ -117,4 +157,57 @@ test("failed retry recording leaves the leased row for safe expiry recovery", as
     send: async () => ({ ok: false, errorCode: "resend_outcome_unknown" }),
   });
   assert.deepEqual(result, { state: "failure_recording_pending" });
+});
+
+test("customer event claims use the customer template, per-event idempotency, and customer completion RPC path", async () => {
+  const customer = {
+    id: ORDER.id,
+    orderNumber: ORDER.orderNumber,
+    title: ORDER.title,
+    amountYen: ORDER.amountYen,
+    recipientEmail: "tester@example.net",
+  };
+  const queueCalls = [];
+  const queue = {
+    async claimNext() { return { state: "claimed", notificationType: "customer_order_shipped", order: customer, leaseId: LEASE_ID }; },
+    async fail(...args) { queueCalls.push(["fail", ...args]); return "queued"; },
+    async complete(...args) { queueCalls.push(["complete", ...args]); return true; },
+  };
+  const keys = [];
+  const result = await runPaidNotificationWorkerOnce({
+    queue,
+    config: CONFIG,
+    customerConfig: { apiKey: CONFIG.apiKey, mode: "staging", stagingRecipientAllowlist: ["tester@example.net"] },
+    sendCustomer: async (type, order) => {
+      keys.push(createCustomerOrderEmailPayload(type, order).idempotencyKey);
+      return { ok: true, emailId: "email_customer_synthetic" };
+    },
+  });
+  assert.deepEqual(result, { state: "sent" });
+  assert.deepEqual(keys, [`amuhon/customer/order_shipped/${ORDER.id}`]);
+  assert.deepEqual(queueCalls, [["complete", ORDER.id, LEASE_ID, "email_customer_synthetic", "customer_order_shipped"]]);
+});
+
+test("customer notification without an explicit delivery config is never sent and is sent to review", async () => {
+  const customer = {
+    id: ORDER.id,
+    orderNumber: ORDER.orderNumber,
+    title: ORDER.title,
+    amountYen: ORDER.amountYen,
+    recipientEmail: "tester@example.net",
+  };
+  const failures = [];
+  let sends = 0;
+  const queue = {
+    async claimNext() { return { state: "claimed", notificationType: "customer_order_confirmed", order: customer, leaseId: LEASE_ID }; },
+    async fail(...args) { failures.push(args); return "needs_review"; },
+    async complete() { assert.fail("missing config cannot complete"); },
+  };
+  const result = await runPaidNotificationWorkerOnce({
+    queue, config: CONFIG,
+    sendCustomer: async () => { sends += 1; return { ok: true, emailId: "unexpected" }; },
+  });
+  assert.deepEqual(result, { state: "needs_review" });
+  assert.equal(sends, 0);
+  assert.deepEqual(failures, [[ORDER.id, LEASE_ID, "customer_delivery_configuration_invalid", "customer_order_confirmed"]]);
 });

@@ -101,6 +101,7 @@ test("signed paid webhook, duplicate delivery, queue claim, private create-only 
     jobState: "absent",
     notificationState: "absent",
     notificationsEnabled: false,
+    customerNotificationState: "absent",
     webhookEventIds: new Set(),
     claimCount: 0,
     completionCount: 0,
@@ -135,13 +136,14 @@ test("signed paid webhook, duplicate delivery, queue claim, private create-only 
       if (newlyPaid && state.notificationState === "absent") {
         state.notificationState = state.notificationsEnabled ? "queued" : "suppressed";
       }
+      if (newlyPaid && state.customerNotificationState === "absent") state.customerNotificationState = "suppressed";
       return Response.json({ state: "paid" });
     }
 
     if (url.pathname === "/rest/v1/rpc/get_amuhon_order_paid_notification_webhook_status_v1") {
       state.rpcCalls.push("notification_status");
       assert.deepEqual(JSON.parse(String(init.body)), { p_order_id: ORDER_ID });
-      return Response.json({ state: state.notificationState });
+      return Response.json({ state: state.notificationState, customerState: state.customerNotificationState });
     }
 
     if (url.pathname === "/rest/v1/rpc/claim_amuhon_order_pdf_render_job") {
@@ -200,6 +202,7 @@ test("signed paid webhook, duplicate delivery, queue claim, private create-only 
     assert.equal(state.paid, true);
     assert.equal(state.jobState, "queued");
     assert.equal(state.notificationState, "suppressed");
+    assert.equal(state.customerNotificationState, "suppressed");
     assert.equal(state.webhookEventIds.size, 1);
 
     const adapter = createSupabasePdfRenderQueueAdapter(process.env);

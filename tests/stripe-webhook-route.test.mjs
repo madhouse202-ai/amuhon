@@ -69,7 +69,7 @@ test("paid webhook atomically applies payment, verifies durable outbox, and neve
     }
     if (name === "get_amuhon_order_paid_notification_webhook_status_v1") {
       assert.deepEqual(JSON.parse(String(init.body)), { p_order_id: ORDER_ID });
-      return Response.json({ state: "queued" });
+      return Response.json({ state: "queued", customerState: "queued" });
     }
     assert.fail(`unexpected request target: ${url.startsWith("https://api.resend.com") ? "provider" : "RPC"}`);
   } });
@@ -109,7 +109,7 @@ test("live-mode paid webhook uses live-bound payment validation and verifies the
         return Response.json({ state: "paid", orderId: ORDER_ID, livemode: true });
       }
       if (name === "get_amuhon_order_paid_notification_webhook_status_v1") {
-        return Response.json({ state: "suppressed" });
+        return Response.json({ state: "suppressed", customerState: "suppressed" });
       }
       assert.fail(`unexpected RPC: ${name}`);
     },
@@ -122,12 +122,12 @@ test("live-mode paid webhook uses live-bound payment validation and verifies the
   assert.equal(paymentArgs.p_livemode, true);
 });
 
-test("future paid rows in enabled or disabled state are acknowledged after outbox verification", async () => {
+test("future paid rows in enabled or disabled state are acknowledged after both outboxes verify", async () => {
   for (const state of ["queued", "suppressed", "sending", "sent", "needs_review"]) {
     const response = await invoke(paidEvent(), { mockFetch: async (input) =>
       String(input).endsWith("apply_amuhon_stripe_checkout_paid_v2")
         ? Response.json({ state: "paid" })
-        : Response.json({ state }) });
+        : Response.json({ state, customerState: state }) });
     assert.equal(response.status, 200, `state ${state}`);
   }
 });
@@ -139,7 +139,7 @@ test("newly paid order without durable outbox returns retryable failure, while h
     callNames.push(name);
     return name === "apply_amuhon_stripe_checkout_paid_v2"
       ? Response.json({ state: "paid" })
-      : Response.json({ state: "missing" });
+      : Response.json({ state: "missing", customerState: "missing" });
   };
   assert.equal((await invoke(paidEvent(), { mockFetch })).status, 503);
   assert.deepEqual(callNames, ["apply_amuhon_stripe_checkout_paid_v2", "get_amuhon_order_paid_notification_webhook_status_v1"]);
@@ -150,10 +150,24 @@ test("newly paid order without durable outbox returns retryable failure, while h
     callNames.push(name);
     return name === "apply_amuhon_stripe_checkout_paid_v2"
       ? Response.json({ state: "duplicate" })
-      : Response.json({ state: "missing" });
+      : Response.json({ state: "missing", customerState: "missing" });
   };
   assert.equal((await invoke(paidEvent(), { mockFetch: duplicateFetch })).status, 200);
   assert.deepEqual(callNames, ["apply_amuhon_stripe_checkout_paid_v2", "get_amuhon_order_paid_notification_webhook_status_v1"]);
+});
+
+test("newly paid order requires its customer receipt row while historical duplicate without it is not backfilled", async () => {
+  const response = await invoke(paidEvent(), { mockFetch: async (input) =>
+    String(input).endsWith("apply_amuhon_stripe_checkout_paid_v2")
+      ? Response.json({ state: "paid" })
+      : Response.json({ state: "queued", customerState: "missing" }) });
+  assert.equal(response.status, 503);
+
+  const duplicate = await invoke(paidEvent(), { mockFetch: async (input) =>
+    String(input).endsWith("apply_amuhon_stripe_checkout_paid_v2")
+      ? Response.json({ state: "duplicate" })
+      : Response.json({ state: "queued", customerState: "missing" }) });
+  assert.equal(duplicate.status, 200);
 });
 
 test("outbox verification errors remain opaque and return a retryable webhook status", async () => {

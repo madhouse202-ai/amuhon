@@ -45,6 +45,10 @@ type AdminOrderDetail = {
     nextAttemptAt?: string;
     sentAt?: string;
   };
+  customerNotifications?: {
+    orderConfirmed?: { state: string; attemptCount?: number; errorCode?: string; nextAttemptAt?: string; sentAt?: string };
+    orderShipped?: { state: string; attemptCount?: number; errorCode?: string; nextAttemptAt?: string; sentAt?: string };
+  };
   customer: { name: string; postalCode: string; prefecture: string; city: string; address: string; phone: string; email: string };
 };
 
@@ -168,6 +172,30 @@ export function AdminOrderDetailClient({ orderId }: { orderId: string }) {
           <p className="mt-1 text-sm text-stone-600">送信試行回数：{order.paidNotification.attemptCount}回（上限8回）</p>}
         {order.paidNotification?.nextAttemptAt && <p className="mt-1 text-sm text-stone-600">次回確認予定：{new Date(order.paidNotification.nextAttemptAt).toLocaleString("ja-JP")}</p>}
         {order.paidNotification?.sentAt && <p className="mt-1 text-sm text-stone-600">送信日時：{new Date(order.paidNotification.sentAt).toLocaleString("ja-JP")}</p>}
+      </section>
+      <section className="rounded border border-stone-200 bg-white p-5">
+        <h2 className="font-semibold">お客様へのメール通知</h2>
+        {([[
+          "注文確定メール", order.customerNotifications?.orderConfirmed,
+        ], [
+          "発送通知メール", order.customerNotifications?.orderShipped,
+        ]] as const).map(([label, notification]) => (
+          <div className="mt-3" key={label}>
+            <h3 className="text-sm font-medium">{label}</h3>
+            <p className="mt-1 text-sm" role="status">
+              {notification?.state === "queued" ? "送信待ち" :
+                notification?.state === "sending" ? "送信中" :
+                  notification?.state === "sent" ? "送信済み" :
+                    notification?.state === "needs_review" ? `要確認（${notification.errorCode ?? "原因コード未取得"}）` :
+                      notification?.state === "suppressed" ? "通知機能が無効だったため送信対象外です" :
+                        notification?.state === "not_created" ? "通知記録なし（既存注文など）" :
+                          "通知状態を確認できません。通知キューの設定を確認してください。"}
+            </p>
+            {notification?.attemptCount !== undefined && <p className="mt-1 text-xs text-stone-600">試行回数：{notification.attemptCount}回（上限8回）</p>}
+            {notification?.nextAttemptAt && <p className="mt-1 text-xs text-stone-600">次回確認予定：{new Date(notification.nextAttemptAt).toLocaleString("ja-JP")}</p>}
+            {notification?.sentAt && <p className="mt-1 text-xs text-stone-600">送信日時：{new Date(notification.sentAt).toLocaleString("ja-JP")}</p>}
+          </div>
+        ))}
       </section>
       <section className="rounded border border-stone-200 bg-white p-5">
         <h2 className="font-semibold">製本ファイル</h2>

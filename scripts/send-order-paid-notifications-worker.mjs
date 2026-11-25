@@ -1,5 +1,8 @@
 import { createPaidNotificationQueueAdapter } from "../lib/order-paid-notification-queue-supabase.ts";
-import { resolveOrderPaidNotificationConfig } from "../lib/order-paid-notification.ts";
+import {
+  resolveCustomerOrderNotificationConfig,
+  resolveOrderPaidNotificationConfig,
+} from "../lib/order-paid-notification.ts";
 import { runPaidNotificationWorkerOnce } from "../lib/order-paid-notification-worker.ts";
 
 if (!process.argv.includes("--run-queue-once") || process.argv.length !== 3) {
@@ -26,7 +29,8 @@ try {
   process.exit(2);
 }
 
-const result = await runPaidNotificationWorkerOnce({ queue, config });
+const customerConfig = resolveCustomerOrderNotificationConfig();
+const result = await runPaidNotificationWorkerOnce({ queue, config, customerConfig });
 switch (result.state) {
   case "sent":
     console.log("PAID_NOTIFICATION_SENT");

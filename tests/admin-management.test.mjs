@@ -47,6 +47,8 @@ test("every admin data API verifies the server-side admin before service-role ac
   const orderDetail = await read("app/api/admin/orders/[id]/route.ts");
   assert.match(orderDetail, /get_amuhon_admin_order_pdf_render_status/);
   assert.match(orderDetail, /get_amuhon_admin_order_paid_notification_status_v1/);
+  assert.match(orderDetail, /get_amuhon_admin_order_customer_notification_status_v1/);
+  assert.match(orderDetail, /customerNotifications/);
   assert.match(orderDetail, /let paidNotification: Record<string, unknown> = \{ state: "unavailable" \}/);
   assert.match(orderDetail, /let pdfRenderJob: Record<string, unknown> = \{ state: "unavailable" \}/);
   assert.match(orderDetail, /await requireAdmin\(\)[\s\S]*?createAdminServiceClient\(\)[\s\S]*?get_amuhon_admin_order_pdf_render_status/);
@@ -60,6 +62,9 @@ test("every admin data API verifies the server-side admin before service-role ac
   assert.match(detailClient, /<h2 className="font-semibold">決済通知メール<\/h2>/);
   assert.match(detailClient, /state === "needs_review" \? `要確認/);
   assert.match(detailClient, /通知機能が無効だった期間の注文のため、送信対象外です/);
+  assert.match(detailClient, /お客様へのメール通知/);
+  assert.match(detailClient, /注文確定メール/);
+  assert.match(detailClient, /発送通知メール/);
 });
 
 test("Auth uses verified claims and never treats email or service_role as administrator identity", async () => {

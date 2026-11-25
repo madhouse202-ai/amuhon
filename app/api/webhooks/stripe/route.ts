@@ -140,5 +140,12 @@ export async function POST(request: Request) {
     logNotificationCode("NOTIFICATION_OUTBOX_NOT_PERSISTED");
     return fail(503);
   }
+  const customerState = notification.data.customerState;
+  if (customerState === "missing" && paymentState === "duplicate") return received();
+  if (typeof customerState !== "string" ||
+      !["queued", "suppressed", "sending", "sent", "needs_review"].includes(customerState)) {
+    logNotificationCode("CUSTOMER_NOTIFICATION_OUTBOX_NOT_PERSISTED");
+    return fail(503);
+  }
   return received();
 }

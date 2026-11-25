@@ -73,6 +73,39 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     } catch {
       // The notification migration may not be deployed yet; keep admin order data available.
     }
+    const customerNotifications: Record<string, Record<string, unknown>> = {
+      orderConfirmed: { state: "unavailable" },
+      orderShipped: { state: "unavailable" },
+    };
+    try {
+      const customerStatus = await supabase.rpc("get_amuhon_admin_order_customer_notification_status_v1", { p_order_id: id });
+      if (!customerStatus.error && customerStatus.data && typeof customerStatus.data === "object" && !Array.isArray(customerStatus.data)) {
+        const result = customerStatus.data as Record<string, unknown>;
+        const states = new Set(["not_created", "queued", "sending", "sent", "needs_review", "suppressed"]);
+        const errors = new Set([
+          "resend_retryable_failure", "resend_rejected", "resend_outcome_unknown",
+          "customer_recipient_not_allowlisted", "customer_delivery_configuration_invalid",
+          "customer_order_invalid", "retry_window_expired", "retry_limit_reached",
+        ]);
+        for (const key of ["orderConfirmed", "orderShipped"] as const) {
+          const candidate = result[key];
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+          const item = candidate as Record<string, unknown>;
+          if (typeof item.state !== "string" || !states.has(item.state)) continue;
+          customerNotifications[key] = {
+            state: item.state,
+            ...(Number.isSafeInteger(item.attemptCount) && (item.attemptCount as number) >= 0 && (item.attemptCount as number) <= 8
+              ? { attemptCount: item.attemptCount } : {}),
+            ...(typeof item.errorCode === "string" && errors.has(item.errorCode) ? { errorCode: item.errorCode } : {}),
+            ...(typeof item.nextAttemptAt === "string" && Number.isFinite(Date.parse(item.nextAttemptAt))
+              ? { nextAttemptAt: item.nextAttemptAt } : {}),
+            ...(typeof item.sentAt === "string" && Number.isFinite(Date.parse(item.sentAt)) ? { sentAt: item.sentAt } : {}),
+          };
+        }
+      }
+    } catch {
+      // Keep order administration available while the additive customer queue migration is pending.
+    }
     let productionReadiness: Record<string, unknown> = { rightsApproved: false, assetsReady: false };
     let fulfillmentAudit: unknown[] = [];
     try {
@@ -115,7 +148,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       // Missing additive fulfillment migration is represented as unavailable and fail-closed.
     }
     const canDownloadAssets = (data as Record<string, unknown>).canDownloadAssets === true && productionReadiness.assetsReady === true;
-    return Response.json({ order: { ...(data as Record<string, unknown>), canDownloadAssets, pdfRenderJob, paidNotification, productionReadiness, fulfillmentAudit } }, { headers: { "Cache-Control": "no-store, private" } });
+    return Response.json({ order: { ...(data as Record<string, unknown>), canDownloadAssets, pdfRenderJob, paidNotification, customerNotifications, productionReadiness, fulfillmentAudit } }, { headers: { "Cache-Control": "no-store, private" } });
   } catch {
     return Response.json({ error: "注文詳細を取得できませんでした。" }, { status: 502, headers: { "Cache-Control": "no-store" } });
   }

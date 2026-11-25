@@ -4,6 +4,8 @@ import {
 } from "./supabase-service-credential.ts";
 import {
   isValidOrderPaidNotificationOrder,
+  isValidCustomerOrderNotificationOrder,
+  type CustomerOrderNotificationOrder,
   type OrderPaidNotificationOrder,
 } from "./order-paid-notification.ts";
 
@@ -13,12 +15,15 @@ const MAX_RPC_BYTES = 32_768;
 
 export type PaidNotificationClaim =
   | { state: "idle" | "disabled" }
-  | { state: "claimed"; order: OrderPaidNotificationOrder; leaseId: string };
+  | { state: "claimed"; notificationType: "operator_paid"; order: OrderPaidNotificationOrder; leaseId: string }
+  | { state: "claimed"; notificationType: "customer_order_confirmed" | "customer_order_shipped"; order: CustomerOrderNotificationOrder; leaseId: string };
+
+export type PaidNotificationType = "operator_paid" | "customer_order_confirmed" | "customer_order_shipped";
 
 export type PaidNotificationQueue = {
   claimNext(leaseSeconds: number): Promise<PaidNotificationClaim>;
-  complete(orderId: string, leaseId: string, emailId: string): Promise<boolean>;
-  fail(orderId: string, leaseId: string, errorCode: string): Promise<"queued" | "needs_review" | "lease_lost">;
+  complete(orderId: string, leaseId: string, emailId: string, notificationType: PaidNotificationType): Promise<boolean>;
+  fail(orderId: string, leaseId: string, errorCode: string, notificationType: PaidNotificationType): Promise<"queued" | "needs_review" | "lease_lost">;
 };
 
 type QueueEnvironment = Record<string, string | undefined>;
@@ -90,6 +95,19 @@ function parseClaim(value: unknown): PaidNotificationClaim {
   const result = record(value);
   if (result.state === "idle" || result.state === "disabled") return { state: result.state };
   if (result.state !== "claimed" || !UUID_PATTERN.test(String(result.leaseId))) throw new PaidNotificationQueueError();
+  const notificationType = result.notificationType;
+  if (notificationType === "customer_order_confirmed" || notificationType === "customer_order_shipped") {
+    const order = {
+      id: result.orderId,
+      orderNumber: result.orderNumber,
+      title: result.title,
+      amountYen: result.amountYen,
+      recipientEmail: result.recipientEmail,
+    };
+    if (!isValidCustomerOrderNotificationOrder(order)) throw new PaidNotificationQueueError();
+    return { state: "claimed", notificationType, order, leaseId: result.leaseId as string };
+  }
+  if (notificationType !== "operator_paid") throw new PaidNotificationQueueError();
   const order = {
     id: result.orderId,
     orderNumber: result.orderNumber,
@@ -98,7 +116,7 @@ function parseClaim(value: unknown): PaidNotificationClaim {
     amountYen: result.amountYen,
   };
   if (!isValidOrderPaidNotificationOrder(order)) throw new PaidNotificationQueueError();
-  return { state: "claimed", order, leaseId: result.leaseId as string };
+  return { state: "claimed", notificationType, order, leaseId: result.leaseId as string };
 }
 
 function parseState(value: unknown, allowed: readonly string[]): string {
@@ -142,25 +160,48 @@ export function createPaidNotificationQueueAdapter(
   return {
     async claimNext(leaseSeconds) {
       if (!Number.isInteger(leaseSeconds) || leaseSeconds < 30 || leaseSeconds > 300) throw new PaidNotificationQueueError();
-      return parseClaim(await rpc("claim_next_amuhon_order_paid_notification_v1", { p_lease_seconds: leaseSeconds }));
+      return parseClaim(await rpc("claim_next_amuhon_email_notification_v1", { p_lease_seconds: leaseSeconds }));
     },
-    async complete(orderId, leaseId, emailId) {
+    async complete(orderId, leaseId, emailId, notificationType) {
       if (!UUID_PATTERN.test(orderId) || !UUID_PATTERN.test(leaseId) || !/^[A-Za-z0-9_-]{1,128}$/.test(emailId)) {
         throw new PaidNotificationQueueError();
       }
-      const result = await rpc("complete_amuhon_order_paid_notification_v1", {
-        p_order_id: orderId, p_lease_id: leaseId, p_resend_email_id: emailId,
-      });
+      const isCustomer = notificationType !== "operator_paid";
+      const result = isCustomer
+        ? await rpc("complete_amuhon_customer_order_notification_v1", {
+            p_order_id: orderId,
+            p_notification_type: notificationType === "customer_order_confirmed" ? "order_confirmed" : "order_shipped",
+            p_lease_id: leaseId,
+            p_resend_email_id: emailId,
+          })
+        : await rpc("complete_amuhon_order_paid_notification_v1", {
+            p_order_id: orderId, p_lease_id: leaseId, p_resend_email_id: emailId,
+          });
       return parseState(result, ["sent"]) === "sent";
     },
-    async fail(orderId, leaseId, errorCode) {
-      if (!UUID_PATTERN.test(orderId) || !UUID_PATTERN.test(leaseId) ||
-          !["resend_retryable_failure", "resend_rejected", "resend_outcome_unknown"].includes(errorCode)) {
+    async fail(orderId, leaseId, errorCode, notificationType) {
+      const customerErrorCodes = [
+        "resend_retryable_failure", "resend_rejected", "resend_outcome_unknown",
+        "customer_recipient_not_allowlisted", "customer_delivery_configuration_invalid",
+      ];
+      const allowedErrors = notificationType === "operator_paid"
+        ? ["resend_retryable_failure", "resend_rejected", "resend_outcome_unknown"]
+        : customerErrorCodes;
+      if (!UUID_PATTERN.test(orderId) || !UUID_PATTERN.test(leaseId) || !allowedErrors.includes(errorCode)) {
         throw new PaidNotificationQueueError();
       }
-      return parseState(await rpc("fail_amuhon_order_paid_notification_v1", {
-        p_order_id: orderId, p_lease_id: leaseId, p_error_code: errorCode,
-      }), ["queued", "needs_review", "lease_lost"]) as "queued" | "needs_review" | "lease_lost";
+      const isCustomer = notificationType !== "operator_paid";
+      const result = isCustomer
+        ? await rpc("fail_amuhon_customer_order_notification_v1", {
+            p_order_id: orderId,
+            p_notification_type: notificationType === "customer_order_confirmed" ? "order_confirmed" : "order_shipped",
+            p_lease_id: leaseId,
+            p_error_code: errorCode,
+          })
+        : await rpc("fail_amuhon_order_paid_notification_v1", {
+            p_order_id: orderId, p_lease_id: leaseId, p_error_code: errorCode,
+          });
+      return parseState(result, ["queued", "needs_review", "lease_lost"]) as "queued" | "needs_review" | "lease_lost";
     },
   };
 }
