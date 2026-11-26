@@ -107,15 +107,11 @@ export default function CoverPage() {
       coverColor,
     };
     if (!flushDraft(normalizedDraft)) return false;
-    updateDraft(normalizedDraft);
     return true;
   }
 
   function handleSave() {
     if (!saveCoverSettings()) return;
-
-    alert("この表紙で決定しました！");
-
     router.push("/final");
   }
 
