@@ -1,6 +1,9 @@
+import { padPerfectBindingBodyPageCount } from "./production.ts";
+
 export const CHARS_PER_COLUMN = 40;
 export const COLUMNS_PER_PAGE = 16;
 export const BODY_RUBY_ENABLED = true;
+export const SOURCE_WORKS_PER_PAGE = 4;
 
 export type LayoutUnit = {
   type: "text";
@@ -192,4 +195,58 @@ export function calculateTocLayout(works: TocWork[], workPageCounts: number[]) {
   }
 
   return { pages, pageNumbers, colophonPageNumber };
+}
+
+export type FinishedBookLayout = {
+  bodyPageCount: number;
+  tocLayout: ReturnType<typeof calculateTocLayout>;
+  sourcePageCount: number;
+  firstSourcePageNumber: number;
+  colophonPageNumber: number;
+  unpaddedPageCount: number;
+  paddingPageCount: number;
+  totalPageCount: number;
+};
+
+/**
+ * Mirrors the interior pages assembled by /final: whole-book title, paginated
+ * TOC, each work's title and body, four works per sources page, colophon, and
+ * the existing perfect-binding blank-page policy. Covers are not counted.
+ */
+export function calculateFinishedBookLayout(
+  works: TocWork[],
+  workPageCounts: number[],
+): FinishedBookLayout | null {
+  if (
+    works.length === 0 ||
+    works.length !== workPageCounts.length ||
+    workPageCounts.some((count) => !Number.isInteger(count) || count < 1)
+  ) {
+    return null;
+  }
+
+  const tocLayout = calculateTocLayout(works, workPageCounts);
+  const bodyPageCount = workPageCounts.reduce((sum, count) => sum + count, 0);
+  const sourcePageCount = Math.ceil(works.length / SOURCE_WORKS_PER_PAGE);
+  const unpaddedPageCount =
+    1 + // whole-book title page
+    tocLayout.pages.length +
+    works.length + // one title page per work
+    bodyPageCount +
+    sourcePageCount +
+    1; // colophon
+  const totalPageCount = padPerfectBindingBodyPageCount(unpaddedPageCount);
+
+  if (totalPageCount === null) return null;
+
+  return {
+    bodyPageCount,
+    tocLayout,
+    sourcePageCount,
+    firstSourcePageNumber: tocLayout.colophonPageNumber,
+    colophonPageNumber: tocLayout.colophonPageNumber + sourcePageCount,
+    unpaddedPageCount,
+    paddingPageCount: totalPageCount - unpaddedPageCount,
+    totalPageCount,
+  };
 }

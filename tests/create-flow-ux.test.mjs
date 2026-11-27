@@ -15,7 +15,9 @@ test("the creation flow restores saved work order and goes directly from selecti
   assert.match(createPage, /selectedWorks = draft\.works/);
   assert.match(createPage, /flushDraft\(\{ \.\.\.draft, works: selectedWorks \}\)/);
   assert.match(createPage, /const moveWork = \(/);
-  assert.match(createPage, /const handleDrop = \(/);
+  assert.match(createPage, /onMove=\{moveWork\}/);
+  assert.match(createPage, /aria-label=\{`\$\{work\.title\}を上へ移動`\}/);
+  assert.match(createPage, /aria-label=\{`\$\{work\.title\}を下へ移動`\}/);
   assert.match(createPage, /const removeWork = \(/);
   assert.match(createPage, /router\.push\("\/cover"\)/);
   assert.doesNotMatch(createPage, /router\.push\([\s\S]{0,100}\/preview\?/);

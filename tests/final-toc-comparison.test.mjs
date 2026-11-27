@@ -119,6 +119,7 @@ test("D40 and D45 align title tops at fixed page ratios and reserve the lower ma
 test("comparison runner keeps the experiment outside production TOC/PDF files and uses fixed A6 output", async () => {
   const script = await readFile(new URL("../scripts/compare-final-toc-layout.mjs", import.meta.url), "utf8");
   const tocPage = await readFile(new URL("../app/final/page.tsx", import.meta.url), "utf8");
+  const createPage = await readFile(new URL("../app/create/page.tsx", import.meta.url), "utf8");
   const layout = await readFile(new URL("../lib/book-layout.ts", import.meta.url), "utf8");
   const orderPdfRoute = await readFile(new URL("../app/api/dev/order-pdf/route.ts", import.meta.url), "utf8");
   const previewPdfRoute = await readFile(new URL("../app/api/dev/final-preview-pdf/route.ts", import.meta.url), "utf8");
@@ -154,7 +155,14 @@ test("comparison runner keeps the experiment outside production TOC/PDF files an
   assert.match(script, /verticalStressMetrics/);
   assert.match(script, /numberTextCombine, "all"/);
   assert.match(script, /titleColumnsOverflow, false/);
-  assert.match(tocPage, /calculateTocLayout\(works, workPageData\.map\(\(item\) => item\.pages\.length\)\)/);
+  assert.match(tocPage, /calculateFinishedBookLayout\(works, workPageData\.map\(\(item\) => item\.pages\.length\)\)/);
+  assert.match(tocPage, /submissionPageCount !== finishedLayout\.totalPageCount/);
+  assert.match(tocPage, /SOURCE_WORKS_PER_PAGE/);
+  assert.match(createPage, /calculateFinishedBookLayout\(works, readyPageCounts\)/);
+  assert.match(createPage, /仕上がり予想ページ数：約\$\{finishedLayout\.totalPageCount\}ページ/);
+  assert.match(createPage, /本文・仕上がりページ数を確認中/);
+  assert.match(createPage, /estimate\?\.status === "ready" && typeof estimate\.pages === "number" && Number\.isInteger\(estimate\.pages\)/);
+  assert.match(createPage, /estimatedBodyPages !== null \? `本文：約/);
   assert.match(tocPage, /<TableOfContents/);
   assert.match(tocPage, /flexDirection: "row-reverse"/);
   assert.match(tocPage, /padding: "12mm"/);

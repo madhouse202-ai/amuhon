@@ -7,6 +7,7 @@ import { GOJUON_ROWS } from "@/lib/kana-index";
 import { CreationProgress } from "@/app/creation-progress";
 import { DraftSaveStatus } from "@/app/draft-save-status";
 import { useBookDraftAutosave } from "@/lib/use-book-draft-autosave";
+import { calculateFinishedBookLayout } from "@/lib/book-layout";
 
 type WorkContributor = { name: string; role: string; reading?: string };
 type Work = Omit<BookWork, "contributors"> & { contributors?: WorkContributor[] };
@@ -180,9 +181,17 @@ function SelectedBookPanel({
   headingId: string;
 }) {
   const values = works.map((work) => estimates[work.id]);
-  const complete = works.length > 0 && values.every((estimate) => estimate?.status === "ready");
-  const unresolved = values.filter((estimate) => estimate?.status !== "ready").length;
-  const bodyPages = values.reduce((sum, estimate) => sum + (estimate?.pages ?? 0), 0);
+  const bodyPageCounts = values.map((estimate) =>
+    estimate?.status === "ready" && typeof estimate.pages === "number" && Number.isInteger(estimate.pages) && estimate.pages > 0
+      ? estimate.pages
+      : null,
+  );
+  const unresolved = bodyPageCounts.filter((pageCount) => pageCount === null).length;
+  const readyPageCounts = bodyPageCounts.filter((pageCount): pageCount is number => pageCount !== null);
+  const complete = works.length > 0 && readyPageCounts.length === works.length;
+  const finishedLayout = complete
+    ? calculateFinishedBookLayout(works, readyPageCounts)
+    : null;
 
   return (
     <section className="rounded-2xl bg-white p-4 shadow-sm sm:p-5" aria-labelledby={headingId}>
@@ -196,14 +205,15 @@ function SelectedBookPanel({
         <ol className="mt-4 max-h-[52vh] space-y-2 overflow-y-auto pr-1">
           {works.map((work, index) => {
             const estimate = estimates[work.id] ?? { status: "idle" as const };
+            const estimatedBodyPages = bodyPageCounts[index];
             return (
               <li key={work.id} className="rounded-xl bg-stone-50 p-3">
                 <div className="min-w-0">
                   <p className="break-words text-sm font-medium"><span className="mr-1 text-stone-500">{index + 1}.</span>{work.title}</p>
                   <p className="mt-1 break-words text-xs text-stone-600">{work.author || "作者情報なし"}</p>
                   <p className="mt-1 text-xs text-stone-600">
-                    {estimate.status === "ready" ? `本文：約${estimate.pages}ページ` : estimate.status === "error" ? "本文ページ数を確認できません" : "本文ページ数を計算中…"}
-                    {estimate.status === "error" && <button type="button" onClick={() => onRetry(work)} className="ml-2 min-h-8 underline underline-offset-2">再計算</button>}
+                    {estimatedBodyPages !== null ? `本文：約${estimatedBodyPages}ページ` : estimate.status === "error" || estimate.status === "ready" ? "本文ページ数を確認できません" : "本文ページ数を計算中…"}
+                    {estimatedBodyPages === null && (estimate.status === "error" || estimate.status === "ready") && <button type="button" onClick={() => onRetry(work)} className="ml-2 min-h-8 underline underline-offset-2">再計算</button>}
                   </p>
                 </div>
                 <div className="mt-2 flex justify-end gap-1">
@@ -217,9 +227,11 @@ function SelectedBookPanel({
         </ol>
       )}
       <p className="mt-4 border-t border-stone-200 pt-3 text-sm text-stone-700" role="status">
-        {complete ? `推定本文合計：約${bodyPages}ページ` : works.length ? `本文ページ数を確認中（残り${unresolved}作品）` : "本文ページ数：未計算"}
+        {finishedLayout
+          ? `本文合計：約${finishedLayout.bodyPageCount}ページ　仕上がり予想ページ数：約${finishedLayout.totalPageCount}ページ`
+          : works.length ? `本文・仕上がりページ数を確認中（残り${unresolved}作品）` : "作品を選ぶと本文合計と仕上がり予想ページ数を表示します。"}
       </p>
-      <p className="mt-1 text-xs leading-5 text-stone-500">目次・出典・奥付などを含む最終ページ数と価格は、完成時に確定します。</p>
+      <p className="mt-1 text-xs leading-5 text-stone-500">目次・作品タイトル・出典・奥付と8ページ単位の調整を含む目安です。本文の取得が完了してから表示し、最終ページ数と価格は完成時に確定します。</p>
       <button type="button" onClick={onCreateBook} disabled={works.length === 0 || !canEdit} className="mt-4 min-h-12 w-full rounded-xl bg-stone-800 px-4 py-3 font-semibold text-white transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40">表紙を作る</button>
     </section>
   );

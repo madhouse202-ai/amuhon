@@ -24,12 +24,13 @@ import {
 import { ensureNotoSerifJpLoaded } from "@/lib/noto-serif-jp-preview";
 import { CreationProgress } from "@/app/creation-progress";
 import { CoverFrontPreview } from "@/app/cover-front-preview";
-import { isSubmissionPageCount, padPerfectBindingBodyPageCount } from "@/lib/production";
+import { isSubmissionPageCount } from "@/lib/production";
 import {
   BODY_RUBY_ENABLED,
   CHARS_PER_COLUMN,
   COLUMNS_PER_PAGE,
-  calculateTocLayout,
+  calculateFinishedBookLayout,
+  SOURCE_WORKS_PER_PAGE,
   splitTextIntoPages,
   unitCharacterCount,
   type LayoutUnit,
@@ -898,10 +899,14 @@ export default function FinalPage() {
       };
     });
 
-  const tocLayout = calculateTocLayout(works, workPageData.map((item) => item.pages.length));
+  const finishedLayout = calculateFinishedBookLayout(works, workPageData.map((item) => item.pages.length));
+  if (!finishedLayout) {
+    throw new Error("Finished book page layout could not be calculated.");
+  }
+  const tocLayout = finishedLayout.tocLayout;
   const tocPageCount = tocLayout.pages.length;
   const tocPageNumbers = tocLayout.pageNumbers;
-  const currentPageNumber = tocLayout.colophonPageNumber;
+  const currentPageNumber = finishedLayout.firstSourcePageNumber;
 
   /*
    * 3. 目次
@@ -991,9 +996,8 @@ export default function FinalPage() {
    * 長い短編集では読める文字サイズのまま複数ページへ分ける。
    */
 
-  const sourceWorksPerPage = 4;
-  const sourcePages = Array.from({ length: Math.ceil(data.works.length / sourceWorksPerPage) }, (_, index) =>
-    data.works.slice(index * sourceWorksPerPage, (index + 1) * sourceWorksPerPage),
+  const sourcePages = Array.from({ length: finishedLayout.sourcePageCount }, (_, index) =>
+    data.works.slice(index * SOURCE_WORKS_PER_PAGE, (index + 1) * SOURCE_WORKS_PER_PAGE),
   );
   sourcePages.forEach((sourceWorks, index) => {
     bodyPages.push(
@@ -1010,7 +1014,7 @@ export default function FinalPage() {
 
   /* 6. 奥付 */
 
-  const colophonPageNumber = currentPageNumber + sourcePages.length;
+  const colophonPageNumber = finishedLayout.colophonPageNumber;
 
   bodyPages.push(
     <ColophonPage
@@ -1024,11 +1028,7 @@ export default function FinalPage() {
 
   /* Add trailing blanks so the perfect-bound body PDF has an 8-page multiple. */
 
-  const contentPageCount =
-    bodyPages.length - 1;
-
-  const finalBodyPdfPageCount = padPerfectBindingBodyPageCount(contentPageCount) ?? contentPageCount;
-  const paddingPageCount = finalBodyPdfPageCount - contentPageCount;
+  const paddingPageCount = finishedLayout.paddingPageCount;
 
   for (let blankIndex = 0; blankIndex < paddingPageCount; blankIndex += 1) {
     bodyPages.push(
@@ -1055,6 +1055,9 @@ export default function FinalPage() {
   );
 
   const submissionPageCount = bodyPages.length - 2;
+  if (submissionPageCount !== finishedLayout.totalPageCount) {
+    throw new Error("Rendered page count does not match the calculated finished-book layout.");
+  }
   const submissionPageCountValid = isSubmissionPageCount(submissionPageCount);
   const coverSummaryPalette = {
     red: { background: "#9e2f2f", foreground: "#fff8eb", label: "赤" },
