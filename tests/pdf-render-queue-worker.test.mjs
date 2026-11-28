@@ -35,18 +35,23 @@ const envForAdapter = () => ({
   AMUHON_PDF_QUEUE_PROJECT_REF: "abcdefghijklmnopqrst",
 });
 const makeDeps = (overrides = {}) => {
-  const calls = { uploads: [], failures: [], commits: [], renders: [] };
+  const calls = { uploads: [], deletions: [], failures: [], commits: [], renders: [] };
+  const defaultStorage = {
+    putIfAbsent: async (input) => { calls.uploads.push(input); },
+    removeIfPresent: async (input) => { calls.deletions.push(input); },
+  };
   const deps = {
     rpc: {
       claim: async () => claimed,
       fail: async (...args) => { calls.failures.push(args); return true; },
-      complete: async (input) => { calls.commits.push(input); return true; },
+      complete: async (input) => { calls.commits.push(input); return "succeeded"; },
     },
-    storage: { putIfAbsent: async (input) => { calls.uploads.push(input); } },
+    storage: defaultStorage,
     loadWorkTexts: async () => workText,
     render: async (input) => { calls.renders.push(input); return assets; },
     now: () => Date.parse("2030-01-01T00:00:00.000Z"),
     ...overrides,
+    storage: { ...defaultStorage, ...overrides.storage },
   };
   return { deps, calls };
 };
@@ -63,6 +68,7 @@ test("paid render queue uploads attempt-specific private assets and atomically c
   assert.equal(calls.commits[0].bodyPdfPageCount, 88);
   assert.equal(calls.commits[0].bodyPdfSha256, sha(body));
   assert.equal(calls.failures.length, 0);
+  assert.equal(calls.deletions.length, 0);
 });
 
 test("page-count mismatch fails the lease before either private object is uploaded", async () => {
@@ -77,7 +83,7 @@ test("page-count mismatch fails the lease before either private object is upload
 test("bad source snapshot is refused and never rendered or uploaded", async () => {
   const bad = structuredClone(claimed);
   bad.bookSnapshot.works[0].xhtmlUrl = "https://example.com/text.html";
-  const { deps, calls } = makeDeps({ rpc: { claim: async () => bad, fail: async (...args) => { calls.failures.push(args); return true; }, complete: async () => true } });
+  const { deps, calls } = makeDeps({ rpc: { claim: async () => bad, fail: async (...args) => { calls.failures.push(args); return true; }, complete: async () => "succeeded" } });
   assert.deepEqual(await createPdfRenderQueueWorker(deps).runOnce(), {
     status: "terminal_failure", errorCode: "invalid_snapshot",
   });
@@ -126,7 +132,7 @@ test("a failed cover upload leaves the existing order assets uncommitted", async
     rpc: {
       claim: async () => claimed,
       fail: async (...args) => { calls.failures.push(args); return true; },
-      complete: async (...args) => { calls.commits.push(args); return true; },
+      complete: async (...args) => { calls.commits.push(args); return "succeeded"; },
     },
   });
   assert.deepEqual(await createPdfRenderQueueWorker(deps).runOnce(), {
@@ -146,7 +152,7 @@ test("the fifth transient failure is terminal and is not reported as requeued", 
     rpc: {
       claim: async () => fifthAttempt,
       fail: async (...args) => { calls.failures.push(args); return true; },
-      complete: async (...args) => { calls.commits.push(args); return true; },
+      complete: async (...args) => { calls.commits.push(args); return "succeeded"; },
     },
     render: async () => { throw new Error("worker_unavailable"); },
   });
@@ -171,7 +177,7 @@ test("the queue allows at most five render attempts before a transient failure b
       state = attemptCount < 5 ? "queued" : "failed";
       return true;
     },
-    complete: async () => true,
+    complete: async () => "succeeded",
   };
   const { deps } = makeDeps({ rpc, render: async () => { throw new Error("worker_unavailable"); } });
   const worker = createPdfRenderQueueWorker(deps);
@@ -195,7 +201,7 @@ test("independent workers cannot claim the same queued order concurrently", asyn
       return claimed;
     },
     fail: async () => true,
-    complete: async () => { queueState = "succeeded"; commitCount += 1; return true; },
+    complete: async () => { queueState = "succeeded"; commitCount += 1; return "succeeded"; },
   };
   const first = makeDeps({ rpc: sharedRpc, render: async () => { renderCount += 1; return assets; } });
   const second = makeDeps({ rpc: sharedRpc, render: async () => { renderCount += 1; return assets; } });
@@ -255,16 +261,58 @@ test("ambiguous completion response is not marked failed or retried under the sa
   assert.equal(calls.uploads.length, 2);
 });
 
-test("a definite rejected completion remains lease-lost and does not rewrite order state", async () => {
+test("an ineligible completion does not link order assets and deletes only the current lease objects", async () => {
   const { deps, calls } = makeDeps({ rpc: {
     claim: async () => claimed,
     fail: async (...args) => { calls.failures.push(args); return true; },
-    complete: async (...args) => { calls.commits.push(args); return false; },
+    complete: async (...args) => { calls.commits.push(args); return "rights_ineligible"; },
   } });
-  assert.deepEqual(await createPdfRenderQueueWorker(deps).runOnce(), { status: "lease_lost" });
+  assert.deepEqual(await createPdfRenderQueueWorker(deps).runOnce(), { status: "terminal_failure", errorCode: "rights_ineligible" });
   assert.equal(calls.uploads.length, 2);
   assert.equal(calls.commits.length, 1);
   assert.equal(calls.failures.length, 0);
+  assert.deepEqual(calls.deletions.map(({ key }) => key).sort(), [
+    `${orderId}/${leaseId}/body.pdf`, `${orderId}/${leaseId}/cover.png`,
+  ]);
+});
+
+test("a manual stop recorded after claim requeues the job and removes both uncommitted objects", async () => {
+  const { deps, calls } = makeDeps({ rpc: {
+    claim: async () => claimed,
+    fail: async (...args) => { calls.failures.push(args); return true; },
+    complete: async (...args) => { calls.commits.push(args); return "rights_stopped"; },
+  } });
+  assert.deepEqual(await createPdfRenderQueueWorker(deps).runOnce(), { status: "rights_stopped" });
+  assert.equal(calls.commits.length, 1);
+  assert.equal(calls.failures.length, 0);
+  assert.deepEqual(calls.deletions.map(({ key }) => key).sort(), [
+    `${orderId}/${leaseId}/body.pdf`, `${orderId}/${leaseId}/cover.png`,
+  ]);
+});
+
+for (const reason of ["common policy suspended", "approved scope changed", "order rights snapshot invalidated"]) {
+  test(`a ${reason} rejection is terminal and does not finalize the order`, async () => {
+    const { deps, calls } = makeDeps({ rpc: {
+      claim: async () => claimed,
+      fail: async (...args) => { calls.failures.push(args); return true; },
+      complete: async () => "rights_ineligible",
+    } });
+    assert.deepEqual(await createPdfRenderQueueWorker(deps).runOnce(), {
+      status: "terminal_failure", errorCode: "rights_ineligible",
+    });
+    assert.equal(calls.failures.length, 0);
+    assert.deepEqual(calls.deletions.map(({ key }) => key).sort(), [
+      `${orderId}/${leaseId}/body.pdf`, `${orderId}/${leaseId}/cover.png`,
+    ]);
+  });
+}
+
+test("failed cleanup after a definitive rights rejection stays private and reports a fixed pending state", async () => {
+  const { deps } = makeDeps({
+    rpc: { claim: async () => claimed, fail: async () => assert.fail("known completion result already released the lease"), complete: async () => "rights_ineligible" },
+    storage: { removeIfPresent: async () => { throw new Error("private storage response"); } },
+  });
+  assert.deepEqual(await createPdfRenderQueueWorker(deps).runOnce(), { status: "artifact_cleanup_pending" });
 });
 
 test("a later worker can reclaim an expired lease with a new lease-specific path", async () => {
@@ -284,7 +332,7 @@ test("a later worker can reclaim an expired lease with a new lease-specific path
       return { ...claimed, leaseId: activeLease, leaseExpiresAt, attemptCount };
     },
     fail: async () => true,
-    complete: async (input) => { state = "succeeded"; committedLease = input.leaseId; return true; },
+    complete: async (input) => { state = "succeeded"; committedLease = input.leaseId; return "succeeded"; },
   };
   const { deps, calls } = makeDeps({ rpc, now: () => Date.parse("2030-01-01T00:01:00.000Z") });
   assert.deepEqual(await createPdfRenderQueueWorker(deps).runOnce(), { status: "succeeded" });
@@ -303,7 +351,7 @@ test("one worker instance cannot start overlapping queue claims", async () => {
       return null;
     },
     fail: async () => true,
-    complete: async () => true,
+    complete: async () => "succeeded",
   } });
   const worker = createPdfRenderQueueWorker(deps);
   const first = worker.runOnce();
@@ -337,7 +385,8 @@ test("Supabase queue adapter uses apikey only, fixed RPCs and create-only privat
   assert.equal(await adapter.complete({
     orderId, leaseId, bodyObjectKey: `${orderId}/${leaseId}/body.pdf`, coverObjectKey: `${orderId}/${leaseId}/cover.png`,
     bodyPdfPageCount: 88, bodyPdfSha256: sha(body), coverPngSha256: sha(cover), bodyPdfSizeBytes: body.length, coverPngSizeBytes: cover.length,
-  }), true);
+  }), "succeeded");
+  await adapter.removeIfPresent({ key: `${orderId}/${leaseId}/body.pdf` });
   for (const request of requests) {
     const headers = new Headers(request.init.headers);
     assert.equal(headers.get("apikey"), "sb_secret_test");
@@ -348,6 +397,20 @@ test("Supabase queue adapter uses apikey only, fixed RPCs and create-only privat
   assert.ok(storage);
   assert.equal(new Headers(storage.init.headers).get("x-upsert"), "false");
   assert.match(storage.url, /amuhon-order-files/);
+  const removal = requests.find((request) => request.init.method === "DELETE");
+  assert.ok(removal);
+  assert.equal(removal.url, "https://abcdefghijklmnopqrst.supabase.co/storage/v1/object/amuhon-order-files");
+  assert.deepEqual(JSON.parse(removal.init.body), { prefixes: [`${orderId}/${leaseId}/body.pdf`] });
+});
+
+test("Storage cleanup refuses arbitrary paths before making a network request", async () => {
+  let requestCount = 0;
+  const adapter = createSupabasePdfRenderQueueAdapter(envForAdapter(), async () => {
+    requestCount += 1;
+    return new Response(null, { status: 200 });
+  });
+  await assert.rejects(adapter.removeIfPresent({ key: "other-order/body.pdf" }), /pdf_render_queue_adapter_error/);
+  assert.equal(requestCount, 0);
 });
 
 test("Storage conflict or server error is reduced to a fixed error without response-body disclosure", async () => {

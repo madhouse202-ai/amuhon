@@ -8,6 +8,7 @@ import { getStripeServerConfig, isCheckoutSessionIdForMode } from "../../../../.
 import { checkoutRecordExceptionCode, checkoutRecordFailureCode } from "../../../../../lib/order-checkout-diagnostics.ts";
 import { isTrustedStripeCheckoutUrl, parseTrustedStripeCheckoutHosts, validateCheckoutSessionResponse } from "../../../../../lib/stripe-checkout-session-validation.ts";
 import { isLegacyBuyerAssetFlowEnabled } from "../../../../../lib/order-production-gate.ts";
+import { isCurrentAozoraRightsPolicyReady } from "../../../../../lib/aozora-rights-policy.ts";
 import { parseCommercialRightsDecision } from "../../../../../lib/commercial-rights.ts";
 import { resolveAozoraWorkEditionsWithCatalog } from "../../../../../lib/aozora-edition.ts";
 import { createAozoraCommercialRightsSnapshot, sameAozoraRightsFacts } from "../../../../../lib/aozora-commercial-rights.ts";
@@ -107,6 +108,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
     const hasOfficialSnapshots = snapshotWorks.some((work) => "catalogRights" in work);
     if (hasOfficialSnapshots) {
+      if (!isCurrentAozoraRightsPolicyReady()) {
+        return fail("現在、販売用に確認済みの作品が含まれていないため、決済を開始できません。", 409);
+      }
       if (!snapshotWorks.every((work) => isRecord(work.catalogRights) && work.catalogRights.classification === "A" && typeof work.id === "string")) {
         return fail("作品の利用条件を確認できません。決済は開始していません。", 409);
       }

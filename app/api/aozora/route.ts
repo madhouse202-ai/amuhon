@@ -1,5 +1,6 @@
 
 import { NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { estimateBodyPageCount } from "@/lib/book-layout";
 import { resolveAozoraEditionByXhtmlUrl } from "@/lib/aozora-edition.ts";
 import { createAozoraCommercialRightsSnapshot } from "@/lib/aozora-commercial-rights.ts";
@@ -11,6 +12,17 @@ type TextPart = {
 
 type ContentPart = TextPart;
 const AOZORA_FETCH_TIMEOUT_MS = 20_000;
+
+function isTrustedRendererRequest(request: Request): boolean {
+  const configured = process.env.AMUHON_PDF_WORKER_SECRET;
+  const supplied = request.headers.get("x-amuhon-pdf-worker-secret");
+  if (!configured || configured.length < 32 || !supplied) return false;
+  const hostname = new URL(request.url).hostname;
+  if (!new Set(["localhost", "127.0.0.1", "::1"]).has(hostname)) return false;
+  const expectedBytes = Buffer.from(configured, "utf8");
+  const suppliedBytes = Buffer.from(supplied, "utf8");
+  return expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes);
+}
 
 /**
  * HTMLエンティティを通常の文字に戻す
@@ -188,7 +200,9 @@ function isAllowedAozoraUrl(value: string): boolean {
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
+    const requestUrl = new URL(request.url);
+    const { searchParams } = requestUrl;
+    const includeInternalRights = isTrustedRendererRequest(request);
     const sourceUrl = searchParams.get("url");
 
     if (!sourceUrl || !isAllowedAozoraUrl(sourceUrl)) {
@@ -245,11 +259,6 @@ export async function GET(request: Request) {
     const includeRuby = new URL(request.url).searchParams.get("ruby") === "1";
     const parsedText = parseMainTextHtml(mainTextHtml, includeRuby);
     const text = includeRuby ? normalizeText(parsedText) : removeRubyAnnotations(parsedText);
-    const catalogRights = createAozoraCommercialRightsSnapshot(edition.work, {
-      fetchedAt: edition.catalogFetchedAt,
-      sha256: edition.catalogSha256,
-    });
-
     if (!text) {
       return NextResponse.json(
         { error: "本文を抽出できませんでした。" },
@@ -258,16 +267,21 @@ export async function GET(request: Request) {
     }
 
     if (new URL(request.url).searchParams.get("estimate") === "1") {
-      return NextResponse.json({ pageCount: estimateBodyPageCount(text), sourceUrl, sourceSha256: edition.work.sourceSha256, catalogRights });
+      return NextResponse.json({ pageCount: estimateBodyPageCount(text), sourceUrl, sourceSha256: edition.work.sourceSha256 });
     }
+
+    const catalogRights = includeInternalRights ? createAozoraCommercialRightsSnapshot(edition.work, {
+      fetchedAt: edition.catalogFetchedAt,
+      sha256: edition.catalogSha256,
+    }) : undefined;
 
     return NextResponse.json({
       text,
       content: makeContent(text),
       sourceUrl: edition.work.xhtmlUrl,
       sourceSha256: edition.work.sourceSha256,
-      catalogRights,
-    });
+      ...(catalogRights ? { catalogRights } : {}),
+    }, includeInternalRights ? { headers: { "Cache-Control": "no-store, private" } } : undefined);
   } catch {
     console.error("[aozora] AOZORA_TEXT_RESOLUTION_FAILURE");
 

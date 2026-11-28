@@ -13,7 +13,9 @@ export const PDF_RENDER_BUCKET = "amuhon-order-files" as const;
 export type PdfRenderErrorCode =
   | "aozora_unavailable" | "storage_unavailable" | "processing_timeout"
   | "worker_unavailable" | "invalid_snapshot" | "invalid_render"
-  | "page_count_mismatch" | "internal_error";
+  | "page_count_mismatch" | "internal_error" | "rights_ineligible";
+
+export type PdfRenderCompletionResult = "succeeded" | "rights_stopped" | "rights_ineligible";
 
 export type ClaimedPdfRenderJob = {
   orderId: string;
@@ -47,7 +49,7 @@ export type PdfRenderCommit = {
 export interface PdfRenderQueueRpc {
   claim(leaseSeconds: number): Promise<ClaimedPdfRenderJob | null>;
   fail(orderId: string, leaseId: string, errorCode: PdfRenderErrorCode): Promise<boolean>;
-  complete(input: PdfRenderCommit): Promise<boolean>;
+  complete(input: PdfRenderCommit): Promise<PdfRenderCompletionResult>;
 }
 
 export interface PdfRenderQueueStorage {
@@ -56,6 +58,7 @@ export interface PdfRenderQueueStorage {
     bytes: Uint8Array;
     contentType: "application/pdf" | "image/png";
   }): Promise<void>;
+  removeIfPresent(input: { key: string }): Promise<void>;
 }
 
 export type PdfRenderQueueDependencies = {
@@ -67,8 +70,9 @@ export type PdfRenderQueueDependencies = {
 };
 
 export type PdfRenderQueueResult =
-  | { status: "idle" | "succeeded" | "busy" | "lease_expired" | "lease_lost" | "finalization_unknown" }
+  | { status: "idle" | "succeeded" | "busy" | "lease_expired" | "lease_lost" | "finalization_unknown" | "rights_stopped" }
   | { status: "retry_queued" | "terminal_failure" | "failure_recording_pending"; errorCode: PdfRenderErrorCode }
+  | { status: "artifact_cleanup_pending" }
   | { status: "claim_failed" | "claim_contract_mismatch" | "internal_failure" };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -105,6 +109,11 @@ export function createPdfRenderQueueWorker(dependencies: PdfRenderQueueDependenc
     } catch {
       return { status: "failure_recording_pending", errorCode: code };
     }
+  }
+
+  async function removeUncommittedObjects(keys: string[]): Promise<boolean> {
+    const results = await Promise.allSettled(keys.map((key) => dependencies.storage.removeIfPresent({ key })));
+    return results.every((result) => result.status === "fulfilled");
   }
 
   async function runOnce(): Promise<PdfRenderQueueResult> {
@@ -174,12 +183,26 @@ export function createPdfRenderQueueWorker(dependencies: PdfRenderQueueDependenc
       const coverObjectKey = `${job.orderId}/${job.leaseId}/cover.png`;
       try {
         await dependencies.storage.putIfAbsent({ key: bodyObjectKey, bytes: assets.bodyPdfBytes, contentType: "application/pdf" });
-        if (expired()) return { status: "lease_expired" };
+      } catch {
+        const failure = await recordFailure(job, "storage_unavailable");
+        return await removeUncommittedObjects([bodyObjectKey, coverObjectKey])
+          ? failure
+          : { status: "artifact_cleanup_pending" };
+      }
+      if (expired()) return await removeUncommittedObjects([bodyObjectKey])
+        ? { status: "lease_expired" }
+        : { status: "artifact_cleanup_pending" };
+      try {
         await dependencies.storage.putIfAbsent({ key: coverObjectKey, bytes: assets.coverPngBytes, contentType: "image/png" });
       } catch {
-        return recordFailure(job, "storage_unavailable");
+        const failure = await recordFailure(job, "storage_unavailable");
+        return await removeUncommittedObjects([bodyObjectKey, coverObjectKey])
+          ? failure
+          : { status: "artifact_cleanup_pending" };
       }
-      if (expired()) return { status: "lease_expired" };
+      if (expired()) return await removeUncommittedObjects([bodyObjectKey, coverObjectKey])
+        ? { status: "lease_expired" }
+        : { status: "artifact_cleanup_pending" };
 
       const commit: PdfRenderCommit = {
         orderId: job.orderId,
@@ -193,8 +216,17 @@ export function createPdfRenderQueueWorker(dependencies: PdfRenderQueueDependenc
         coverPngSizeBytes: assets.coverPngBytes.byteLength,
       };
       try {
-        if (await dependencies.rpc.complete(commit)) return { status: "succeeded" };
-        return { status: "lease_lost" };
+        const completion = await dependencies.rpc.complete(commit);
+        if (completion === "succeeded") return { status: "succeeded" };
+        if (completion !== "rights_stopped" && completion !== "rights_ineligible") {
+          return { status: "finalization_unknown" };
+        }
+        if (!await removeUncommittedObjects([bodyObjectKey, coverObjectKey])) {
+          return { status: "artifact_cleanup_pending" };
+        }
+        return completion === "rights_stopped"
+          ? { status: "rights_stopped" }
+          : { status: "terminal_failure", errorCode: "rights_ineligible" };
       } catch {
         // Commit may have succeeded even if its response was lost. Keep the
         // lease authoritative and let the next status/lease check reconcile.

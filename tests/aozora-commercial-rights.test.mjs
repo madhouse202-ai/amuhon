@@ -187,7 +187,14 @@ test("text API and renderer bind fetched content to official catalog rights and 
   assert.match(route, /sourceSha256: edition\.work\.sourceSha256/);
   assert.match(route, /catalogRights/);
   assert.match(worker, /record\.sourceSha256 !== selected\.sourceSha256/);
-  assert.match(worker, /record\.catalogRights\.classification !== "A"/);
-  assert.match(worker, /sameAozoraRightsFacts\(selected\.catalogRights, record\.catalogRights\)/);
+  assert.match(worker, /parseAozoraCommercialRightsSnapshot\(record\?\.catalogRights\)/);
+  assert.match(worker, /currentRights\.classification !== "A"/);
+  assert.match(worker, /sameAozoraRightsFacts\(selected\.catalogRights, currentRights\)/);
+  assert.match(worker, /"x-amuhon-pdf-worker-secret": internalSecret/);
+  assert.match(worker, /AMUHON_PDF_WORKER_SECRET: process\.env\.AMUHON_PDF_WORKER_SECRET/);
+  assert.match(route, /const includeInternalRights = isTrustedRendererRequest\(request\)/);
+  assert.match(route, /\.\.\.\(catalogRights \? \{ catalogRights \} : \{\}\)/);
+  assert.match(route, /function isTrustedRendererRequest\(request: Request\)/);
+  assert.match(route, /Cache-Control": "no-store, private/);
   assert.match(parser, /parseAozoraCommercialRightsSnapshot\(work\.catalogRights\)/);
 });

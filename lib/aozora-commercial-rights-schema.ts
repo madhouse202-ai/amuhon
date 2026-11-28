@@ -7,6 +7,8 @@ export type AozoraCommercialRightsSnapshot = {
   reasons: string[];
   catalogFetchedAt: string;
   catalogSha256: string;
+  policy?: { policyId: string; policyVersion: string; policySha256: string };
+  workFactsSha256?: string;
   workCopyrightFlags: string[];
   missingWorkCopyrightFlagRows: number;
   catalogPersonCopyrightFlags: string[];
@@ -31,6 +33,14 @@ export function parseAozoraCommercialRightsSnapshot(value: unknown): AozoraComme
     Array.isArray(candidate) && candidate.length <= maxItems && candidate.every((item) =>
       typeof item === "string" && item.length <= maxLength);
   const count = (candidate: unknown, minimum = 0) => Number.isInteger(candidate) && (candidate as number) >= minimum && (candidate as number) <= 100_000;
+  const hasPolicyBinding = raw.policy !== undefined || raw.workFactsSha256 !== undefined;
+  const policy = raw.policy && typeof raw.policy === "object" && !Array.isArray(raw.policy)
+    ? raw.policy as Record<string, unknown>
+    : null;
+  if (hasPolicyBinding && (!policy || typeof policy.policyId !== "string" || !/^[A-Z0-9][A-Z0-9_-]{2,99}$/.test(policy.policyId) ||
+      typeof policy.policyVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(policy.policyVersion) ||
+      typeof policy.policySha256 !== "string" || !/^[a-f0-9]{64}$/.test(policy.policySha256) ||
+      typeof raw.workFactsSha256 !== "string" || !/^[a-f0-9]{64}$/.test(raw.workFactsSha256))) return null;
   if (raw.schema !== "amuhon-aozora-commercial-rights/v1" ||
       !["A", "B", "C"].includes(String(raw.classification)) ||
       raw.basis !== "official_aozora_copyright_flags" ||
@@ -67,6 +77,14 @@ export function parseAozoraCommercialRightsSnapshot(value: unknown): AozoraComme
     reasons: raw.reasons,
     catalogFetchedAt: raw.catalogFetchedAt,
     catalogSha256: raw.catalogSha256,
+    ...(hasPolicyBinding ? {
+      policy: {
+        policyId: policy!.policyId as string,
+        policyVersion: policy!.policyVersion as string,
+        policySha256: policy!.policySha256 as string,
+      },
+      workFactsSha256: raw.workFactsSha256 as string,
+    } : {}),
     workCopyrightFlags: raw.workCopyrightFlags,
     missingWorkCopyrightFlagRows: raw.missingWorkCopyrightFlagRows as number,
     catalogPersonCopyrightFlags: raw.catalogPersonCopyrightFlags,

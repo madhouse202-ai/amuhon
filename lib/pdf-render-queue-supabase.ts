@@ -162,8 +162,12 @@ export function createSupabasePdfRenderQueueAdapter(
         p_body_pdf_size_bytes: input.bodyPdfSizeBytes,
         p_cover_png_size_bytes: input.coverPngSizeBytes,
       });
-      return !!value && typeof value === "object" && !Array.isArray(value) &&
-        (value as Record<string, unknown>).state === "succeeded";
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new PdfRenderQueueAdapterError();
+      const state = (value as Record<string, unknown>).state;
+      if (state !== "succeeded" && state !== "rights_stopped" && state !== "rights_ineligible") {
+        throw new PdfRenderQueueAdapterError();
+      }
+      return state;
     },
     async putIfAbsent(input) {
       const expectedType = input.key.endsWith("/body.pdf") ? "application/pdf" : "image/png";
@@ -179,6 +183,30 @@ export function createSupabasePdfRenderQueueAdapter(
             "x-upsert": "false",
           }),
           body: Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength) as unknown as BodyInit,
+          cache: "no-store",
+          redirect: "error",
+          signal: AbortSignal.timeout(STORAGE_TIMEOUT_MS),
+        });
+      } catch {
+        throw new PdfRenderQueueAdapterError();
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new PdfRenderQueueAdapterError();
+      }
+      await response.body?.cancel().catch(() => undefined);
+    },
+    async removeIfPresent(input) {
+      // Validate the entire lease-scoped object key before issuing a delete.
+      objectUrl(validConfig, input.key);
+      let response: Response;
+      try {
+        response = await fetchImpl(`${validConfig.origin}/storage/v1/object/${PDF_RENDER_STORAGE_BUCKET}`, {
+          method: "DELETE",
+          headers: createSupabaseServiceHeaders(validConfig.credential, {
+            "content-type": "application/json",
+          }),
+          body: JSON.stringify({ prefixes: [input.key] }),
           cache: "no-store",
           redirect: "error",
           signal: AbortSignal.timeout(STORAGE_TIMEOUT_MS),

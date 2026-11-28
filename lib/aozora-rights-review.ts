@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { validateAozoraCatalogUrl, type AozoraRightsCatalogWork, type VerifiedAozoraWork } from "./aozora-edition.ts";
+import { createAozoraRightsWorkFacts, calculateAozoraRightsWorkFactsSha256 } from "./aozora-rights-policy.ts";
+import { AOZORA_ATTRIBUTION_NOTICE } from "./aozora-commercial-rights.ts";
 
 export type RightsScreeningClass = "candidate_pending_human_review" | "B" | "C";
 
@@ -42,36 +44,6 @@ export type AozoraRightsReviewPackage = {
   selection: { limit: number; selectedIds: string[]; rule: string; sha256: string };
   works: AozoraRightsReviewPackageWork[];
   packageSha256: string;
-};
-
-export type AozoraRightsApprovalWork = {
-  workId: string;
-  sourceSha256: string;
-  approveAsA: boolean;
-  domesticOriginalWorkConfirmed: boolean;
-  allRightsAndProtectionTermConfirmed: boolean;
-  noTranslationAdaptationCoauthorOrThirdPartyIssueConfirmed: boolean;
-  commercialUseAndAttributionConfirmed: boolean;
-  evidenceBasis: string;
-  permissionConditions: string;
-  holders: Array<{
-    name: string;
-    role: string;
-    reviewedAndApprovedAsA: boolean;
-    evidenceBasis: string;
-    permissionConditions: string;
-  }>;
-};
-
-export type AozoraRightsApprovalManifest = {
-  schema: "amuhon-aozora-rights-approval/v1";
-  packageSha256: string;
-  catalogSha256: string;
-  explicitHumanApproval: boolean;
-  approvalStatement: string;
-  checkedBy: string;
-  checkedAt: string;
-  works: AozoraRightsApprovalWork[];
 };
 
 const AUTHOR_ROLES = new Set(["著者", "作者", "原著者"]);
@@ -199,18 +171,6 @@ export type AozoraRightsBatchApproval = {
   exceptions: Array<{ workId: string; disposition: "individual_review" | "excluded"; reason: string }>;
   commonReviewBasis: string;
   commonPermissionConditions: string;
-};
-
-export type AozoraRightsBatchAuditContext = {
-  policySha256: string;
-  currentCatalog: { fetchedAt: string; sha256: string };
-  batchPackageSha256: string;
-  selectionSha256: string;
-  approvedSetSha256: string;
-  approvedWorkIds: string[];
-  approvalStatement: string;
-  commonReviewBasis: string;
-  policySnapshot: AozoraRightsPolicy;
 };
 
 function stableJson(value: unknown): string {
@@ -448,26 +408,7 @@ export function createAozoraRightsBatchApprovalTemplate(batchPackage: AozoraRigh
 }
 
 function catalogRecordSignature(work: AozoraRightsCatalogWork | AozoraRightsBatchReviewPackage["works"][number]["reviewWork"]): string {
-  return stableJson({
-    id: "workId" in work ? work.workId : work.id,
-    title: work.title,
-    author: work.author,
-    cardUrl: work.cardUrl,
-    textUrl: work.textUrl,
-    xhtmlUrl: work.xhtmlUrl,
-    titleReading: work.titleReading,
-    sortReading: work.sortReading,
-    contributors: work.contributors,
-    sourceMetadata: work.sourceMetadata,
-    workCopyrightFlags: work.workCopyrightFlags,
-    missingWorkCopyrightFlagRows: work.missingWorkCopyrightFlagRows,
-    catalogPersonCopyrightFlags: work.catalogPersonCopyrightFlags,
-    missingPersonCopyrightFlagRows: work.missingPersonCopyrightFlagRows,
-    incompleteContributorRows: work.incompleteContributorRows,
-    sourceMetadataConflicts: work.sourceMetadataConflicts,
-    catalogIssues: work.catalogIssues,
-    catalogRowCount: work.catalogRowCount,
-  });
+  return stableJson(createAozoraRightsWorkFacts(work));
 }
 
 function requireIsoTimestamp(value: unknown, code: string): string {
@@ -523,12 +464,14 @@ export function validateAozoraRightsBatchApproval(
     }
     return work;
   });
+  const permissionConditions = requireText(approval.commonPermissionConditions, 1000, "common_permission_conditions");
+  if (permissionConditions !== AOZORA_ATTRIBUTION_NOTICE) throw new Error("approval_common_permission_conditions_invalid");
   return {
     approvedWorks,
     checkedBy,
     checkedAt,
     reviewBasis: requireText(approval.commonReviewBasis, 1000, "common_review_basis"),
-    permissionConditions: requireText(approval.commonPermissionConditions, 1000, "common_permission_conditions"),
+    permissionConditions,
   };
 }
 
@@ -556,64 +499,131 @@ export function generateAozoraRightsBatchRegistrationSql(input: {
   if (!/^[a-f0-9]{64}$/.test(currentCatalog.sha256) || !Number.isFinite(Date.parse(currentCatalog.fetchedAt))) {
     throw new Error("current_catalog_snapshot_invalid");
   }
+  if (validated.permissionConditions !== "このファイルは、インターネットの図書館、青空文庫（https://www.aozora.gr.jp/）で作られました。入力、校正、制作にあたったのは、ボランティアの皆さんです。") {
+    throw new Error("approval_common_permission_conditions_invalid");
+  }
   const currentById = new Map(currentCatalog.works.map((work) => [work.id, work]));
   const approvedIds = approval.approvedWorkIds;
+  const approvedSet = new Set(approvedIds);
+  const exceptionById = new Map(approval.exceptions.map((item) => [item.workId, item]));
   const approvedSetSha256 = createHash("sha256").update([...approvedIds].sort().join("\n")).digest("hex");
-  const currentEditions = new Map<string, VerifiedAozoraWork>();
-  for (const item of validated.approvedWorks) {
-    assertAozoraRightsBatchWorkUnchanged(batchPackage, item.workId, currentById.get(item.workId));
-    const edition = editionsById.get(item.workId);
-    if (!edition || edition.sourceSha256 !== item.reviewWork.sourceSha256 ||
-        catalogRecordSignature(edition) !== catalogRecordSignature(currentById.get(item.workId)!)) {
-      throw new Error("xhtml_edition_changed");
+  const approvedWorks = new Map(validated.approvedWorks.map((item) => [item.workId, item]));
+  const memberRows: string[] = [];
+
+  for (const item of batchPackage.works) {
+    const current = currentById.get(item.workId);
+    if (!current || catalogRecordSignature(item.reviewWork) !== catalogRecordSignature(current)) {
+      throw new Error("catalog_record_changed");
     }
-    currentEditions.set(item.workId, edition);
+    let disposition: "approved" | "individual_review" | "excluded";
+    let reason: string;
+    if (item.category === "bulk_candidate" && approvedSet.has(item.workId)) {
+      const approved = approvedWorks.get(item.workId);
+      const edition = editionsById.get(item.workId);
+      if (!approved || !edition || edition.sourceSha256 !== item.reviewWork.sourceSha256 ||
+          catalogRecordSignature(edition) !== catalogRecordSignature(current)) {
+        throw new Error("xhtml_edition_changed");
+      }
+      disposition = "approved";
+      reason = "approved_by_common_policy_scope";
+    } else if (item.category === "bulk_candidate") {
+      const exception = exceptionById.get(item.workId);
+      if (!exception) throw new Error("approval_target_partition_incomplete");
+      disposition = exception.disposition;
+      reason = exception.reason;
+    } else if (item.category === "individual_review") {
+      disposition = "individual_review";
+      reason = item.reasons.join("; ") || "catalog_screen_requires_individual_review";
+    } else {
+      disposition = "excluded";
+      reason = item.reasons.join("; ") || "official_rights_flags_require_exclusion";
+    }
+    const facts = createAozoraRightsWorkFacts(current);
+    memberRows.push(`(${[
+      sqlLiteral(item.workId), sqlLiteral(disposition), sqlLiteral(reason.slice(0, 2000)),
+      sqlLiteral(calculateAozoraRightsWorkFactsSha256(current)), `${sqlLiteral(JSON.stringify(facts))}::jsonb`,
+    ].join(", ")})`);
   }
 
-  const sourceReviewPackage = batchPackage.sourceReviewPackage;
-  const legacyApproval: AozoraRightsApprovalManifest = {
-    schema: "amuhon-aozora-rights-approval/v1",
-    packageSha256: sourceReviewPackage.packageSha256,
-    catalogSha256: sourceReviewPackage.catalog.sha256,
-    explicitHumanApproval: true,
-    approvalStatement: AOZORA_BATCH_APPROVAL_STATEMENT,
-    checkedBy: validated.checkedBy,
-    checkedAt: validated.checkedAt,
-    works: validated.approvedWorks.map(({ reviewWork }) => ({
-      workId: reviewWork.workId,
-      sourceSha256: reviewWork.sourceSha256!,
-      approveAsA: true,
-      domesticOriginalWorkConfirmed: true,
-      allRightsAndProtectionTermConfirmed: true,
-      noTranslationAdaptationCoauthorOrThirdPartyIssueConfirmed: true,
-      commercialUseAndAttributionConfirmed: true,
-      evidenceBasis: validated.reviewBasis,
-      permissionConditions: validated.permissionConditions,
-      // These legacy-shaped fields are an internal adapter only. The SQL evidence
-      // below records one batch decision; it does not claim per-holder interviews.
-      holders: reviewWork.contributors.map((holder) => ({
-        name: holder.name,
-        role: holder.role,
-        reviewedAndApprovedAsA: true,
-        evidenceBasis: validated.reviewBasis,
-        permissionConditions: validated.permissionConditions,
-      })),
-    })),
-  };
-  const auditContext: AozoraRightsBatchAuditContext = {
-    policySha256: batchPackage.policy.sha256,
-    currentCatalog: { fetchedAt: currentCatalog.fetchedAt, sha256: currentCatalog.sha256 },
+  const auditJson = JSON.stringify({
+    policy: {
+      id: policy.policyId,
+      version: policy.version,
+      sha256: batchPackage.policy.sha256,
+      approvedBy: policy.approvedBy,
+      approvedAt: policy.approvedAt,
+      legalReviewedBy: policy.legalReviewedBy,
+      legalReviewedAt: policy.legalReviewedAt,
+      legalReviewEvidence: policy.legalReviewEvidence,
+      references: policy.references,
+    },
+    sourceReviewPackageSha256: batchPackage.sourceReviewPackage.packageSha256,
     batchPackageSha256: batchPackage.packageSha256,
     selectionSha256: batchPackage.selection.sha256,
     approvedSetSha256,
+    selectedWorkIds: batchPackage.works.map((item) => item.workId),
     approvedWorkIds: [...approvedIds],
-    approvalStatement: AOZORA_BATCH_APPROVAL_STATEMENT,
+    exceptions: approval.exceptions,
+    approvalStatement: approval.approvalStatement,
+    checkedBy: validated.checkedBy,
+    checkedAt: validated.checkedAt,
     commonReviewBasis: validated.reviewBasis,
-    policySnapshot: policy,
-  };
-  return generateAozoraRightsRegistrationSql(sourceReviewPackage, legacyApproval, auditContext, currentEditions);
-}
+    commonPermissionConditions: validated.permissionConditions,
+    currentCatalogFetchedAt: currentCatalog.fetchedAt,
+    currentCatalogSha256: currentCatalog.sha256,
+  });
+  const policyId = sqlLiteral(policy.policyId);
+  const policyVersion = sqlLiteral(policy.version);
+  const policySha = sqlLiteral(batchPackage.policy.sha256);
+  const approvedBy = sqlLiteral(String(policy.approvedBy));
+  const approvedAt = `${sqlLiteral(String(policy.approvedAt))}::timestamptz`;
+  const legalReviewedBy = sqlLiteral(String(policy.legalReviewedBy));
+  const legalReviewedAt = `${sqlLiteral(String(policy.legalReviewedAt))}::timestamptz`;
+  const legalEvidence = sqlLiteral(String(policy.legalReviewEvidence));
+  const checkedAt = `${sqlLiteral(validated.checkedAt)}::timestamptz`;
 
+  return [
+    "-- Common-policy work-scope registration generated after explicit operator approval.",
+    "-- One shared policy decision and work scope are recorded; no individual rights-holder approvals are created.",
+    `-- Policy SHA-256: ${batchPackage.policy.sha256}`,
+    `-- Batch package SHA-256: ${batchPackage.packageSha256}`,
+    `-- Selection SHA-256: ${batchPackage.selection.sha256}`,
+    `-- Approved-set SHA-256: ${approvedSetSha256}`,
+    "begin;",
+    `insert into public.amuhon_aozora_rights_policy_registry (policy_id, policy_version, definition_sha256, policy_status, legal_review_status, policy_definition, approved_by, approved_at, legal_reviewed_by, legal_reviewed_at, legal_review_evidence)
+values (${policyId}, ${policyVersion}, ${policySha}, 'active', 'confirmed', ${sqlLiteral(JSON.stringify(policy))}::jsonb, ${approvedBy}, ${approvedAt}, ${legalReviewedBy}, ${legalReviewedAt}, ${legalEvidence})
+on conflict (policy_id, policy_version) do update set definition_sha256 = excluded.definition_sha256, policy_status = excluded.policy_status, legal_review_status = excluded.legal_review_status, policy_definition = excluded.policy_definition, approved_by = excluded.approved_by, approved_at = excluded.approved_at, legal_reviewed_by = excluded.legal_reviewed_by, legal_reviewed_at = excluded.legal_reviewed_at, legal_review_evidence = excluded.legal_review_evidence, updated_at = clock_timestamp()
+where public.amuhon_aozora_rights_policy_registry.policy_status = 'draft' and public.amuhon_aozora_rights_policy_registry.legal_review_status = 'unconfirmed' and public.amuhon_aozora_rights_policy_registry.approved_by is null and public.amuhon_aozora_rights_policy_registry.approved_at is null and public.amuhon_aozora_rights_policy_registry.legal_reviewed_by is null and public.amuhon_aozora_rights_policy_registry.legal_reviewed_at is null and public.amuhon_aozora_rights_policy_registry.legal_review_evidence is null;`,
+    `do $rights_scope_preflight$
+begin
+  if not exists (select 1 from public.amuhon_aozora_rights_policy_registry where policy_id = ${policyId} and policy_version = ${policyVersion} and definition_sha256 = ${policySha} and policy_status = 'active' and legal_review_status = 'confirmed' and approved_by = ${approvedBy} and approved_at = ${approvedAt} and legal_reviewed_by = ${legalReviewedBy} and legal_reviewed_at = ${legalReviewedAt} and legal_review_evidence = ${legalEvidence}) then raise exception 'RIGHTS_POLICY_REGISTRY_MISMATCH'; end if;
+  if exists (select 1 from public.amuhon_aozora_rights_scope_batches where batch_package_sha256 = ${sqlLiteral(batchPackage.packageSha256)}) then raise exception 'RIGHTS_SCOPE_BATCH_ALREADY_REGISTERED'; end if;
+end;
+$rights_scope_preflight$;`,
+    `with inserted_scope as (
+  insert into public.amuhon_aozora_rights_scope_batches (
+    policy_id, policy_version, policy_sha256, scope_status, scope_kind,
+    catalog_fetched_at, catalog_sha256, source_package_sha256, batch_package_sha256,
+    selection_sha256, approved_set_sha256, approval_statement, approved_by, approved_at,
+    common_review_basis, permission_conditions, batch_audit
+  ) values (
+    ${policyId}, ${policyVersion}, ${policySha}, 'active', 'explicit_work_id_set',
+    ${sqlLiteral(currentCatalog.fetchedAt)}::timestamptz, ${sqlLiteral(currentCatalog.sha256)},
+    ${sqlLiteral(batchPackage.sourceReviewPackage.packageSha256)}, ${sqlLiteral(batchPackage.packageSha256)},
+    ${sqlLiteral(batchPackage.selection.sha256)}, ${sqlLiteral(approvedSetSha256)},
+    ${sqlLiteral(approval.approvalStatement)}, ${sqlLiteral(validated.checkedBy)}, ${checkedAt},
+    ${sqlLiteral(validated.reviewBasis)}, ${sqlLiteral(validated.permissionConditions)}, ${sqlLiteral(auditJson)}::jsonb
+  ) returning scope_id
+)
+insert into public.amuhon_aozora_rights_scope_members (scope_id, work_id, disposition, reason, facts_sha256, facts_snapshot)
+select inserted_scope.scope_id, member.work_id, member.disposition, member.reason, member.facts_sha256, member.facts_snapshot
+from inserted_scope cross join (values
+${memberRows.join(",\n")}
+) as member(work_id, disposition, reason, facts_sha256, facts_snapshot);`,
+    "commit;",
+    "",
+  ].join("\n");
+}
 function sqlLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
@@ -625,202 +635,4 @@ function requireText(value: unknown, max: number, field: string): string {
 
 function requireTrue(value: unknown, field: string): void {
   if (value !== true) throw new Error(`approval_${field}_required`);
-}
-
-function evidenceJson(input: Record<string, unknown>): string {
-  const value = JSON.stringify(input);
-  if (value.length > 4000) throw new Error("approval_evidence_too_long");
-  return value;
-}
-
-/** Creates SQL only from an explicitly human-approved manifest and exact review-package matches. */
-function generateAozoraRightsRegistrationSql(
-  reviewPackage: AozoraRightsReviewPackage,
-  approval: AozoraRightsApprovalManifest,
-  auditContext: AozoraRightsBatchAuditContext,
-  currentEditions: Map<string, VerifiedAozoraWork>,
-): string {
-  if (!reviewPackage || reviewPackage.schema !== "amuhon-aozora-rights-review/v1" ||
-      calculateReviewPackageSha256(reviewPackage) !== reviewPackage.packageSha256 ||
-      !approval || approval.schema !== "amuhon-aozora-rights-approval/v1" ||
-      approval.packageSha256 !== reviewPackage.packageSha256 || approval.catalogSha256 !== reviewPackage.catalog.sha256 ||
-      !auditContext || !/^[a-f0-9]{64}$/.test(auditContext.policySha256) ||
-      !/^[a-f0-9]{64}$/.test(auditContext.batchPackageSha256) ||
-      !/^[a-f0-9]{64}$/.test(auditContext.selectionSha256) ||
-      !/^[a-f0-9]{64}$/.test(auditContext.approvedSetSha256) ||
-      !/^[a-f0-9]{64}$/.test(auditContext.currentCatalog.sha256) ||
-      !Number.isFinite(Date.parse(auditContext.currentCatalog.fetchedAt)) ||
-      calculateAozoraRightsPolicySha256(auditContext.policySnapshot) !== auditContext.policySha256 ||
-      auditContext.policySnapshot.status !== "active" || !policyReady(auditContext.policySnapshot) ||
-      auditContext.approvalStatement !== AOZORA_BATCH_APPROVAL_STATEMENT ||
-      auditContext.approvalStatement !== approval.approvalStatement ||
-      !Array.isArray(auditContext.approvedWorkIds) ||
-      stableJson(auditContext.approvedWorkIds) !== stableJson(approval.works.map((item) => item.workId)) ||
-      createHash("sha256").update([...auditContext.approvedWorkIds].sort().join("\n")).digest("hex") !== auditContext.approvedSetSha256) {
-    throw new Error("approval_review_package_mismatch");
-  }
-  requireTrue(approval.explicitHumanApproval, "explicit_human_approval");
-  if (approval.approvalStatement !== AOZORA_BATCH_APPROVAL_STATEMENT) throw new Error("approval_statement_mismatch");
-  const checkedBy = requireText(approval.checkedBy, 200, "reviewer");
-  if (/[\u0000-\u001f\u007f]/.test(checkedBy)) throw new Error("approval_reviewer_invalid");
-  const checkedAt = requireText(approval.checkedAt, 100, "checked_at");
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(checkedAt) || !Number.isFinite(Date.parse(checkedAt))) {
-    throw new Error("approval_checked_at_invalid");
-  }
-  if (!Array.isArray(approval.works) || approval.works.length < 1 || approval.works.length > 50) throw new Error("approval_works_invalid");
-  const packageById = new Map(reviewPackage.works.map((work) => [work.workId, work]));
-  const seenIds = new Set<string>();
-  const parentRows: string[] = [];
-  const holderRows: string[] = [];
-  for (const item of approval.works) {
-    if (!item || typeof item !== "object" || seenIds.has(item.workId)) throw new Error("approval_work_duplicate_or_invalid");
-    seenIds.add(item.workId);
-    const source = packageById.get(item.workId);
-    if (!source || source.classification !== "candidate_pending_human_review" || !source.editionVerified ||
-        !source.sourceSha256 || !/^[a-f0-9]{64}$/.test(source.sourceSha256) || item.sourceSha256 !== source.sourceSha256 ||
-        classifyAozoraRightsWork({
-          id: source.workId,
-          title: source.title,
-          titleReading: source.titleReading,
-          sortReading: source.sortReading,
-          author: source.author,
-          cardUrl: source.cardUrl,
-          textUrl: source.textUrl,
-          xhtmlUrl: source.xhtmlUrl,
-          contributors: source.contributors,
-          sourceMetadata: source.sourceMetadata,
-          workCopyrightFlags: source.workCopyrightFlags,
-          missingWorkCopyrightFlagRows: source.missingWorkCopyrightFlagRows,
-          catalogPersonCopyrightFlags: source.catalogPersonCopyrightFlags,
-          missingPersonCopyrightFlagRows: source.missingPersonCopyrightFlagRows,
-          incompleteContributorRows: source.incompleteContributorRows,
-          sourceMetadataConflicts: source.sourceMetadataConflicts,
-          catalogIssues: source.catalogIssues,
-          catalogRowCount: source.catalogRowCount,
-        }).classification !== "candidate_pending_human_review") throw new Error("approval_work_not_current_candidate");
-    for (const [field, label] of [
-      [item.approveAsA, "approve_as_a"],
-      [item.domesticOriginalWorkConfirmed, "domestic_original_work"],
-      [item.allRightsAndProtectionTermConfirmed, "rights_and_term"],
-      [item.noTranslationAdaptationCoauthorOrThirdPartyIssueConfirmed, "related_rights"],
-      [item.commercialUseAndAttributionConfirmed, "commercial_use_and_attribution"],
-    ] as const) requireTrue(field, label);
-    const workEvidence = requireText(item.evidenceBasis, 1000, "work_evidence");
-    if (workEvidence !== auditContext.commonReviewBasis) throw new Error("approval_review_basis_mismatch");
-    const workConditions = requireText(item.permissionConditions, 1000, "work_permission_conditions");
-    if (!Array.isArray(item.holders) || item.holders.length !== source.contributors.length || item.holders.length < 1) {
-      throw new Error("approval_holder_set_mismatch");
-    }
-    const sourceHolders = new Set(source.contributors.map((person) => `${person.name}\u0000${person.role}`));
-    const holderIdentities = new Set<string>();
-    const contributorJson = JSON.stringify(source.contributors.map(({ name, role }) => ({ name, role })));
-    const policyReferences = Array.isArray(auditContext.policySnapshot.references)
-      ? auditContext.policySnapshot.references.map((reference) => {
-        if (!reference || typeof reference !== "object" || typeof (reference as { url?: unknown }).url !== "string") {
-          throw new Error("rights_policy_reference_invalid");
-        }
-        return (reference as { url: string }).url;
-      })
-      : [];
-    const autoEvidence = {
-      kind: "Amuhon common-policy batch rights review",
-      policy: {
-        id: auditContext.policySnapshot.policyId,
-        version: auditContext.policySnapshot.version,
-        sha256: auditContext.policySha256,
-        status: auditContext.policySnapshot.status,
-        legalReviewStatus: auditContext.policySnapshot.legalReviewStatus,
-        approvedBy: auditContext.policySnapshot.approvedBy,
-        approvedAt: auditContext.policySnapshot.approvedAt,
-        legalReviewedBy: auditContext.policySnapshot.legalReviewedBy,
-        legalReviewedAt: auditContext.policySnapshot.legalReviewedAt,
-        legalReviewEvidence: auditContext.policySnapshot.legalReviewEvidence,
-        references: policyReferences,
-      },
-      catalogUrl: reviewPackage.catalog.url,
-      reviewCatalogFetchedAt: reviewPackage.catalog.fetchedAt,
-      reviewCatalogSha256: reviewPackage.catalog.sha256,
-      latestCatalogFetchedAt: auditContext.currentCatalog.fetchedAt,
-      latestCatalogSha256: auditContext.currentCatalog.sha256,
-      sourceReviewPackageSha256: reviewPackage.packageSha256,
-      batchPackageSha256: auditContext.batchPackageSha256,
-      selectionSha256: auditContext.selectionSha256,
-      approvedSetSha256: auditContext.approvedSetSha256,
-      approvedWorkIds: auditContext.approvedWorkIds,
-      batchApproval: {
-        statement: auditContext.approvalStatement,
-        checkedBy: approval.checkedBy,
-        checkedAt: approval.checkedAt,
-        commonReviewBasis: auditContext.commonReviewBasis,
-        commonPermissionConditions: item.permissionConditions,
-      },
-      officialWorkCopyrightFlags: source.workCopyrightFlags,
-      officialContributorCopyrightFlags: source.catalogPersonCopyrightFlags,
-      officialContributors: source.contributors.map(({ name, role, personIds, copyrightFlags }) => ({ name, role, personIds, copyrightFlags })),
-      missingWorkCopyrightFlagRows: source.missingWorkCopyrightFlagRows,
-      missingPersonCopyrightFlagRows: source.missingPersonCopyrightFlagRows,
-    };
-    const evidenceBasis = evidenceJson(autoEvidence);
-    const sourceMetadataJson = JSON.stringify(source.sourceMetadata);
-    const currentEdition = currentEditions.get(source.workId);
-    if (!currentEdition || currentEdition.sourceSha256 !== source.sourceSha256 ||
-        catalogRecordSignature(currentEdition) !== catalogRecordSignature({ ...source, id: source.workId })) {
-      throw new Error("xhtml_edition_changed");
-    }
-    const textEditionRef = `aozora-xhtml-sha256:${source.sourceSha256}`;
-    parentRows.push(`(${[
-      sqlLiteral(source.workId), sqlLiteral(textEditionRef), sqlLiteral(source.sourceSha256), sqlLiteral(source.title),
-      sqlLiteral(source.author), sqlLiteral(source.cardUrl), sqlLiteral(source.textUrl), sqlLiteral(source.xhtmlUrl),
-      `${sqlLiteral(contributorJson)}::jsonb`, `${sqlLiteral(sourceMetadataJson)}::jsonb`, sqlLiteral("A"),
-      sqlLiteral(evidenceBasis), `${sqlLiteral(checkedAt)}::timestamptz`, sqlLiteral(checkedBy), "true", sqlLiteral(workConditions),
-    ].join(", ")})`);
-    for (const holder of item.holders) {
-      const identity = `${holder.name}\u0000${holder.role}`;
-      if (!sourceHolders.has(identity) || holderIdentities.has(identity)) throw new Error("approval_holder_identity_mismatch");
-      holderIdentities.add(identity);
-      requireTrue(holder.reviewedAndApprovedAsA, "holder_review");
-      requireText(holder.evidenceBasis, 3000, "holder_evidence");
-      const holderConditions = requireText(holder.permissionConditions, 1000, "holder_permission_conditions");
-      const holderBasis = evidenceJson({
-        ...autoEvidence,
-        rightsHolder: { name: holder.name, role: holder.role },
-        batchCoverageNote: "この権利者は承認対象作品の関係者一覧に含まれる。一括基準の適用記録であり、独立した個別審査を行った記録ではない。",
-      });
-      holderRows.push(`(${[
-        sqlLiteral(source.workId), sqlLiteral(source.xhtmlUrl), sqlLiteral(source.sourceSha256), sqlLiteral(holder.name),
-        sqlLiteral(holder.role), sqlLiteral("A"), sqlLiteral(holderBasis), `${sqlLiteral(checkedAt)}::timestamptz`,
-        sqlLiteral(checkedBy), sqlLiteral(holderConditions),
-      ].join(", ")})`);
-    }
-  }
-
-  const parentPreflight = approval.works.map(({ workId }) => {
-    const source = packageById.get(workId)!;
-    return `  if exists (select 1 from public.amuhon_work_commercial_rights where work_id = ${sqlLiteral(source.workId)} and xhtml_url = ${sqlLiteral(source.xhtmlUrl)} and source_sha256 = ${sqlLiteral(source.sourceSha256!)}) then raise exception 'RIGHTS_BATCH_RECORD_ALREADY_EXISTS'; end if;`;
-  }).join("\n");
-  const holderPreflight = approval.works.flatMap(({ workId }) => {
-    const source = packageById.get(workId)!;
-    return source.contributors.map((holder) => `  if exists (select 1 from public.amuhon_work_rights_holders where work_id = ${sqlLiteral(source.workId)} and xhtml_url = ${sqlLiteral(source.xhtmlUrl)} and source_sha256 = ${sqlLiteral(source.sourceSha256!)} and person_name = ${sqlLiteral(holder.name)} and role = ${sqlLiteral(holder.role)}) then raise exception 'RIGHTS_BATCH_HOLDER_ALREADY_EXISTS'; end if;`);
-  }).join("\n");
-
-  return [
-    "-- HUMAN-APPROVED DATA DRAFT generated from an exact catalog and XHTML review package.",
-    `-- Reviewer: ${checkedBy.replace(/[\r\n]/g, " ")}`,
-    `-- Checked at: ${checkedAt}`,
-    `-- Catalog SHA-256: ${reviewPackage.catalog.sha256}`,
-    `-- Review package SHA-256: ${reviewPackage.packageSha256}`,
-    "-- Review source flags, criteria version, and human evidence are stored in evidence_basis.",
-    "-- This script inserts only; any existing exact parent/holder record aborts before changes.",
-    "begin;",
-    "do $rights_batch_preflight$",
-    "begin",
-    parentPreflight,
-    holderPreflight,
-    "end;",
-    "$rights_batch_preflight$;",
-    `insert into public.amuhon_work_commercial_rights (work_id, text_edition_ref, source_sha256, title, author, card_url, text_url, xhtml_url, catalog_contributors, catalog_source_metadata, status, evidence_basis, checked_at, checked_by, rights_reviews_complete, permission_conditions) values\n${parentRows.join(",\n")};`,
-    `insert into public.amuhon_work_rights_holders (work_id, xhtml_url, source_sha256, person_name, role, status, evidence_basis, checked_at, checked_by, permission_conditions) values\n${holderRows.join(",\n")};`,
-    "commit;",
-    "",
-  ].join("\n");
 }

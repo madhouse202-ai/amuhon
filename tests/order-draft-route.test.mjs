@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import JSZip from "jszip";
 import { POST } from "../app/api/orders/route.ts";
+import { CURRENT_AOZORA_RIGHTS_POLICY } from "../lib/aozora-rights-policy.ts";
 import { hashOrderUploadToken } from "../lib/order-upload-token.ts";
 import { AOZORA_ATTRIBUTION_NOTICE } from "../lib/aozora-commercial-rights.ts";
 
@@ -12,6 +13,12 @@ const originalEnv = {
   ORDER_RATE_LIMIT_SECRET: process.env.ORDER_RATE_LIMIT_SECRET,
   ORDER_APP_ORIGIN: process.env.ORDER_APP_ORIGIN,
 };
+const originalPolicy = structuredClone(CURRENT_AOZORA_RIGHTS_POLICY);
+Object.assign(CURRENT_AOZORA_RIGHTS_POLICY, {
+  status: "active", legalReviewStatus: "confirmed", approvedBy: "合成テスト運営者",
+  approvedAt: "2026-11-20T12:00:00+09:00", legalReviewedBy: "合成テスト確認者",
+  legalReviewedAt: "2026-11-20T11:00:00+09:00", legalReviewEvidence: "合成テスト用の記録",
+});
 process.env.SUPABASE_URL = "https://staging-project-ref.supabase.co";
 process.env.SUPABASE_SECRET_KEY = "sb_secret_test-only-server-key";
 process.env.ORDER_RATE_LIMIT_SECRET = "test-only-rate-limit-secret-with-32-characters";
@@ -246,9 +253,32 @@ test("ledger notice cannot replace the server-computed edition hash", async () =
   assert.equal(draftCalls, 0);
 });
 
+test("draft or unconfirmed common policy blocks an otherwise valid order before any external lookup", async () => {
+  Object.assign(CURRENT_AOZORA_RIGHTS_POLICY, originalPolicy);
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error("no external access expected"); };
+  try {
+    const response = await POST(new Request("https://app.test/api/orders", {
+      method: "POST", headers: { Origin: "https://app.test", "Content-Type": "application/json" }, body: JSON.stringify(input),
+    }));
+    assert.equal(response.status, 409);
+    assert.equal(calls, 0);
+    assert.doesNotMatch(await response.text(), /法律|policy|権利台帳/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.assign(CURRENT_AOZORA_RIGHTS_POLICY, {
+      status: "active", legalReviewStatus: "confirmed", approvedBy: "合成テスト運営者",
+      approvedAt: "2026-11-20T12:00:00+09:00", legalReviewedBy: "合成テスト確認者",
+      legalReviewedAt: "2026-11-20T11:00:00+09:00", legalReviewEvidence: "合成テスト用の記録",
+    });
+  }
+});
+
 test("test-only environment is restored", () => {
   for (const [name, value] of Object.entries(originalEnv)) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
+  Object.assign(CURRENT_AOZORA_RIGHTS_POLICY, originalPolicy);
 });

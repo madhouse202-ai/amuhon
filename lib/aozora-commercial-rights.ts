@@ -1,5 +1,6 @@
 import { validateAozoraCatalogUrl, type AozoraRightsCatalogWork } from "./aozora-edition.ts";
 import { type AozoraCommercialRightsClass, type AozoraCommercialRightsSnapshot } from "./aozora-commercial-rights-schema.ts";
+import { calculateAozoraRightsWorkFactsSha256, getCurrentAozoraRightsPolicyBinding } from "./aozora-rights-policy.ts";
 
 export { parseAozoraCommercialRightsSnapshot } from "./aozora-commercial-rights-schema.ts";
 export type { AozoraCommercialRightsClass, AozoraCommercialRightsSnapshot } from "./aozora-commercial-rights-schema.ts";
@@ -63,6 +64,8 @@ export function createAozoraCommercialRightsSnapshot(
     reasons: result.reasons,
     catalogFetchedAt: catalog.fetchedAt,
     catalogSha256: catalog.sha256,
+    policy: getCurrentAozoraRightsPolicyBinding(),
+    workFactsSha256: calculateAozoraRightsWorkFactsSha256(work),
     workCopyrightFlags: [...work.workCopyrightFlags],
     missingWorkCopyrightFlagRows: work.missingWorkCopyrightFlagRows,
     catalogPersonCopyrightFlags: [...work.catalogPersonCopyrightFlags],

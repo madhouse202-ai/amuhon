@@ -9,6 +9,7 @@ import { parseCommercialRightsApproval } from "../../../lib/commercial-rights.ts
 import { resolveAozoraWorkEditionsWithCatalog } from "../../../lib/aozora-edition.ts";
 import { AOZORA_ATTRIBUTION_NOTICE, createAozoraCommercialRightsSnapshot } from "../../../lib/aozora-commercial-rights.ts";
 import { isLegacyBuyerAssetFlowEnabled } from "../../../lib/order-production-gate.ts";
+import { isCurrentAozoraRightsPolicyReady } from "../../../lib/aozora-rights-policy.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -141,6 +142,9 @@ export async function POST(request: Request) {
       error: "入力内容または本の情報を確認してください。",
       fields: errors,
     }, { status: 400, headers: { "Cache-Control": "no-store" } });
+  }
+  if (!isCurrentAozoraRightsPolicyReady()) {
+    return errorResponse("現在、販売用に確認済みの作品は利用できません。入力内容は保存されていません。", 409);
   }
 
   const supabaseUrl = process.env.SUPABASE_URL;

@@ -15,6 +15,7 @@ import {
   generateAozoraRightsBatchRegistrationSql,
   validateAozoraRightsBatchApproval,
 } from "../lib/aozora-rights-review.ts";
+import { AOZORA_ATTRIBUTION_NOTICE } from "../lib/aozora-commercial-rights.ts";
 import { resolveAozoraRightsCatalog, resolveAozoraWorkEditions } from "../lib/aozora-edition.ts";
 
 const ROOT = new URL("../", import.meta.url);
@@ -92,7 +93,7 @@ function approvalFor(batchPackage, approvedWorkIds = batchPackage.selection.prop
       .filter((id) => !approvedWorkIds.includes(id))
       .map((workId) => ({ workId, disposition: "individual_review", reason: "合成テストで個別審査へ回す" })),
     commonReviewBasis: "合成テストで定義した共通審査の根拠。実作品の承認を意味しない。",
-    commonPermissionConditions: "合成テスト用の出典表示条件。",
+    commonPermissionConditions: AOZORA_ATTRIBUTION_NOTICE,
   };
 }
 
@@ -221,7 +222,7 @@ test("unrelated catalog updates are recorded but do not block; target metadata c
   const unrelated = fixtureWork("000999", { title: "無関係な追加作品" });
   const updatedGlobal = currentSnapshot([work, unrelated], "e".repeat(64));
   const sql = generateAozoraRightsBatchRegistrationSql({ batchPackage, approval, policy, currentCatalog: updatedGlobal, editionsById });
-  assert.match(sql, /latestCatalogSha256/);
+  assert.match(sql, /currentCatalogSha256/);
   const changedTarget = fixtureWork("000799", { ...work, title: "変更された対象作品" });
   assert.throws(() => generateAozoraRightsBatchRegistrationSql({ batchPackage, approval, policy, currentCatalog: currentSnapshot([changedTarget], "f".repeat(64)), editionsById }), /catalog_record_changed/);
 });
@@ -229,16 +230,20 @@ test("unrelated catalog updates are recorded but do not block; target metadata c
 test("target XHTML hash changes stop SQL generation; identical latest hashes produce auditable SQL", () => {
   const work = fixtureWork();
   const { sql, batchPackage, approval, policy } = sqlFor({ works: [work] });
-  assert.match(sql, /insert into public\.amuhon_work_commercial_rights/);
-  assert.match(sql, /insert into public\.amuhon_work_rights_holders/);
-  assert.match(sql, /'A'/);
-  assert.match(sql, /common-policy batch rights review/);
-  assert.match(sql, /batchCoverageNote/);
-  assert.match(sql, /独立した個別審査を行った記録ではない/);
-  assert.doesNotMatch(sql, /reviewerEvidence/);
+  assert.match(sql, /insert into public\.amuhon_aozora_rights_policy_registry/);
+  assert.match(sql, /insert into public\.amuhon_aozora_rights_scope_batches/);
+  assert.match(sql, /insert into public\.amuhon_aozora_rights_scope_members/);
+  assert.match(sql, /approved_by/);
+  assert.match(sql, /approved_set_sha256/);
+  assert.match(sql, /'ダイスケ（合成テスト）', '2026-11-20T12:00:00\+09:00'::timestamptz/);
+  assert.match(sql, /permission_conditions/);
+  assert.match(sql, /approved_by is null/);
+  assert.doesNotMatch(sql, /insert into public\.amuhon_work_commercial_rights/i);
+  assert.doesNotMatch(sql, /insert into public\.amuhon_work_rights_holders/i);
   assert.match(sql, /approvedSetSha256/);
   assert.match(sql, /legalReviewEvidence/);
-  assert.doesNotMatch(sql, /on conflict/i);
+  assert.match(sql, /on conflict \(policy_id, policy_version\)[\s\S]*?policy_status = 'draft'[\s\S]*?legal_review_status = 'unconfirmed'/i);
+  assert.doesNotMatch(sql, /on conflict \(batch_package_sha256\)/i);
   const mismatch = new Map([[work.id, { ...work, sourceSha256: "f".repeat(64) }]]);
   assert.throws(() => generateAozoraRightsBatchRegistrationSql({
     batchPackage, approval, policy, currentCatalog: currentSnapshot([work]), editionsById: mismatch,

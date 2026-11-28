@@ -5,6 +5,7 @@ import { POST as checkoutPost } from "../app/api/orders/[id]/checkout/route.ts";
 import { GET as statusGet } from "../app/api/orders/[id]/status/route.ts";
 import { callOrderRpc, getSupabaseServerConfig } from "../lib/order-checkout-server.ts";
 import { AOZORA_ATTRIBUTION_NOTICE, createAozoraCommercialRightsSnapshot } from "../lib/aozora-commercial-rights.ts";
+import { CURRENT_AOZORA_RIGHTS_POLICY } from "../lib/aozora-rights-policy.ts";
 
 const ORDER_ID = "d9d71ea0-115c-4b26-8c1d-86bead2aecc4";
 const TOKEN = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
@@ -43,6 +44,12 @@ const officialCatalogZip = await (async () => {
   return archive.generateAsync({ type: "uint8array" });
 })();
 const originalEnv = { ...process.env };
+const originalPolicy = structuredClone(CURRENT_AOZORA_RIGHTS_POLICY);
+Object.assign(CURRENT_AOZORA_RIGHTS_POLICY, {
+  status: "active", legalReviewStatus: "confirmed", approvedBy: "合成テスト運営者",
+  approvedAt: "2026-11-20T12:00:00+09:00", legalReviewedBy: "合成テスト確認者",
+  legalReviewedAt: "2026-11-20T11:00:00+09:00", legalReviewEvidence: "合成テスト用の記録",
+});
 
 function setTestEnv(stripeKey = "sk_test_server-only-key") {
   process.env.STRIPE_MODE = "test";
@@ -715,4 +722,5 @@ test("status endpoint requires the order capability and returns only payment-saf
 test("test-only environment is restored", () => {
   for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
   for (const [key, value] of Object.entries(originalEnv)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  Object.assign(CURRENT_AOZORA_RIGHTS_POLICY, originalPolicy);
 });

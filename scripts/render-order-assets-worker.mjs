@@ -14,6 +14,8 @@ import { resolveFinalPdfRendererConfig } from "../lib/final-pdf-renderer-config.
 import { createPdfRenderQueueWorker, PDF_RENDER_LEASE_SECONDS } from "../lib/pdf-render-queue-worker.ts";
 import { createSupabasePdfRenderQueueAdapter } from "../lib/pdf-render-queue-supabase.ts";
 import { sameAozoraRightsFacts } from "../lib/aozora-commercial-rights.ts";
+import { parseAozoraCommercialRightsSnapshot } from "../lib/aozora-commercial-rights-schema.ts";
+import { getCurrentAozoraRightsPolicyBinding } from "../lib/aozora-rights-policy.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_INPUT_BYTES = 9_000_000;
@@ -24,6 +26,7 @@ const APP_START_TIMEOUT_MS = 30_000;
 const APP_STOP_TIMEOUT_MS = 5_000;
 const OUTPUT_ROOT = path.join(ROOT, "tmp", "pdf-renderer-worker");
 const DEFAULT_FONT_PATH = path.join(ROOT, ".local-assets", "fonts", "NotoSerifCJKjp-Regular.otf");
+const CURRENT_RIGHTS_POLICY = getCurrentAozoraRightsPolicyBinding();
 
 function logCode(code, metrics = "") {
   const safeMetrics = metrics ? ` ${metrics}` : "";
@@ -146,6 +149,9 @@ function minimalServerEnvironment(port) {
   const safe = Object.fromEntries(allowed.flatMap((key) => process.env[key] ? [[key, process.env[key]]] : []));
   return {
     ...safe,
+    ...(process.env.AMUHON_PDF_WORKER_SECRET
+      ? { AMUHON_PDF_WORKER_SECRET: process.env.AMUHON_PDF_WORKER_SECRET }
+      : {}),
     NODE_ENV: "production",
     PORT: String(port),
     HOSTNAME: "127.0.0.1",
@@ -265,6 +271,8 @@ async function readBoundedResponse(response, maximumBytes) {
 }
 
 async function loadAozoraWorks(renderOrigin, book) {
+  const internalSecret = process.env.AMUHON_PDF_WORKER_SECRET;
+  if (!internalSecret || internalSecret.length < 32) throw new Error("renderer_internal_auth_unavailable");
   const works = new Array(book.works.length);
   let nextIndex = 0;
   let totalTextBytes = 0;
@@ -283,6 +291,7 @@ async function loadAozoraWorks(renderOrigin, book) {
         response = await fetch(endpoint, {
           cache: "no-store",
           redirect: "error",
+          headers: { "x-amuhon-pdf-worker-secret": internalSecret },
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]),
         });
       } catch {
@@ -301,13 +310,20 @@ async function loadAozoraWorks(renderOrigin, book) {
         controller.abort();
         throw new Error("aozora_unavailable");
       }
-      if (!record || typeof record !== "object" || Array.isArray(record) ||
+      const currentRights = parseAozoraCommercialRightsSnapshot(record?.catalogRights);
+      if (!selected.catalogRights || selected.catalogRights.classification !== "A" ||
+          selected.catalogRights.policy?.policyId !== CURRENT_RIGHTS_POLICY.policyId ||
+          selected.catalogRights.policy?.policyVersion !== CURRENT_RIGHTS_POLICY.policyVersion ||
+          selected.catalogRights.policy?.policySha256 !== CURRENT_RIGHTS_POLICY.policySha256 ||
+          !/^[a-f0-9]{64}$/.test(selected.catalogRights.workFactsSha256 ?? "") ||
+          !record || typeof record !== "object" || Array.isArray(record) ||
+          !currentRights || currentRights.classification !== "A" ||
+          currentRights.policy?.policyId !== CURRENT_RIGHTS_POLICY.policyId ||
+          currentRights.policy?.policyVersion !== CURRENT_RIGHTS_POLICY.policyVersion ||
+          currentRights.policy?.policySha256 !== CURRENT_RIGHTS_POLICY.policySha256 ||
+          !sameAozoraRightsFacts(selected.catalogRights, currentRights) ||
           record.sourceUrl !== selected.xhtmlUrl || typeof record.text !== "string" || !record.text.trim() ||
-          !/^[a-f0-9]{64}$/.test(selected.sourceSha256 ?? "") || record.sourceSha256 !== selected.sourceSha256 ||
-          !record.catalogRights || record.catalogRights.schema !== "amuhon-aozora-commercial-rights/v1" ||
-          record.catalogRights.classification !== "A" ||
-          (selected.catalogRights && (selected.catalogRights.classification !== "A" ||
-            !sameAozoraRightsFacts(selected.catalogRights, record.catalogRights)))) {
+          !/^[a-f0-9]{64}$/.test(selected.sourceSha256 ?? "") || record.sourceSha256 !== selected.sourceSha256) {
         controller.abort();
         throw new Error("invalid_snapshot");
       }
@@ -375,12 +391,14 @@ async function runQueueOnce(renderOrigin, fontBytes, adapter, claimedJob) {
     retry_queued: "PDF_QUEUE_RETRY_QUEUED",
     terminal_failure: "PDF_QUEUE_TERMINAL_FAILURE",
     failure_recording_pending: "PDF_QUEUE_FAILURE_RECORDING_PENDING",
+    rights_stopped: "PDF_QUEUE_RIGHTS_STOPPED",
+    artifact_cleanup_pending: "PDF_QUEUE_ASSET_CLEANUP_PENDING",
     claim_failed: "PDF_QUEUE_CLAIM_FAILED",
     claim_contract_mismatch: "PDF_QUEUE_CLAIM_CONTRACT_MISMATCH",
     internal_failure: "PDF_QUEUE_INTERNAL_FAILURE",
   };
   logCode(codeByStatus[result.status] ?? "PDF_QUEUE_INTERNAL_FAILURE");
-  if (!["idle", "succeeded"].includes(result.status)) process.exitCode = 1;
+  if (!["idle", "succeeded", "rights_stopped"].includes(result.status)) process.exitCode = 1;
 }
 
 async function main() {
@@ -394,6 +412,9 @@ async function main() {
       process.env.AMUHON_PDF_WORKER_BROWSER_MODE !== "pinned" ||
       process.env.AMUHON_PDF_QUEUE_ENABLED !== "true")) {
     throw new Error("queue_worker_not_enabled");
+  }
+  if (queueMode && (!process.env.AMUHON_PDF_WORKER_SECRET || process.env.AMUHON_PDF_WORKER_SECRET.length < 32)) {
+    throw new Error("renderer_internal_auth_unavailable");
   }
   // Validate the exact project host and required secret before starting a server
   // or attempting any queue/Storage request.

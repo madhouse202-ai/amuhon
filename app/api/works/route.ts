@@ -1,20 +1,15 @@
-import JSZip from "jszip";
 import { compareJapaneseReadings, getAvailableGojuonLetters, getGojuonIndexLetter, GOJUON_LETTERS } from "../../../lib/kana-index.ts";
+import { resolveAozoraRightsCatalog, type AozoraCatalogContributor, type AozoraRightsCatalogWork } from "../../../lib/aozora-edition.ts";
+import { callOrderRpc, getSupabaseServerConfig } from "../../../lib/order-checkout-server.ts";
+import { filterAozoraWorksByApprovedScope } from "../../../lib/aozora-rights-scope.ts";
+import {
+  getCurrentAozoraRightsPolicyBinding,
+  isCurrentAozoraRightsPolicyReady,
+  parseAozoraSellableWorkFacts,
+} from "../../../lib/aozora-rights-policy.ts";
 
-type Work = {
-  id: string;
-  title: string;
-  titleReading: string;
-  sortReading: string;
-  author: string;
-  contributors: WorkContributor[];
-  cardUrl: string;
-  textUrl: string;
-  xhtmlUrl: string;
-  sourceMetadata: { firstPublication: string; baseText: string; basePublisher: string; inputter: string; proofreader: string };
-};
-
-type WorkContributor = { name: string; role: string; reading: string };
+type Work = AozoraRightsCatalogWork;
+type WorkContributor = Pick<AozoraCatalogContributor, "name" | "role" | "reading">;
 
 type AuthorShelf = {
   author: string;
@@ -36,10 +31,18 @@ function parseExcludedWorkIds(value: string | null): Set<string> | null {
   return new Set(items);
 }
 
-const CATALOG_URL =
-  "https://www.aozora.gr.jp/index_pages/list_person_all_extended_utf8.zip";
-
-let catalogCache: Work[] | null = null;
+type PublicWork = {
+  id: string;
+  title: string;
+  titleReading: string;
+  sortReading: string;
+  author: string;
+  contributors: Array<{ name: string; role: string; reading: string }>;
+  cardUrl: string;
+  textUrl: string;
+  xhtmlUrl: string;
+  sourceMetadata: Work["sourceMetadata"];
+};
 
 function sampleItems<T>(items: T[], count: number): T[] {
   const shuffled = [...items];
@@ -113,336 +116,36 @@ function parseOffset(value: string | null): number | null {
   return Number.isSafeInteger(offset) ? offset : null;
 }
 
-function parseCsvLine(line: string): string[] {
-  const values: string[] = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-
-    if (char === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === "," && !inQuotes) {
-      values.push(current);
-      current = "";
-    } else {
-      current += char;
-    }
-  }
-
-  values.push(current);
-
-  return values;
-}
-
-function normalizeColumnName(value: string) {
-  return value
-    .trim()
-    .replace(/^"|"$/g, "")
-    .replace(/\s+/g, "")
-    .replace(/　/g, "");
-}
-
-async function loadCatalog(): Promise<Work[]> {
-  if (catalogCache) {
-    return catalogCache;
-  }
-
-  console.log(
-    "青空文庫の作品カタログを取得しています..."
-  );
-
-  const response = await fetch(CATALOG_URL, {
-    cache: "no-store",
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `青空文庫カタログの取得に失敗しました: ${response.status}`
-    );
-  }
-
-  const buffer = await response.arrayBuffer();
-
-  const zip = await JSZip.loadAsync(buffer);
-
-  const csvFileName = Object.keys(zip.files).find(
-    (name) => name.endsWith(".csv")
-  );
-
-  if (!csvFileName) {
-    throw new Error(
-      "青空文庫のCSVファイルが見つかりませんでした。"
-    );
-  }
-
-  const csvText =
-    await zip.files[csvFileName].async("string");
-
-  const lines = csvText.split(/\r?\n/);
-
-  if (lines.length === 0) {
-    throw new Error(
-      "青空文庫のCSVが空です。"
-    );
-  }
-
-  /*
-   * --------------------------------------------------
-   * CSVのヘッダーから各列の位置を探す
-   * --------------------------------------------------
-   */
-
-  const header = parseCsvLine(lines[0]).map(
-    normalizeColumnName
-  );
-
-  console.log(
-    "青空文庫CSVヘッダー:",
-    header
-  );
-
-  const findColumnIndex = (
-    candidates: string[]
-  ) => {
-    for (const candidate of candidates) {
-      const normalizedCandidate =
-        normalizeColumnName(candidate);
-
-      const index = header.findIndex(
-        (column) =>
-          column === normalizedCandidate
-      );
-
-      if (index !== -1) {
-        return index;
-      }
-    }
-
-    return -1;
+function toPublicWork(work: Work): PublicWork {
+  return {
+    id: work.id,
+    title: work.title,
+    titleReading: work.titleReading,
+    sortReading: work.sortReading,
+    author: work.author,
+    contributors: work.contributors.map(({ name, role, reading }) => ({ name, role, reading })),
+    cardUrl: work.cardUrl,
+    textUrl: work.textUrl,
+    xhtmlUrl: work.xhtmlUrl,
+    sourceMetadata: work.sourceMetadata,
   };
+}
 
-  /*
-   * 作品ID
-   */
-  const idIndex = findColumnIndex([
-    "作品ID",
-    "作品ＩＤ",
-    "作品id",
-  ]);
-
-  /*
-   * 作品名
-   */
-  const titleIndex = findColumnIndex([
-    "作品名",
-  ]);
-
-  /*
-   * 図書カードURL
-   */
-  const cardUrlIndex = findColumnIndex([
-    "図書カードURL",
-    "図書カード",
-    "カードURL",
-  ]);
-
-  /*
-   * 姓
-   */
-  const lastNameIndex = findColumnIndex([
-    "姓",
-  ]);
-
-  /*
-   * 名
-   */
-  const firstNameIndex = findColumnIndex([
-    "名",
-  ]);
-
-  /*
-   * テキストファイルURL
-   */
-  const textUrlIndex = findColumnIndex([
-    "テキストファイルURL",
-    "テキストURL",
-    "テキストファイル",
-  ]);
-
-  /*
-   * XHTML / HTMLファイルURL
-   */
-  const xhtmlUrlIndex = findColumnIndex([
-    "XHTMLファイルURL",
-    "XHTML/HTMLファイルURL",
-    "XHTML/HTMLファイル",
-    "HTMLファイルURL",
-    "XHTMLURL",
-  ]);
-  const roleIndex = findColumnIndex(["役割フラグ", "役割"]);
-  const lastNameReadingIndex = findColumnIndex(["姓読み", "姓よみ"]);
-  const firstNameReadingIndex = findColumnIndex(["名読み", "名よみ"]);
-  const titleReadingIndex = findColumnIndex(["作品名読み", "作品名よみ"]);
-  const sortReadingIndex = findColumnIndex(["ソート用読み", "ソート用よみ"]);
-  const firstPublicationIndex = findColumnIndex(["初出"]);
-  const baseTextIndex = findColumnIndex(["底本名1", "底本1", "底本名"]);
-  const basePublisherIndex = findColumnIndex(["底本出版社名1", "底本出版社1", "底本出版社名"]);
-  const inputterIndex = findColumnIndex(["入力者", "入力者名"]);
-  const proofreaderIndex = findColumnIndex(["校正者", "校正者名"]);
-
-  console.log(
-    "CSV列番号:",
-    {
-      idIndex,
-      titleIndex,
-      cardUrlIndex,
-      lastNameIndex,
-      firstNameIndex,
-      textUrlIndex,
-      xhtmlUrlIndex,
-    }
-  );
-
-  /*
-   * 必須列が見つからなければエラー
-   */
-
-  if (
-    idIndex === -1 ||
-    titleIndex === -1
-  ) {
-    throw new Error(
-      "青空文庫CSVの作品IDまたは作品名の列を特定できませんでした。"
-    );
-  }
-
-  /*
-   * URL列は、今回の目的では重要なので
-   * 見つからない場合は明示的にエラーにする。
-   */
-
-  if (
-    cardUrlIndex === -1 ||
-    textUrlIndex === -1 ||
-    xhtmlUrlIndex === -1
-  ) {
-    throw new Error(
-      "青空文庫CSVのURL列を特定できませんでした。ヘッダーを確認してください。"
-    );
-  }
-
-  const workMap = new Map<string, Work>();
-
-  /*
-   * 2行目以降を作品データとして読む
-   */
-
-  for (
-    let i = 1;
-    i < lines.length;
-    i++
-  ) {
-    const line = lines[i];
-
-    if (!line.trim()) {
-      continue;
-    }
-
-    const columns = parseCsvLine(line);
-
-    const id =
-      columns[idIndex]?.trim() ?? "";
-
-    const title =
-      columns[titleIndex]?.trim() ?? "";
-
-    const lastName =
-      lastNameIndex !== -1
-        ? columns[lastNameIndex]?.trim() ?? ""
-        : "";
-
-    const firstName =
-      firstNameIndex !== -1
-        ? columns[firstNameIndex]?.trim() ?? ""
-        : "";
-
-    const author =
-      `${lastName} ${firstName}`.trim();
-    const role = roleIndex === -1 ? "著者" : (columns[roleIndex]?.trim() ?? "");
-    const reading = `${lastNameReadingIndex === -1 ? "" : columns[lastNameReadingIndex]?.trim() ?? ""} ${firstNameReadingIndex === -1 ? "" : columns[firstNameReadingIndex]?.trim() ?? ""}`.trim();
-    const titleReading = titleReadingIndex === -1 ? "" : columns[titleReadingIndex]?.trim() ?? "";
-    const sortReading = sortReadingIndex === -1 ? "" : columns[sortReadingIndex]?.trim() ?? "";
-
-    const cardUrl =
-      columns[cardUrlIndex]?.trim() ?? "";
-
-    const textUrl =
-      columns[textUrlIndex]?.trim() ?? "";
-
-    const xhtmlUrl =
-      columns[xhtmlUrlIndex]?.trim() ?? "";
-
-    if (!id || !title) {
-      continue;
-    }
-
-    const existing = workMap.get(id);
-    const work = existing ?? {
-      id,
-      title,
-      titleReading,
-      sortReading,
-      author: "",
-      contributors: [],
-      cardUrl,
-      textUrl,
-      xhtmlUrl,
-      sourceMetadata: {
-        firstPublication: "",
-        baseText: "",
-        basePublisher: "",
-        inputter: "",
-        proofreader: "",
-      },
-    } satisfies Work;
-    if (!work.titleReading && titleReading) work.titleReading = titleReading;
-    if (!work.sortReading && sortReading) work.sortReading = sortReading;
-    const sourceMetadata = {
-      firstPublication: firstPublicationIndex === -1 ? "" : columns[firstPublicationIndex]?.trim() ?? "",
-      baseText: baseTextIndex === -1 ? "" : columns[baseTextIndex]?.trim() ?? "",
-      basePublisher: basePublisherIndex === -1 ? "" : columns[basePublisherIndex]?.trim() ?? "",
-      inputter: inputterIndex === -1 ? "" : columns[inputterIndex]?.trim() ?? "",
-      proofreader: proofreaderIndex === -1 ? "" : columns[proofreaderIndex]?.trim() ?? "",
-    };
-    for (const key of Object.keys(sourceMetadata) as Array<keyof typeof sourceMetadata>) {
-      if (!work.sourceMetadata[key] && sourceMetadata[key]) work.sourceMetadata[key] = sourceMetadata[key];
-    }
-    if (author && role && !work.contributors.some((person) => person.name === author && person.role === role)) {
-      work.contributors.push({ name: author, role, reading });
-    }
-    if (isAuthorRole(role) && author) {
-      const authors = work.contributors.filter((person) => isAuthorRole(person.role)).map((person) => person.name);
-      work.author = [...new Set(authors)].join("・");
-    }
-    workMap.set(id, work);
-  }
-
-  const works = [...workMap.values()];
-
-  console.log(
-    `青空文庫カタログ読み込み完了: ${works.length}作品`
-  );
-
-  catalogCache = works;
-
-  return works;
+async function loadSellableCatalog(): Promise<{ ready: boolean; works: Work[] }> {
+  if (!isCurrentAozoraRightsPolicyReady()) return { ready: false, works: [] };
+  const config = getSupabaseServerConfig();
+  if (!config) return { ready: false, works: [] };
+  const binding = getCurrentAozoraRightsPolicyBinding();
+  const approval = await callOrderRpc(config, "get_amuhon_aozora_sellable_work_facts_v1", {
+    p_policy_id: binding.policyId,
+    p_policy_version: binding.policyVersion,
+    p_policy_sha256: binding.policySha256,
+  });
+  if (!approval.ok || !approval.data || approval.data.ready !== true) throw new Error("rights_scope_unavailable");
+  const scope = parseAozoraSellableWorkFacts(approval.data.works);
+  if (!scope) throw new Error("rights_scope_response_invalid");
+  const catalog = await resolveAozoraRightsCatalog();
+  return { ready: true, works: filterAozoraWorksByApprovedScope(catalog.works, scope) };
 }
 
 export async function GET(request: Request) {
@@ -469,15 +172,18 @@ export async function GET(request: Request) {
   }
 
   try {
-    const catalog =
-      await loadCatalog();
+    const resolved = await loadSellableCatalog();
+    if (!resolved.ready) {
+      return Response.json({ error: "現在、利用可能な作品を表示できません。時間をおいて再試行してください。" }, { status: 503 });
+    }
+    const catalog = resolved.works;
 
     if (!query && browse === "discover") {
       const excludedIds = parseExcludedWorkIds(searchParams.get("exclude"));
       if (!excludedIds) return Response.json({ error: "本棚を読み込めませんでした。" }, { status: 400 });
       return Response.json({
         authors: sampleItems(buildAuthorEntries(catalog), AUTHOR_SHELF_LIMIT).map(publicAuthorEntry),
-        works: sampleWorks(catalog, excludedIds),
+        works: sampleWorks(catalog, excludedIds).map(toPublicWork),
       });
     }
 
@@ -493,7 +199,7 @@ export async function GET(request: Request) {
       const filtered = letter ? sorted.filter((work) => getGojuonIndexLetter(work.sortReading || work.titleReading) === letter) : sorted;
       const works = filtered.slice(offset, offset + WORK_LIST_PAGE_SIZE);
       const nextOffset = offset + works.length;
-      return Response.json({ works, total: filtered.length, nextOffset, hasMore: nextOffset < filtered.length, availableLetters });
+      return Response.json({ works: works.map(toPublicWork), total: filtered.length, nextOffset, hasMore: nextOffset < filtered.length, availableLetters });
     }
 
     if (!query && browse === "authors") {
@@ -525,7 +231,7 @@ export async function GET(request: Request) {
       const nextOffset = offset + works.length;
       return Response.json({
         author,
-        works,
+        works: works.map(toPublicWork),
         total: authorWorks.length,
         nextOffset,
         hasMore: nextOffset < authorWorks.length,
@@ -572,20 +278,14 @@ export async function GET(request: Request) {
       .slice(0, 30);
 
     return Response.json({
-      works: results,
+      works: results.map(toPublicWork),
     });
-  } catch (error) {
-    console.error(
-      "青空文庫作品検索エラー:",
-      error
-    );
+  } catch {
+    console.error("[works] SELLABLE_CATALOG_LOOKUP_FAILED");
 
     return Response.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "青空文庫の作品カタログを取得できませんでした。",
+        error: "作品情報を確認できませんでした。時間をおいて再試行してください。",
       },
       {
         status: 500,
